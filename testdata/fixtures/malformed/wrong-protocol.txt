@@ -1,0 +1,1 @@
+{"protocol":"some.other/v1","module":"fake","operation":"invoke","request_id":"req_0000000000000000000000000000fake","ok":true,"result":{},"warnings":[],"execution":{"local":true,"network":false,"external_writes":false,"provider":"local","estimated_cost":0,"actual_cost":0,"artifacts":[]}}

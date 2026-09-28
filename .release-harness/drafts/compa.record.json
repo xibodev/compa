@@ -1,0 +1,30 @@
+{
+  "schema_version": "1.0.0",
+  "authored_by": "operator",
+  "claims": [
+    {
+      "id": "subject-definition",
+      "claim": "Compa is a local-first agent application and embeddable runtime kernel",
+      "status": "observed",
+      "evidence": {
+        "source": "README.md:5; README.md:65-67"
+      }
+    },
+    {
+      "id": "kernel-binary-entry",
+      "claim": "The kernel command line interface is defined in cmd/compa-kernel",
+      "status": "observed",
+      "evidence": {
+        "source": "cmd/compa-kernel/main.go:18"
+      }
+    },
+    {
+      "id": "model-roster-command",
+      "claim": "The model roster command lists curated providers",
+      "status": "observed",
+      "evidence": {
+        "source": "cmd/compa-kernel/internal/model/service_commands.go:88"
+      }
+    }
+  ]
+}

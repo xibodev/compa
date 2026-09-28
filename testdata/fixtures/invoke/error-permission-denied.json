@@ -1,0 +1,26 @@
+{
+  "protocol": "xibodev.module/v1",
+  "module": "fake",
+  "operation": "invoke",
+  "request_id": "req_0000000000000000000000000000fake",
+  "ok": false,
+  "error": {
+    "code": "permission_denied",
+    "message": "capability requires paid provider authority, which was not granted for this invocation",
+    "retryable": false,
+    "details": {
+      "provider": "unpriced-provider",
+      "required": "paid_providers"
+    }
+  },
+  "warnings": [],
+  "execution": {
+    "local": true,
+    "network": false,
+    "external_writes": false,
+    "provider": "",
+    "estimated_cost": null,
+    "actual_cost": null,
+    "artifacts": []
+  }
+}

@@ -1,0 +1,22 @@
+Compa
+Copyright (c) 2026 xibodev
+
+This product is a fork of PicoClaw (https://github.com/sipeed/picoclaw), an
+independent open-source project initiated by Sipeed and licensed under the MIT
+License.
+
+    MIT License
+    Copyright (c) 2026 PicoClaw contributors
+
+Compa retains PicoClaw's agent loop, tool registry, skills, sessions, model
+providers, gateway, and web cockpit, and adds a detached-module protocol
+(pkg/modproto, internal/module) under which capabilities are supplied by
+separate local processes rather than linked into the binary.
+
+The product has been rebranded throughout: module path, executable names,
+configuration and environment variables, and user-facing strings are Compa's
+own.
+
+Compa is not affiliated with or endorsed by Sipeed or the PicoClaw project.
+"PicoClaw" is named here solely to give the attribution the MIT License
+requires.

@@ -1,0 +1,40 @@
+{
+  "schema_version": "1.0.0",
+  "proposition": {
+    "subject": {
+      "id": "compa",
+      "name": "Compa"
+    },
+    "assertions": [
+      {
+        "id": "kernel-version",
+        "kind": "cli",
+        "target": "kernel",
+        "expect": {
+          "args": "version",
+          "exit_code": 0,
+          "stdout_contains": "compa"
+        }
+      },
+      {
+        "id": "kernel-model-roster",
+        "kind": "cli",
+        "target": "kernel",
+        "expect": {
+          "args": "model roster",
+          "exit_code": 0,
+          "stdout_contains": "opencode_zen"
+        }
+      }
+    ]
+  },
+  "questions": [
+    {
+      "id": "Q1",
+      "question": "What must be true of this subject for a release to be acceptable?",
+      "blocking": true,
+      "resolution": "The standalone agent kernel binary must execute, report its version, and query its curated provider roster cleanly with zero exit code.",
+      "resolved_by": "operator"
+    }
+  ]
+}

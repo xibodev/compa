@@ -1,0 +1,59 @@
+{
+  "protocol": "xibodev.module/v1",
+  "module": "fake",
+  "operation": "describe",
+  "request_id": "",
+  "ok": true,
+  "result": {
+    "module": "fake",
+    "name": "Fake Module",
+    "version": "1.0.0",
+    "protocol_versions": [
+      "xibodev.module/v1"
+    ],
+    "capabilities": [
+      {
+        "id": "fake.echo",
+        "title": "Echo",
+        "summary": "Echo structured input back, deterministically.",
+        "request_schema": "",
+        "result_schema": "",
+        "artifact_schemas": [],
+        "effects": {
+          "local": true,
+          "network": false,
+          "external_writes": false,
+          "provider": "local",
+          "cost_known": true
+        },
+        "skills": [],
+        "long_running": false
+      }
+    ],
+    "request_schemas": {},
+    "result_schemas": {},
+    "artifact_schemas": {},
+    "agent_overlays": [],
+    "skills": [],
+    "permissions": {
+      "filesystem_read": [],
+      "filesystem_write": [],
+      "network": [],
+      "credentials": [],
+      "paid_providers": [],
+      "publish": false,
+      "subprocess": []
+    },
+    "requirements": []
+  },
+  "warnings": [],
+  "execution": {
+    "local": true,
+    "network": false,
+    "external_writes": false,
+    "provider": "local",
+    "estimated_cost": 0,
+    "actual_cost": 0,
+    "artifacts": []
+  }
+}

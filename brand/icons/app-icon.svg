@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+  <title id="title">Compa</title>
+  <rect width="512" height="512" rx="112" fill="#111215"/>
+  <g transform="translate(51.2 51.2) scale(4.096)">
+    <path d="M72 20 H36 C27.16 20 20 27.16 20 36 V64 C20 72.84 27.16 80 36 80 H72 V68 H38 C34.69 68 32 65.31 32 62 V38 C32 34.69 34.69 32 38 32 H72 Z" fill="#9CABFF"/>
+    <path d="M66 38 H46 C41.58 38 38 41.58 38 46 V54 C38 58.42 41.58 62 46 62 H66 V53 H48 C46.9 53 46 52.1 46 51 V49 C46 47.9 46.9 47 48 47 H66 Z" fill="#E8ECFF" opacity=".48"/>
+    <rect x="72" y="44" width="12" height="12" rx="2.5" fill="#E8ECFF"/>
+  </g>
+</svg>

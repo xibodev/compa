@@ -1,0 +1,60 @@
+:root {
+  --compa-cobalt: #3d63d8;
+  --compa-deep: #2749ad;
+  --compa-dark-surface-text: #9cabff;
+  --compa-soft: #e8ecff;
+  --compa-core-night: #111215;
+  --compa-canvas: #f7f5ef;
+  --compa-surface: #ffffff;
+  --compa-ink: #171719;
+  --compa-muted: #666976;
+  --compa-line: #d9d7d0;
+
+  --compa-bg: var(--compa-canvas);
+  --compa-surface-raised: var(--compa-surface);
+  --compa-text: var(--compa-ink);
+  --compa-text-muted: var(--compa-muted);
+  --compa-border: var(--compa-line);
+  --compa-brand: var(--compa-cobalt);
+  --compa-brand-strong: var(--compa-deep);
+  --compa-on-brand: var(--compa-surface);
+  --compa-focus-ring: var(--compa-cobalt);
+
+  --compa-font-sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --compa-font-mono: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  --compa-font-weight-regular: 400;
+  --compa-font-weight-medium: 500;
+  --compa-font-weight-semibold: 600;
+  --compa-font-weight-display: 680;
+
+  --compa-mark-viewbox: 0 0 100 100;
+  --compa-mark-outer-path: "M72 20 H36 C27.16 20 20 27.16 20 36 V64 C20 72.84 27.16 80 36 80 H72 V68 H38 C34.69 68 32 65.31 32 62 V38 C32 34.69 34.69 32 38 32 H72 Z";
+  --compa-mark-inner-path: "M66 38 H46 C41.58 38 38 41.58 38 46 V54 C38 58.42 41.58 62 46 62 H66 V53 H48 C46.9 53 46 52.1 46 51 V49 C46 47.9 46.9 47 48 47 H66 Z";
+  --compa-mark-inner-opacity: 0.48;
+  --compa-mark-core-x: 72;
+  --compa-mark-core-y: 44;
+  --compa-mark-core-width: 12;
+  --compa-mark-core-height: 12;
+  --compa-mark-core-radius: 2.5;
+  --compa-mark-clear-space: 12%;
+  --compa-mark-min-digital: 16px;
+  --compa-lockup-min-width: 112px;
+  --compa-wordmark-min-width: 72px;
+
+  --compa-motion-fast: 160ms;
+  --compa-motion-base: 220ms;
+  --compa-motion-easing: cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+[data-compa-theme="dark"] {
+  --compa-bg: var(--compa-core-night);
+  --compa-surface-raised: var(--compa-ink);
+  --compa-surface-higher: var(--compa-ink);
+  --compa-surface-selected: var(--compa-deep);
+  --compa-text: var(--compa-soft);
+  --compa-text-muted: var(--compa-dark-surface-text);
+  --compa-border: var(--compa-muted);
+  --compa-brand: var(--compa-dark-surface-text);
+  --compa-brand-strong: var(--compa-soft);
+  --compa-on-brand: var(--compa-core-night);
+}

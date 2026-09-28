@@ -1,0 +1,28 @@
+{
+  "protocol": "xibodev.module/v1",
+  "capability": "fake.echo",
+  "request_id": "req_0000000000000000000000000000fake",
+  "input": {
+    "name": "hello",
+    "repeat": 3
+  },
+  "roots": {
+    "seed_in": {
+      "path": "/fake/state/artifacts/seed-0001",
+      "mode": "ro"
+    },
+    "workspace": {
+      "path": "/fake/state/workspace",
+      "mode": "rw"
+    }
+  },
+  "grants": {
+    "network": [],
+    "credentials": [],
+    "paid_providers": [],
+    "publish": false,
+    "subprocess": []
+  },
+  "deadline_ms": 30000,
+  "max_output_bytes": 1048576
+}

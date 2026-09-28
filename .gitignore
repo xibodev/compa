@@ -1,0 +1,54 @@
+# Build output
+/compa
+/compa.exe
+/compa-kernel
+/compa-kernel.exe
+/dist/
+/bin/
+
+# Local runtime state (never committed)
+/.runtime/
+/modules/
+*.db
+*.db-wal
+*.db-shm
+
+# Credentials, logs, env
+.env
+.env.local
+*.log
+/logs/
+
+# Frontend
+node_modules/
+/web/frontend/dist/
+/web/backend/dist/*
+!/web/backend/dist/.gitkeep
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# Local dev state: installed module binaries and workspace
+/.local/
+
+# Frontend build output and deps
+/web/frontend/node_modules/
+/web/backend/dist/assets/
+/web/backend/dist/index.html
+/web/backend/dist/*.svg
+/web/backend/dist/*.webmanifest
+/web/backend/dist/*.ico
+/web/backend/dist/*.png
+/web/frontend/.pnpm-store/
+
+# Local build output and tooling state, never committed.
+backend.exe
+.claude/
+.opencode/
+.brains/
+build/
+.cache/

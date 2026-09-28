@@ -1,0 +1,6 @@
+{
+  "schema_version": "1.0.0",
+  "targets": {
+    "kernel": ".\\bin\\compa-kernel.exe"
+  }
+}

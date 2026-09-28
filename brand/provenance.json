@@ -1,0 +1,161 @@
+{
+  "identity": {
+    "publicName": "Compa",
+    "visualWordmark": "compa",
+    "meaning": "Mexican Spanish slang for pal",
+    "basis": [
+      "Identity kit drawn for an earlier working name and relabelled Compa by operator decision",
+      "Current repository product truth"
+    ],
+    "selection": "operator-approved"
+  },
+  "adoption": {
+    "decision": "Relabel the kit as Compa and adopt it",
+    "status": "adopted",
+    "geometryChanged": false,
+    "paletteChanged": false,
+    "rulesChanged": false,
+    "relabelled": [
+      "name and accessible titles",
+      "wordmark text",
+      "CSS custom property prefix",
+      "brand idea, audience, and positioning copy",
+      "social preview and preview-board copy"
+    ]
+  },
+  "compatibilityIdentifiers": {
+    "repository": "compa",
+    "goModule": "github.com/xibodev/compa",
+    "binaries": [
+      "compa",
+      "compa-kernel"
+    ],
+    "stateDirectory": "~/.compa",
+    "matchPublicName": true,
+    "migrationRequired": false
+  },
+  "assetInventory": {
+    "guidance": [
+      "BRAND.md",
+      "README.md",
+      "LICENSES.md"
+    ],
+    "tokens": [
+      "tokens.json",
+      "tokens.css"
+    ],
+    "review": [
+      "preview.html",
+      "check.mjs"
+    ],
+    "build": [
+      "export.mjs"
+    ],
+    "logos": [
+      "logos/mark.svg",
+      "logos/mark-inverse.svg",
+      "logos/lockup.svg",
+      "logos/lockup-inverse.svg",
+      "logos/wordmark.svg",
+      "logos/wordmark-inverse.svg",
+      "logos/mono-black.svg",
+      "logos/mono-white.svg"
+    ],
+    "icons": [
+      "icons/favicon.svg",
+      "icons/app-icon.svg",
+      "icons/icon-192.svg",
+      "icons/icon-512.svg",
+      "icons/maskable.svg"
+    ],
+    "social": [
+      "og/og-default.svg",
+      "og/og-default.png"
+    ]
+  },
+  "consumerProjection": [
+    {
+      "target": "headed app header: mark and wordmark, light and dark",
+      "files": [
+        "web/frontend/src/components/brand-logo.tsx"
+      ],
+      "sources": [
+        "logos/mark.svg",
+        "logos/mark-inverse.svg",
+        "logos/wordmark.svg",
+        "logos/wordmark-inverse.svg"
+      ],
+      "status": "applied"
+    },
+    {
+      "target": "headed app browser metadata and PWA manifest",
+      "files": [
+        "web/frontend/index.html",
+        "web/frontend/public/site.webmanifest",
+        "web/frontend/public/favicon.svg",
+        "web/frontend/public/favicon.ico",
+        "web/frontend/public/favicon-96x96.png",
+        "web/frontend/public/apple-touch-icon.png",
+        "web/frontend/public/web-app-manifest-192x192.png",
+        "web/frontend/public/web-app-manifest-512x512.png",
+        "web/frontend/public/compa-mark.svg",
+        "web/frontend/public/compa-logo.svg"
+      ],
+      "sources": [
+        "icons/favicon.svg",
+        "icons/icon-192.svg",
+        "icons/icon-512.svg",
+        "icons/maskable.svg",
+        "logos/mark.svg",
+        "logos/lockup.svg",
+        "tokens.json"
+      ],
+      "status": "applied",
+      "note": "The manifest's maskable entry reuses the 512 tile; icons/maskable.svg is exported only as the apple-touch icon until a separate maskable file is published."
+    },
+    {
+      "target": "headed app color theme",
+      "sources": [
+        "tokens.json",
+        "tokens.css"
+      ],
+      "status": "planned-not-applied",
+      "note": "The app keeps its own accent colors. Its accent is set in component classes, so mapping the tokens needs component changes, not only CSS variables."
+    },
+    {
+      "target": "desktop tray icon",
+      "files": [
+        "web/backend/icon.ico",
+        "web/backend/icon.png"
+      ],
+      "sources": [
+        "icons/favicon.svg",
+        "icons/app-icon.svg"
+      ],
+      "status": "applied",
+      "note": "Windows embeds icon.ico and other systems embed icon.png. web/backend/winres/winres.json names the same icon.ico for a Windows executable resource; no build step generates that resource yet."
+    },
+    {
+      "target": "public website mark and lockup files",
+      "files": [
+        "docs/compa-mark.svg",
+        "docs/compa-logo.svg"
+      ],
+      "sources": [
+        "logos/mark.svg",
+        "logos/lockup.svg"
+      ],
+      "status": "applied",
+      "note": "The website page itself, its colors, and its metadata are not restyled."
+    },
+    {
+      "target": "repository, package, release, and social presentation",
+      "sources": [
+        "logos/lockup.svg",
+        "icons/app-icon.svg",
+        "og/og-default.png"
+      ],
+      "status": "planned-not-applied"
+    }
+  ]
+}
