@@ -96,8 +96,19 @@ func newInstanceStreamingLoop(
 	streamer bus.Streamer,
 ) (*AgentLoop, *bus.MessageBus) {
 	t.Helper()
+	return newInstanceStreamingLoopIn(t, t.TempDir(), providersByInstance, streamer)
+}
+
+// newInstanceStreamingLoopIn is newInstanceStreamingLoop on workspace.
+func newInstanceStreamingLoopIn(
+	t *testing.T,
+	workspace string,
+	providersByInstance map[string]*instanceStreamingProvider,
+	streamer bus.Streamer,
+) (*AgentLoop, *bus.MessageBus) {
+	t.Helper()
 	cfg := config.DefaultConfig()
-	cfg.Agents.Defaults.Workspace = t.TempDir()
+	cfg.Agents.Defaults.Workspace = workspace
 	cfg.Agents.Defaults.ModelName = "default-model"
 	cfg.Agents.Defaults.MaxToolIterations = 3
 	cfg.Channels = config.ChannelsConfig{"web": newConfiguredStreamingWebChannel(t, true)}

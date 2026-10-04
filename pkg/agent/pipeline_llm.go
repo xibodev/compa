@@ -244,7 +244,8 @@ func (p *Pipeline) CallLLM(
 			candidateThinking := thinkingSettingsFromCallSpec(exec.configFor(candidate))
 			applyThinkingOption(callOpts, candidateProvider, candidateThinking, true, ts.agent.ID)
 			exec.suppressReasoning = shouldSuppressReasoningFor(candidateThinking)
-			return candidateProvider.Chat(ctx, messagesForCall, candidateTools, candidate.Model, callOpts)
+			response, err := candidateProvider.Chat(ctx, messagesForCall, candidateTools, candidate.Model, callOpts)
+			return response, candidateToolRejection(ts.agent, candidateTools, err)
 		}
 
 		// Every call runs through core's candidate executor, a single
@@ -986,4 +987,34 @@ func isToolUnsupportedError(errMsg string) bool {
 		strings.Contains(errMsg, "tool_choice is not supported") ||
 		strings.Contains(errMsg, "does not support function calling") ||
 		strings.Contains(errMsg, "cannot call tools")
+}
+
+// toolRejection is a route candidate's refusal of the offered tools, for an
+// agent that requires them. The route moves on to its next candidate, which is
+// offered the same tools. The refusal describes the model, not the instance,
+// so it never counts against the instance's health.
+type toolRejection struct{ err error }
+
+func (e *toolRejection) Error() string { return e.err.Error() }
+
+func (e *toolRejection) Unwrap() error { return e.err }
+
+func (e *toolRejection) ProviderErrorClassification() core.ProviderErrorClassification {
+	classification := core.ClassifyError(e.err)
+	classification.Retryable, classification.CircuitFailure = false, false
+	classification.FailoverEligible = true
+	return classification
+}
+
+// candidateToolRejection returns a candidate's err as a toolRejection when
+// agent requires tools, tools were offered and err refuses them. Any other
+// error, and every error of an agent without the requirement, is unchanged.
+func candidateToolRejection(agent *AgentInstance, tools []providers.ToolDefinition, err error) error {
+	if err == nil || len(tools) == 0 || agent == nil || !agent.Definition.requiresTools() {
+		return err
+	}
+	if !isToolUnsupportedError(strings.ToLower(errorChainText(err))) {
+		return err
+	}
+	return &toolRejection{err: err}
 }

@@ -57,7 +57,8 @@ func (p *Pipeline) tryCandidateStreamingLLM(
 
 		streamProvider, supportsStreaming := provider.(providers.StreamingProvider)
 		if !supportsStreaming || modelCfg == nil || !modelCfg.Streaming {
-			return provider.Chat(ctx, messages, tools, candidate.Model, candidateOpts)
+			response, err := provider.Chat(ctx, messages, tools, candidate.Model, candidateOpts)
+			return response, candidateToolRejection(ts.agent, tools, err)
 		}
 
 		publisher := &streamingChunkPublisher{
@@ -96,7 +97,7 @@ func (p *Pipeline) tryCandidateStreamingLLM(
 			}
 			publisher.Cancel(ctx)
 			publisher.ClearFinalizedStreamMarker()
-			return nil, streamErr
+			return nil, candidateToolRejection(ts.agent, tools, streamErr)
 		}
 		if publisher.Err() != nil && !publisher.Published() {
 			// Nothing became visible: the whole answer goes out as a message.

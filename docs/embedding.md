@@ -176,7 +176,7 @@ and kernel instructions. Without them, nothing changes.
 | `description` | string | Completes the identity sentence. |
 | `memory` | bool, `true` | `false` leaves out the memory rule, the memory and daily-notes paths, and the memory context. |
 | `privateWorkspace` | bool, `false` | `true` leaves out the `## Workspace` section with the workspace paths. Describe your own tool workspace with a prompt contributor (`ContextBuilder.RegisterPromptContributor`). |
-| `requireTools` | bool, `false` | `true`: when the model rejects tool calls, the turn fails with `agent.ErrToolsRequired` instead of retrying without tools. |
+| `requireTools` | bool, `false` | `true`: when the model rejects tool calls, the turn fails with `agent.ErrToolsRequired` instead of retrying without tools. On a model route, a target that rejects tools passes the turn to the next target, with the same tools; the turn fails only when no target accepts them. |
 
 ```yaml
 ---

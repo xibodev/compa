@@ -2,8 +2,11 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -582,5 +585,150 @@ func TestRequireTools_RecognizesTheUpstreamReasonInAnErrorCause(t *testing.T) {
 	}
 	if calls := provider.calls(); len(calls) != 1 || calls[0] == 0 {
 		t.Fatalf("provider calls (tools offered per call) = %v, want one call with tools", calls)
+	}
+}
+
+// routeTestModel is an OpenAI-compatible model server. A model without tool
+// calling answers a request that offers tools with HTTP 400, as such models do.
+type routeTestModel struct {
+	name         string
+	acceptsTools bool
+	mu           sync.Mutex
+	toolCounts   []int
+}
+
+func (m *routeTestModel) serve(t *testing.T) string {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			Tools []json.RawMessage `json:"tools"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("%s: decode request: %v", m.name, err)
+		}
+		m.mu.Lock()
+		m.toolCounts = append(m.toolCounts, len(request.Tools))
+		m.mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if len(request.Tools) > 0 && !m.acceptsTools {
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{
+				"message": "This model does not support tool use.", "type": "invalid_request_error",
+			}})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []map[string]any{{
+			"message":       map[string]any{"role": "assistant", "content": "answer from " + m.name},
+			"finish_reason": "stop",
+		}}})
+	}))
+	t.Cleanup(server.Close)
+	return server.URL
+}
+
+// calls returns how many tools each request offered.
+func (m *routeTestModel) calls() []int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]int(nil), m.toolCounts...)
+}
+
+// routeTestLoop runs the agent agentMD defines on a route over first, then second.
+func routeTestLoop(t *testing.T, agentMD string, first, second *routeTestModel) *AgentLoop {
+	t.Helper()
+	cfg := newModelTestConfig(t, "chain")
+	cfg.Agents.Defaults.Workspace = identityTestWorkspace(t, agentMD)
+	cfg.Agents.Defaults.MaxToolIterations = 3
+	addHTTPInstance(cfg, "first", first.serve(t), nil)
+	addHTTPInstance(cfg, "second", second.serve(t), nil)
+	addTestRoute(cfg, "chain", "first/model-a", "second/model-b")
+	al := NewAgentLoop(cfg, bus.NewMessageBus(), nil, WithModelResolver(httpModelResolver(map[string][]string{
+		"first": {"model-a"}, "second": {"model-b"},
+	})))
+	t.Cleanup(al.Close)
+	al.RegisterTool(&echoTextTool{})
+	return al
+}
+
+// offeredToolsEachTime reports want calls that each offered tools.
+func offeredToolsEachTime(calls []int, want int) bool {
+	if len(calls) != want {
+		return false
+	}
+	for _, count := range calls {
+		if count == 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func TestRequireTools_RouteOffersToolsToTheNextCandidate(t *testing.T) {
+	first, second := &routeTestModel{name: "first"}, &routeTestModel{name: "second", acceptsTools: true}
+	al := routeTestLoop(t, "---\nname: Ledger\nrequireTools: true\n---\nBody.", first, second)
+
+	// A refusal says nothing about the first instance's health, so the
+	// second turn tries it again.
+	for turn := 1; turn <= 2; turn++ {
+		reply, err := al.ProcessDirect(context.Background(), "hello", "route-require-tools")
+		if err != nil || reply != "answer from second" {
+			t.Fatalf("turn %d: reply = %q, error = %v", turn, reply, err)
+		}
+	}
+	if calls := first.calls(); !offeredToolsEachTime(calls, 2) {
+		t.Fatalf("first candidate calls (tools offered per call) = %v, want two with tools", calls)
+	}
+	if calls := second.calls(); !offeredToolsEachTime(calls, 2) {
+		t.Fatalf("second candidate calls (tools offered per call) = %v, want two with tools", calls)
+	}
+}
+
+func TestRequireTools_RouteFailsWhenNoCandidateTakesTools(t *testing.T) {
+	first, second := &routeTestModel{name: "first"}, &routeTestModel{name: "second"}
+	al := routeTestLoop(t, "---\nname: Ledger\nrequireTools: true\n---\nBody.", first, second)
+
+	if _, err := al.ProcessDirect(context.Background(), "hello", "route-no-tools"); !errors.Is(err, ErrToolsRequired) {
+		t.Fatalf("error = %v, want ErrToolsRequired", err)
+	}
+	for _, model := range []*routeTestModel{first, second} {
+		if calls := model.calls(); !offeredToolsEachTime(calls, 1) {
+			t.Fatalf("%s candidate calls (tools offered per call) = %v, want one with tools", model.name, calls)
+		}
+	}
+}
+
+func TestRequireTools_OffKeepsTheRouteRetryWithoutTools(t *testing.T) {
+	first, second := &routeTestModel{name: "first"}, &routeTestModel{name: "second", acceptsTools: true}
+	al := routeTestLoop(t, "---\nname: Ledger\n---\nBody.", first, second)
+
+	reply, err := al.ProcessDirect(context.Background(), "hello", "route-retry-without-tools")
+	if err != nil || reply != "answer from first" {
+		t.Fatalf("reply = %q, error = %v", reply, err)
+	}
+	if calls := first.calls(); len(calls) != 2 || calls[0] == 0 || calls[1] != 0 {
+		t.Fatalf("first candidate calls (tools offered per call) = %v, want one with tools, then one without", calls)
+	}
+	if calls := second.calls(); len(calls) != 0 {
+		t.Fatalf("second candidate calls = %v, want none", calls)
+	}
+}
+
+func TestRequireTools_StreamingRouteOffersToolsToTheNextCandidate(t *testing.T) {
+	workspace := identityTestWorkspace(t, "---\nname: Ledger\nrequireTools: true\n---\nBody.")
+	first := &instanceStreamingProvider{instanceID: "first", err: errors.New("this model does not support tools")}
+	second := &instanceStreamingProvider{instanceID: "second", chunks: []string{"streamed answer"},
+		response: &providers.LLMResponse{Content: "streamed answer"}}
+	streamer := &instanceStreamingRecorder{}
+	al, _ := newInstanceStreamingLoopIn(t, workspace, map[string]*instanceStreamingProvider{"first": first, "second": second}, streamer)
+
+	response, err := al.processMessage(context.Background(), selectedWebMessage("stream-require-tools", "route", "answer"))
+	if err != nil || response != "streamed answer" {
+		t.Fatalf("response = %q, error = %v", response, err)
+	}
+	if first.streamCalls.Load() != 1 || second.streamCalls.Load() != 1 || first.chatCalls.Load() != 0 || second.chatCalls.Load() != 0 {
+		t.Fatalf("stream/chat calls first=%d/%d second=%d/%d", first.streamCalls.Load(), first.chatCalls.Load(), second.streamCalls.Load(), second.chatCalls.Load())
+	}
+	if len(streamer.finalized) != 1 || streamer.finalized[0] != "streamed answer" {
+		t.Fatalf("finalized = %v", streamer.finalized)
 	}
 }
