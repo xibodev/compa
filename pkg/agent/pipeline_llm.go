@@ -316,6 +316,21 @@ func (p *Pipeline) CallLLM(
 		}
 
 		if len(exec.providerToolDefs) > 0 && isToolUnsupportedError(strings.ToLower(err.Error())) {
+			if ts.agent.Definition.requiresTools() {
+				logger.WarnCF("agent", "Model does not support tools and the agent requires them; failing the turn", map[string]any{
+					"model": exec.llmModelName,
+					"error": err.Error(),
+				})
+				al.emitEvent(
+					runtimeevents.KindAgentError,
+					ts.eventMeta("runTurn", "turn.error"),
+					ErrorPayload{
+						Stage:   "llm",
+						Message: ErrToolsRequired.Error(),
+					},
+				)
+				return ControlBreak, ErrToolsRequired
+			}
 			logger.WarnCF("agent", "Model does not support tools, retrying without tools in conversational mode", map[string]any{
 				"model": exec.llmModelName,
 				"error": err.Error(),
@@ -824,6 +839,13 @@ func hookRewriteRejectedError(rewritten, selection string) error {
 // Retry-After before repeating a call; a longer wait ends the turn with the
 // rate limit, whose message says when to try again.
 const maxLLMRetryAfterWait = time.Minute
+
+// ErrToolsRequired ends a turn whose model rejects tool calls when the
+// agent's AGENT.md sets requireTools: true. Without that key the turn
+// retries without tools instead.
+var ErrToolsRequired = errors.New(
+	"The selected model doesn't support tool calls, and this agent requires them. Choose a model that supports tool calling.",
+)
 
 // llmRetryReason names why a retryable call failed, from core's
 // classification of its error.
