@@ -315,7 +315,7 @@ func (p *Pipeline) CallLLM(
 			)
 		}
 
-		if len(exec.providerToolDefs) > 0 && isToolUnsupportedError(strings.ToLower(err.Error())) {
+		if len(exec.providerToolDefs) > 0 && isToolUnsupportedError(strings.ToLower(errorChainText(err))) {
 			if ts.agent.Definition.requiresTools() {
 				logger.WarnCF("agent", "Model does not support tools and the agent requires them; failing the turn", map[string]any{
 					"model": exec.llmModelName,
@@ -949,6 +949,32 @@ func (s *sessionSnapshot) restore(store session.SessionStore) {
 		})
 	}
 }
+`n// errorChainText joins the messages of err and of every error it wraps.
+// Provider errors keep a generic top-level message and carry the upstream
+// reason (sanitized) as a cause, so wording checks must see the whole chain.
+func errorChainText(err error) string {
+	var parts []string
+	seen := map[string]bool{}
+	var walk func(error)
+	walk = func(current error) {
+		for current != nil {
+			if message := current.Error(); !seen[message] {
+				seen[message] = true
+				parts = append(parts, message)
+			}
+			if joined, ok := current.(interface{ Unwrap() []error }); ok {
+				for _, inner := range joined.Unwrap() {
+					walk(inner)
+				}
+				return
+			}
+			current = errors.Unwrap(current)
+		}
+	}
+	walk(err)
+	return strings.Join(parts, " | ")
+}
+
 func isToolUnsupportedError(errMsg string) bool {
 	return strings.Contains(errMsg, "no endpoints found that support tool use") ||
 		strings.Contains(errMsg, "support tool use") ||

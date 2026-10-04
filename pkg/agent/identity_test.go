@@ -544,3 +544,43 @@ func TestRequireTools_OffKeepsTheRetryWithoutTools(t *testing.T) {
 		})
 	}
 }
+
+// providerShapedError mirrors provider errors from llmgw-core: a generic
+// message whose cause carries the upstream (sanitized) reason.
+type providerShapedError struct{ cause error }
+
+func (e *providerShapedError) Error() string {
+	return "OpenAI-compatible returned HTTP 400 (type=invalid_request_error)"
+}
+func (e *providerShapedError) Unwrap() error { return e.cause }
+
+type causeToolsRejectingProvider struct{ toolsRejectingProvider }
+
+func (p *causeToolsRejectingProvider) Chat(
+	ctx context.Context,
+	messages []providers.Message,
+	tools []providers.ToolDefinition,
+	model string,
+	options map[string]any,
+) (*providers.LLMResponse, error) {
+	response, err := p.toolsRejectingProvider.Chat(ctx, messages, tools, model, options)
+	if err != nil {
+		return nil, &providerShapedError{cause: errors.New("openai-compatible: upstream returned 400: This model does not support tool use.")}
+	}
+	return response, nil
+}
+
+func TestRequireTools_RecognizesTheUpstreamReasonInAnErrorCause(t *testing.T) {
+	workspace := identityTestWorkspace(t, "---\nname: Ledger\nrequireTools: true\n---\nBody.")
+	provider := &causeToolsRejectingProvider{}
+	al := NewAgentLoop(identityTestConfig(t, workspace), bus.NewMessageBus(), provider)
+	defer al.Close()
+	al.RegisterTool(&echoTextTool{})
+
+	if _, err := al.ProcessDirect(context.Background(), "hello", "require-tools-cause"); !errors.Is(err, ErrToolsRequired) {
+		t.Fatalf("error = %v, want ErrToolsRequired", err)
+	}
+	if calls := provider.calls(); len(calls) != 1 || calls[0] == 0 {
+		t.Fatalf("provider calls (tools offered per call) = %v, want one call with tools", calls)
+	}
+}
