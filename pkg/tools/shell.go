@@ -207,6 +207,12 @@ var (
 	// and a legitimate in-workspace file was blocked instead.
 	absolutePathPattern = regexp.MustCompile(`[A-Za-z]:\\[^\s\"']*|/[^\s\"']+`)
 
+	// homeTildePattern matches a ~ that starts a path: at the start of the
+	// command or after a space, quote or =, and followed by a separator, a
+	// space, a quote or the end. A ~ inside a name, as in a Windows 8.3 short
+	// name (RUNNER~1), is part of the name.
+	homeTildePattern = regexp.MustCompile(`(^|[\s"'=])~([\\/\s"']|$)`)
+
 	// safePaths are kernel pseudo-devices that are always safe to reference in
 	// commands, regardless of workspace restriction. They contain no user data
 	// and cannot cause destructive writes.
@@ -1425,9 +1431,12 @@ func (t *ExecTool) guardCommand(command, cwd string) string {
 		if runtime.GOOS == "windows" {
 			// Expand PowerShell environment variables ($env:VAR and ${env:VAR})
 			cmd = expandPowerShellEnvVars(cmd)
-			// Also expand ~ for completeness
+			// A ~ that starts a path is the home folder, as a shell reads it.
 			if home, err := os.UserHomeDir(); err == nil {
-				cmd = strings.ReplaceAll(cmd, "~", filepath.FromSlash(home))
+				home = filepath.FromSlash(home)
+				cmd = homeTildePattern.ReplaceAllStringFunc(cmd, func(m string) string {
+					return strings.Replace(m, "~", home, 1)
+				})
 			}
 		}
 
