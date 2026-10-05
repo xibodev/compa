@@ -138,10 +138,18 @@ try {
     } else { Fail 'installs, and does not start Compa under CI' }
 
     $fake = Start-Fake
+    # A copy in a folder inside the install folder is another copy of Compa.
+    $inside = Join-Path $bin 'inside'
+    New-Item -ItemType Directory -Force -Path $inside | Out-Null
+    Copy-Item -LiteralPath (Join-Path $bin 'compa.exe') -Destination $inside
+    $other = Start-Process -FilePath (Join-Path $inside 'compa.exe') -WindowStyle Hidden -PassThru
     if ((Invoke-Installer '2.0.0' @{ COMPA_NO_START = '1' }) -and (Test-Installed '2.0.0') -and (Test-NoLeftover) -and
-        $fake.WaitForExit(5000)) {
-        Pass 'upgrades both programs and stops the running Compa'
-    } else { Fail 'upgrades both programs and stops the running Compa' }
+        $fake.WaitForExit(5000) -and -not $other.HasExited) {
+        Pass 'upgrades both programs and stops the running Compa, not a copy in a folder inside'
+    } else { Fail 'upgrades both programs and stops the running Compa, not a copy in a folder inside' }
+    Stop-Process -Id $other.Id -Force -ErrorAction SilentlyContinue
+    [void]$other.WaitForExit(5000)
+    Remove-Item -LiteralPath $inside -Recurse -Force
 
     $fake = Start-Fake
     $everyone = '*S-1-1-0'

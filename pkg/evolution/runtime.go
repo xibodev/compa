@@ -141,6 +141,13 @@ func (rt *Runtime) FinalizeTurn(ctx context.Context, input TurnCaseInput) error 
 	if err := writer.AppendCase(ctx, record); err != nil {
 		return err
 	}
+	// The cold path drops the records past retention as it loads them. In
+	// observe mode it never runs, so the records are pruned here.
+	if rt.cfg.EffectiveMode() == "observe" {
+		if _, err := rt.storeForWorkspace(input.Workspace).LoadLearningRecords(); err != nil {
+			return err
+		}
+	}
 
 	if err := rt.recordSkillUsage(input, success); err != nil {
 		return err

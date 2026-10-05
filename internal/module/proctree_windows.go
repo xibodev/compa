@@ -73,12 +73,14 @@ func (t *processTree) started(p *os.Process) error {
 // interrupt asks the tree to stop and stops it by force after killGrace.
 //
 // CTRL_BREAK is the console's graceful stop. It only reaches a process sharing
-// this host's console, so a host without one stops the tree at once.
+// this host's console, so a host without one stops the tree at once. Before
+// started knows the process there is nothing to signal: a break to process
+// group 0 would reach every process on the console, this host included.
 func (t *processTree) interrupt() error {
 	t.mu.Lock()
 	pid, done := t.pid, t.done
 	t.mu.Unlock()
-	if done {
+	if done || pid == 0 {
 		return os.ErrProcessDone
 	}
 	if err := windows.GenerateConsoleCtrlEvent(windows.CTRL_BREAK_EVENT, uint32(pid)); err != nil {

@@ -440,6 +440,11 @@ func (c *MatrixChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]st
 	for _, chunk := range chunks {
 		resp, err := c.client.SendMessageEvent(ctx, roomID, event.EventMessage, c.messageContent(chunk))
 		if err != nil {
+			// Sending the message again would repeat the parts delivered.
+			if len(msgIDs) > 0 {
+				return msgIDs, fmt.Errorf("matrix send: part %d of %d failed after the ones before it were delivered: %w",
+					len(msgIDs)+1, len(chunks), channels.ErrSendFailed)
+			}
 			return msgIDs, fmt.Errorf("matrix send: %w", channels.ErrTemporary)
 		}
 		msgIDs = append(msgIDs, resp.EventID.String())

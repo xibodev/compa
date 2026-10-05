@@ -422,6 +422,26 @@ func TestAwaitReloadEndsWithItsCaller(t *testing.T) {
 	}
 }
 
+// The config watcher signals that the file changed; the gateway then loads
+// the file as it is, not as it was when the change was seen.
+func TestConfigWatcherSignalsAChange(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	changed, stop := setupConfigWatcherPolling(path, false)
+	defer stop()
+
+	if err := os.WriteFile(path, []byte(`{"gateway":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-changed:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the watcher did not signal the change")
+	}
+}
+
 func TestHeartbeatHandler(t *testing.T) {
 	t.Run("a reply other than HEARTBEAT_OK is delivered", func(t *testing.T) {
 		var gotChannel, gotChat string

@@ -156,12 +156,11 @@
 
     function Stop-Compa([string]$Dir) {
         # Only programs running from this folder; another copy of Compa
-        # elsewhere is left alone.
-        $prefix = $Dir + '\'
+        # elsewhere, a folder inside this one included, is left alone.
         $running = @(Get-Process -Name 'compa', 'compa-kernel' -ErrorAction SilentlyContinue | Where-Object {
                 $path = $null
                 try { $path = $_.Path } catch { }
-                $path -and $path.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)
+                $path -and ([IO.Path]::GetDirectoryName($path).TrimEnd('\') -ieq $Dir)
             })
         if ($running.Count -eq 0) { return }
         Write-Step 'Stopping the running Compa...'

@@ -363,10 +363,10 @@ func Run(debug bool, homePath, configPath string, allowEmptyStartup bool) (runEr
 
 	go runAgentLoop(ctx, agentLoop.Run, runningServices.HealthServer)
 
-	var configReloadChan <-chan *config.Config
+	var configChanged <-chan struct{}
 	stopWatch := func() {}
 	if cfg.Gateway.HotReload {
-		configReloadChan, stopWatch = setupConfigWatcherPolling(configPath, debug)
+		configChanged, stopWatch = setupConfigWatcherPolling(configPath, debug)
 		logger.Info("Config hot reload enabled")
 	}
 	defer stopWatch()
@@ -383,12 +383,20 @@ func Run(debug bool, homePath, configPath string, allowEmptyStartup bool) (runEr
 			logger.Info("Shutting down...")
 			shutdownGateway(runningServices, agentLoop, msgBus, true)
 			return nil
-		case newCfg := <-configReloadChan:
+		case <-configChanged:
 			if !runningServices.reloading.CompareAndSwap(false, true) {
 				logger.Warn("Config reload skipped: another reload is in progress")
 				continue
 			}
-			err := executeReload(ctx, agentLoop, newCfg, modelResolver, runningServices, msgBus, allowEmptyStartup, debug)
+			// The file as it is now: it may have changed again since the
+			// watcher saw it change.
+			newCfg, err := config.LoadConfig(configPath)
+			if err != nil {
+				logger.Errorf("Error loading the changed config, keeping the current one: %v", err)
+				runningServices.reloading.Store(false)
+				continue
+			}
+			err = executeReload(ctx, agentLoop, newCfg, modelResolver, runningServices, msgBus, allowEmptyStartup, debug)
 			if err != nil {
 				logger.Errorf("Config reload failed: %v", err)
 			}
@@ -860,17 +868,21 @@ func restartServices(
 	return nil
 }
 
-func setupConfigWatcherPolling(configPath string, debug bool) (chan *config.Config, func()) {
-	configChan := make(chan *config.Config, 1)
+// setupConfigWatcherPolling signals on the returned channel when the config
+// file at configPath changes. The gateway loads the file when it takes the
+// signal, so it applies the file as it is then: a change seen while a signal
+// is pending needs no signal of its own.
+func setupConfigWatcherPolling(configPath string, debug bool) (<-chan struct{}, func()) {
+	changed := make(chan struct{}, 1)
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
+
+	lastModTime := getFileModTime(configPath)
+	lastSize := getFileSize(configPath)
 
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-
-		lastModTime := getFileModTime(configPath)
-		lastSize := getFileSize(configPath)
 
 		ticker := time.NewTicker(2 * time.Second)
 		defer ticker.Stop()
@@ -891,21 +903,9 @@ func setupConfigWatcherPolling(configPath string, debug bool) (chan *config.Conf
 					lastModTime = currentModTime
 					lastSize = currentSize
 
-					// LoadConfig validates the config, provider instances
-					// and model selections included.
-					newCfg, err := config.LoadConfig(configPath)
-					if err != nil {
-						logger.Errorf("⚠ Error loading new config: %v", err)
-						logger.Warn("  Using previous valid config")
-						continue
-					}
-
-					logger.Info("✓ Config file validated and loaded")
-
 					select {
-					case configChan <- newCfg:
+					case changed <- struct{}{}:
 					default:
-						logger.Warn("⚠ Previous config reload still in progress, skipping")
 					}
 				}
 			case <-stop:
@@ -919,7 +919,7 @@ func setupConfigWatcherPolling(configPath string, debug bool) (chan *config.Conf
 		wg.Wait()
 	}
 
-	return configChan, stopFunc
+	return changed, stopFunc
 }
 
 func getFileModTime(path string) time.Time {

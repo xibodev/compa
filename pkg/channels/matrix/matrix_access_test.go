@@ -2,6 +2,7 @@ package matrix
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -132,6 +133,41 @@ func TestSplitForEvent_KeepsEventsUnderByteLimit(t *testing.T) {
 	}
 	if got := ch.splitForEvent("short"); len(got) != 1 || got[0] != "short" {
 		t.Errorf("short text = %q, want unchanged", got)
+	}
+}
+
+// A message sent in parts that fails after a part was delivered is not sent
+// again: that would repeat the delivered parts.
+func TestSendFailingAfterADeliveredPartIsNotRetried(t *testing.T) {
+	var sends atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if sends.Add(1) == 1 {
+			_, _ = w.Write([]byte(`{"event_id":"$1"}`))
+			return
+		}
+		http.Error(w, `{"errcode":"M_UNKNOWN"}`, http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+	client, err := mautrix.NewClient(server.URL, id.UserID("@compa:matrix.test"), "")
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	ch := &MatrixChannel{
+		BaseChannel: channels.NewBaseChannel("matrix", nil, bus.NewMessageBus(), nil),
+		client:      client,
+		config:      &config.MatrixSettings{},
+	}
+	ch.SetRunning(true)
+
+	_, err = ch.Send(context.Background(), bus.OutboundMessage{
+		ChatID:  "!room:matrix.test",
+		Content: strings.Repeat("漢字", 15000),
+	})
+	if !errors.Is(err, channels.ErrSendFailed) || errors.Is(err, channels.ErrTemporary) {
+		t.Fatalf("Send() error = %v, want a failure that is not retried", err)
+	}
+	if n := sends.Load(); n != 2 {
+		t.Fatalf("sent %d parts, want the delivered one and the failed one", n)
 	}
 }
 

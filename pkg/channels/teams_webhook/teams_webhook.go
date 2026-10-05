@@ -167,7 +167,7 @@ func (c *TeamsWebhookChannel) Send(ctx context.Context, msg bus.OutboundMessage)
 	}
 
 	// Send to Teams
-	for _, teamsMsg := range messages {
+	for i, teamsMsg := range messages {
 		if err := c.client.SendWithContext(ctx, target.WebhookURL.String(), teamsMsg); err != nil {
 			// Log without raw error to avoid leaking webhook URL (embedded in net/http errors)
 			logger.ErrorCF("teams_webhook", "Failed to send message to Teams webhook", map[string]any{
@@ -177,6 +177,11 @@ func (c *TeamsWebhookChannel) Send(ctx context.Context, msg bus.OutboundMessage)
 			// The go-teams-notify library includes status in errors like "401 Unauthorized".
 			// Use ClassifySendError for proper retry behavior (4xx = permanent, 5xx = temporary).
 			classifiedErr := classifyTeamsError(err)
+			// Sending the message again would repeat the posts delivered.
+			if i > 0 {
+				return nil, fmt.Errorf("teams_webhook: post %d of %d failed after the ones before it were delivered (%v): %w",
+					i+1, len(messages), classifiedErr, channels.ErrSendFailed)
+			}
 			return nil, fmt.Errorf("teams_webhook: send failed: %w", classifiedErr)
 		}
 	}

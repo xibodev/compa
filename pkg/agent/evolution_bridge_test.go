@@ -816,6 +816,9 @@ func TestEvolutionBridge_TurnEndUsesPayloadWorkspace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newEvolutionBridge: %v", err)
 	}
+	// Closing waits for the turn's records, which are written in the
+	// background, before the workspace is removed.
+	defer bridge.Close()
 
 	err = bridge.OnRuntimeEvent(context.Background(), runtimeevents.Event{
 		Kind: runtimeevents.KindAgentTurnEnd,
@@ -855,6 +858,9 @@ func TestEvolutionBridge_TurnEndUsesExplicitAttemptTrail(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newEvolutionBridge: %v", err)
 	}
+	// Closing waits for the turn's records, which are written in the
+	// background, before the workspace is removed.
+	defer bridge.Close()
 
 	err = bridge.OnRuntimeEvent(context.Background(), runtimeevents.Event{
 		Kind: runtimeevents.KindAgentTurnEnd,

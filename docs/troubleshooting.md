@@ -181,7 +181,7 @@ The password protects the web UI. Compa stores only its bcrypt hash and allows
 10 sign-in attempts per minute from each address. A sign-in lasts until you
 sign out or Compa restarts, at most 31 days; **Sign out everywhere** ends every
 browser's sign-in at once. Changing the password asks for the current one.
-When Compa opens your browser itself, a one-time link that works for 5 minutes
+When Compa opens your browser itself, a one-time link that works for 2 minutes
 signs you in. The first password can only be set through the setup link Compa
 opens or prints when it starts. The password doesn't encrypt your files.
 
