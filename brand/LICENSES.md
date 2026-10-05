@@ -7,11 +7,11 @@ are owned by xibodev.
 Copyright (c) 2026 xibodev. All rights reserved unless a separate written
 license or permission explicitly covers the artwork.
 
-This brand-art statement does not change the product software license and does
-not relicense upstream work. Product software licensing remains in the root
-`LICENSE`. Upstream software attribution remains in the root `NOTICE`.
-Those root files, not this document, govern software attribution and license
-notices.
+The MIT License in the root `LICENSE` covers Compa's software, not this
+artwork nor the copies and renderings of it elsewhere in the repository, such
+as the app icons; the root `NOTICE` records that exception. This statement
+does not relicense upstream work: product software licensing remains in the
+root `LICENSE`, and upstream software attribution in the root `NOTICE`.
 
 No font binaries are included or distributed in this brand kit. SVG wordmarks
 use live text with Inter and system-font fallbacks; use of an installed font is

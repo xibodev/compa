@@ -128,3 +128,33 @@ func rejectByPolicy(w http.ResponseWriter, r *http.Request) {
 	}
 	http.Error(w, "Forbidden", http.StatusForbidden)
 }
+
+// ClientIPResolver tells the address of the client behind a request the
+// way IPAllowlist does: the peer, or, when the peer is a trusted proxy, the
+// rightmost X-Forwarded-For address that is not one.
+type ClientIPResolver struct {
+	trustedProxyNets []*net.IPNet
+}
+
+// NewClientIPResolver returns a resolver trusting the proxies in
+// trustedProxyCIDRs.
+func NewClientIPResolver(trustedProxyCIDRs []string) (*ClientIPResolver, error) {
+	nets, err := parseCIDRNets(trustedProxyCIDRs)
+	if err != nil {
+		return nil, err
+	}
+	return &ClientIPResolver{trustedProxyNets: nets}, nil
+}
+
+// ClientIP returns the client address of r. A peer address that does not
+// parse is returned as given.
+func (c *ClientIPResolver) ClientIP(r *http.Request) string {
+	peerIP := clientIPFromRemoteAddr(r.RemoteAddr)
+	if peerIP == nil {
+		return strings.TrimSpace(r.RemoteAddr)
+	}
+	if c != nil && containsIP(c.trustedProxyNets, peerIP) {
+		return clientIPFromXForwardedFor(r.Header.Get("X-Forwarded-For"), c.trustedProxyNets, peerIP).String()
+	}
+	return peerIP.String()
+}

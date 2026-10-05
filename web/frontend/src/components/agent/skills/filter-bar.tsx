@@ -54,7 +54,10 @@ export function FilterBar({
       <div className="bg-border/60 hidden h-6 w-px sm:block" />
 
       <Select value={sourceFilter} onValueChange={onSourceFilterChange}>
-        <SelectTrigger className="hover:bg-background/50 focus:bg-background h-9 w-[140px] border-transparent bg-transparent shadow-none hover:ring-1 focus:ring-1">
+        <SelectTrigger
+          aria-label={t("pages.agent.skills.source_label")}
+          className="hover:bg-background/50 focus:bg-background h-9 w-[140px] border-transparent bg-transparent shadow-none hover:ring-1 focus:ring-1"
+        >
           <SelectValue placeholder={t("pages.agent.skills.source_label")} />
         </SelectTrigger>
         <SelectContent align="end">

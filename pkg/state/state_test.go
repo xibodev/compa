@@ -216,6 +216,80 @@ func TestNewManager_EmptyWorkspace(t *testing.T) {
 	}
 }
 
+func TestManagersSharingAStateFileSeeEachOthersWrites(t *testing.T) {
+	dir := t.TempDir()
+	agentState := NewManager(dir)
+	heartbeatState := NewManager(dir) // loaded before anything was recorded
+
+	if err := agentState.SetLastChannel("telegram:42"); err != nil {
+		t.Fatalf("SetLastChannel: %v", err)
+	}
+	if got := heartbeatState.GetLastChannel(); got != "telegram:42" {
+		t.Fatalf("second manager's last channel = %q, want the first manager's write", got)
+	}
+
+	if err := heartbeatState.SetLastChatID("chat-7"); err != nil {
+		t.Fatalf("SetLastChatID: %v", err)
+	}
+	if got := agentState.GetLastChannel(); got != "telegram:42" {
+		t.Fatalf("last channel = %q after another manager's write, want it kept", got)
+	}
+	if got := agentState.GetLastChatID(); got != "chat-7" {
+		t.Fatalf("first manager's last chat = %q, want the second manager's write", got)
+	}
+}
+
+func TestOwnerChatIsSharedAndKeptApartFromTheLastChannel(t *testing.T) {
+	dir := t.TempDir()
+	agentState := NewManager(dir)
+	deviceState := NewManager(dir)
+
+	if channel, chatID := deviceState.GetOwnerChat(); channel != "" || chatID != "" {
+		t.Fatalf("owner chat = %q/%q before any was recorded, want none", channel, chatID)
+	}
+	if err := agentState.SetOwnerChat("telegram", "42"); err != nil {
+		t.Fatalf("SetOwnerChat: %v", err)
+	}
+	if err := agentState.SetLastChannel("discord:7"); err != nil {
+		t.Fatalf("SetLastChannel: %v", err)
+	}
+	if channel, chatID := deviceState.GetOwnerChat(); channel != "telegram" || chatID != "42" {
+		t.Fatalf("owner chat = %q/%q, want telegram/42", channel, chatID)
+	}
+	if got := deviceState.GetLastChannel(); got != "discord:7" {
+		t.Fatalf("last channel = %q, want discord:7", got)
+	}
+}
+
+func TestSetLastChannelSkipsWriteWhenUnchanged(t *testing.T) {
+	sm := NewManager(t.TempDir())
+	if err := sm.SetLastChannel("discord:1"); err != nil {
+		t.Fatalf("SetLastChannel: %v", err)
+	}
+	first := sm.GetTimestamp()
+
+	stateFile := filepath.Join(sm.workspace, "state", "state.json")
+	if err := os.Remove(stateFile); err != nil {
+		t.Fatalf("remove state file: %v", err)
+	}
+	if err := sm.SetLastChannel("discord:1"); err != nil {
+		t.Fatalf("SetLastChannel (unchanged): %v", err)
+	}
+	if _, err := os.Stat(stateFile); !os.IsNotExist(err) {
+		t.Fatalf("unchanged channel rewrote the state file (stat err = %v)", err)
+	}
+	if got := sm.GetTimestamp(); !got.Equal(first) {
+		t.Fatalf("timestamp = %v after an unchanged set, want %v", got, first)
+	}
+
+	if err := sm.SetLastChannel("discord:2"); err != nil {
+		t.Fatalf("SetLastChannel (changed): %v", err)
+	}
+	if _, err := os.Stat(stateFile); err != nil {
+		t.Fatalf("changed channel was not saved: %v", err)
+	}
+}
+
 func TestNewManager_MkdirFailureDoesNotCrash(t *testing.T) {
 	if os.Getenv("BE_CRASHER") == "1" {
 		tmpDir := os.Getenv("CRASH_DIR")

@@ -27,6 +27,59 @@ type Config struct {
 	AllowLocalhostBypassSource BoolFieldSource `json:"-"`
 	TrustedProxyCIDRs          []string        `json:"trusted_proxy_cidrs,omitempty"`
 	DashboardPasswordHash      string          `json:"dashboard_password_hash,omitempty"`
+	// AllowedHosts are extra Host header names the dashboard answers to, such
+	// as a reverse proxy's name. Loopback names, this computer's addresses and
+	// the listen host are always accepted.
+	AllowedHosts []string `json:"allowed_hosts,omitempty"`
+	// AllowLANWithoutPassword lets public (LAN) mode start before a dashboard
+	// password is set. Off, the first visitor could set it.
+	AllowLANWithoutPassword bool `json:"allow_lan_without_password,omitempty"`
+	// RemoteImages is how chat replies show images from other sites:
+	// "click" (load when clicked) or "always".
+	RemoteImages string `json:"remote_images,omitempty"`
+}
+
+// Values of Config.RemoteImages.
+const (
+	RemoteImagesClick  = "click"
+	RemoteImagesAlways = "always"
+)
+
+// EffectiveRemoteImages returns RemoteImages, or "click" when unset.
+func (c Config) EffectiveRemoteImages() string {
+	if strings.TrimSpace(c.RemoteImages) == RemoteImagesAlways {
+		return RemoteImagesAlways
+	}
+	return RemoteImagesClick
+}
+
+// NormalizeHosts trims, lowercases and deduplicates host names, dropping
+// empty entries and any port.
+func NormalizeHosts(hosts []string) []string {
+	if len(hosts) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(hosts))
+	seen := make(map[string]struct{}, len(hosts))
+	for _, raw := range hosts {
+		host := strings.ToLower(strings.TrimSpace(raw))
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
+		host = strings.Trim(host, "[]")
+		if host == "" {
+			continue
+		}
+		if _, ok := seen[host]; ok {
+			continue
+		}
+		seen[host] = struct{}{}
+		out = append(out, host)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // BoolFieldSource tracks whether a JSON boolean field was omitted, explicitly
@@ -58,6 +111,11 @@ func Validate(cfg Config) error {
 		if _, _, err := net.ParseCIDR(cidr); err != nil {
 			return fmt.Errorf("invalid trusted proxy CIDR %q", cidr)
 		}
+	}
+	switch strings.TrimSpace(cfg.RemoteImages) {
+	case "", RemoteImagesClick, RemoteImagesAlways:
+	default:
+		return fmt.Errorf("remote_images %q must be click or always", cfg.RemoteImages)
 	}
 	return nil
 }
@@ -112,6 +170,7 @@ func Load(path string, fallback Config) (Config, error) {
 	}
 	cfg.AllowedCIDRs = NormalizeCIDRs(cfg.AllowedCIDRs)
 	cfg.TrustedProxyCIDRs = NormalizeCIDRs(cfg.TrustedProxyCIDRs)
+	cfg.AllowedHosts = NormalizeHosts(cfg.AllowedHosts)
 	cfg.DashboardPasswordHash = strings.TrimSpace(cfg.DashboardPasswordHash)
 	if err := Validate(cfg); err != nil {
 		return Config{}, err
@@ -141,6 +200,7 @@ func detectBoolFieldSource(data []byte, field string) BoolFieldSource {
 func Save(path string, cfg Config) error {
 	cfg.AllowedCIDRs = NormalizeCIDRs(cfg.AllowedCIDRs)
 	cfg.TrustedProxyCIDRs = NormalizeCIDRs(cfg.TrustedProxyCIDRs)
+	cfg.AllowedHosts = NormalizeHosts(cfg.AllowedHosts)
 	cfg.DashboardPasswordHash = strings.TrimSpace(cfg.DashboardPasswordHash)
 	if err := Validate(cfg); err != nil {
 		return err

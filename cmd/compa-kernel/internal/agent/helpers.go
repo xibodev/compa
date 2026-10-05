@@ -99,17 +99,50 @@ func agentCmd(message, sessionKey, model, workspace string, debug bool) error {
 	}
 
 	fmt.Printf("%s Interactive mode (Ctrl+C to exit)\n\n", internal.Logo)
-	interactiveMode(agentLoop, sessionKey)
+	interactiveMode(agentLoop, msgBus, sessionKey)
 
 	return nil
 }
 
-func interactiveMode(agentLoop *agent.AgentLoop, sessionKey string) {
+// cliHistoryFile returns the interactive history file: private to the user,
+// under the Compa home (a shared temp folder would expose it to other users).
+// It is created 0600 first, because readline would create it world-readable.
+// "" disables history when the file can't be prepared.
+func cliHistoryFile(home string) string {
+	if strings.TrimSpace(home) == "" {
+		return ""
+	}
+	path := filepath.Join(home, "state", "cli_history")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return ""
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return ""
+	}
+	_ = f.Close()
+	_ = os.Chmod(path, 0o600)
+	return path
+}
+
+// startTerminalChat returns the chat that runs the terminal's turns and prints
+// to out, printing what the agent posts in the chat until the bus closes. As
+// the terminal then shows them, the owner's approvals are asked there.
+func startTerminalChat(agentLoop *agent.AgentLoop, msgBus *bus.MessageBus, sessionKey string, out io.Writer) *terminalChat {
+	chat := newTerminalChat(func(input string) (string, error) {
+		return agentLoop.ProcessDirect(context.Background(), input, sessionKey)
+	}, out)
+	go chat.printPosted(context.Background(), msgBus.OutboundChan())
+	agentLoop.SetTerminalChat(true)
+	return chat
+}
+
+func interactiveMode(agentLoop *agent.AgentLoop, msgBus *bus.MessageBus, sessionKey string) {
 	prompt := fmt.Sprintf("%s You: ", internal.Logo)
 
 	rl, err := readline.NewEx(&readline.Config{
 		Prompt:          prompt,
-		HistoryFile:     filepath.Join(os.TempDir(), ".compa_history"),
+		HistoryFile:     cliHistoryFile(config.GetHome()),
 		HistoryLimit:    100,
 		InterruptPrompt: "^C",
 		EOFPrompt:       "exit",
@@ -117,10 +150,13 @@ func interactiveMode(agentLoop *agent.AgentLoop, sessionKey string) {
 	if err != nil {
 		fmt.Printf("Error initializing readline: %v\n", err)
 		fmt.Println("Falling back to simple input mode...")
-		simpleInteractiveMode(agentLoop, sessionKey)
+		simpleInteractiveMode(agentLoop, msgBus, sessionKey)
 		return
 	}
 	defer rl.Close()
+
+	// Writing through readline keeps a prompt on screen intact.
+	chat := startTerminalChat(agentLoop, msgBus, sessionKey, rl)
 
 	for {
 		line, err := rl.Readline()
@@ -143,18 +179,12 @@ func interactiveMode(agentLoop *agent.AgentLoop, sessionKey string) {
 			return
 		}
 
-		ctx := context.Background()
-		response, err := agentLoop.ProcessDirect(ctx, input, sessionKey)
-		if err != nil {
-			fmt.Printf("Error: %v\n", err)
-			continue
-		}
-
-		fmt.Printf("\n%s %s\n\n", internal.Logo, response)
+		chat.handle(input)
 	}
 }
 
-func simpleInteractiveMode(agentLoop *agent.AgentLoop, sessionKey string) {
+func simpleInteractiveMode(agentLoop *agent.AgentLoop, msgBus *bus.MessageBus, sessionKey string) {
+	chat := startTerminalChat(agentLoop, msgBus, sessionKey, os.Stdout)
 	reader := bufio.NewReader(os.Stdin)
 	for {
 		fmt.Print(fmt.Sprintf("%s You: ", internal.Logo))
@@ -178,14 +208,7 @@ func simpleInteractiveMode(agentLoop *agent.AgentLoop, sessionKey string) {
 			return
 		}
 
-		ctx := context.Background()
-		response, err := agentLoop.ProcessDirect(ctx, input, sessionKey)
-		if err != nil {
-			fmt.Printf("Error: %v\n", err)
-			continue
-		}
-
-		fmt.Printf("\n%s %s\n\n", internal.Logo, response)
+		chat.handle(input)
 	}
 }
 

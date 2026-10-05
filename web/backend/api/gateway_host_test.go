@@ -13,12 +13,14 @@ import (
 	"github.com/xibodev/compa/web/backend/launcherconfig"
 )
 
-func TestGatewayHostOverrideUsesExplicitRuntimePublic(t *testing.T) {
+// LAN mode no longer widens the kernel's bind host: the dashboard proxies what
+// a browser needs, so the kernel stays where its own config puts it.
+func TestGatewayBindHostStaysOnConfigInPublicMode(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.json")
 	launcherPath := launcherconfig.PathForAppConfig(configPath)
 	if err := launcherconfig.Save(launcherPath, launcherconfig.Config{
 		Port:   18800,
-		Public: false,
+		Public: true,
 	}); err != nil {
 		t.Fatalf("launcherconfig.Save() error = %v", err)
 	}
@@ -26,8 +28,9 @@ func TestGatewayHostOverrideUsesExplicitRuntimePublic(t *testing.T) {
 	h := NewHandler(configPath)
 	h.SetServerOptions(18800, true, true, nil)
 
-	if got := h.gatewayHostOverride(); got != "*" {
-		t.Fatalf("gatewayHostOverride() = %q, want %q", got, "*")
+	cfg := config.DefaultConfig()
+	if got := h.effectiveGatewayBindHost(cfg); got != cfg.Gateway.Host {
+		t.Fatalf("effectiveGatewayBindHost() = %q, want the config's %q", got, cfg.Gateway.Host)
 	}
 }
 
@@ -109,7 +112,9 @@ func TestGetGatewayHealthUsesConfiguredHost(t *testing.T) {
 	}
 }
 
-func TestGetGatewayHealthUsesProbeHostForPublicLauncher(t *testing.T) {
+// LAN mode leaves the kernel on its configured host, so the health probe goes
+// there rather than to a wildcard's loopback stand-in.
+func TestGetGatewayHealthUsesTheKernelHostForPublicLauncher(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "config.json")
 	h := NewHandler(configPath)
 	h.SetServerOptions(18800, true, true, nil)
@@ -133,48 +138,23 @@ func TestGetGatewayHealthUsesProbeHostForPublicLauncher(t *testing.T) {
 	_ = statusCode
 	_ = err
 
-	want := "http://" + net.JoinHostPort(netbind.ResolveAdaptiveLoopbackHost(), "18791") + "/health"
+	want := "http://" + net.JoinHostPort("127.0.0.1", "18791") + "/health"
 	if requestedURL != want {
 		t.Fatalf("health url = %q, want %q", requestedURL, want)
 	}
 }
 
-func TestGatewayHostOverrideWithExplicitHostAndAlignedGatewayHost(t *testing.T) {
-	h := NewHandler(filepath.Join(t.TempDir(), "config.json"))
-	h.SetServerOptions(18800, false, false, nil)
-	h.SetServerBindHost("0.0.0.0", true)
+// An explicit launcher bind host is the dashboard's; the kernel keeps binding
+// where its own config says.
+func TestExplicitLauncherHostDoesNotMoveGatewayBindHost(t *testing.T) {
+	for _, host := range []string{"0.0.0.0", "::", "127.0.0.1,::1"} {
+		h := NewHandler(filepath.Join(t.TempDir(), "config.json"))
+		h.SetServerOptions(18800, false, false, nil)
+		h.SetServerBindHost(host, true)
 
-	if got := h.gatewayHostOverride(); got != "0.0.0.0" {
-		t.Fatalf("gatewayHostOverride() = %q, want %q", got, "0.0.0.0")
-	}
-}
-
-func TestGatewayHostOverrideWithExplicitHostAndLocalhostGatewayHost(t *testing.T) {
-	h := NewHandler(filepath.Join(t.TempDir(), "config.json"))
-	h.SetServerOptions(18800, false, false, nil)
-	h.SetServerBindHost("::", true)
-
-	if got := h.gatewayHostOverride(); got != "::" {
-		t.Fatalf("gatewayHostOverride() = %q, want %q", got, "::")
-	}
-}
-
-func TestGatewayHostOverrideWithExplicitMultiHost(t *testing.T) {
-	h := NewHandler(filepath.Join(t.TempDir(), "config.json"))
-	h.SetServerOptions(18800, false, false, nil)
-	h.SetServerBindHost("127.0.0.1,::1", true)
-
-	if got := h.gatewayHostOverride(); got != "127.0.0.1,::1" {
-		t.Fatalf("gatewayHostOverride() = %q, want %q", got, "127.0.0.1,::1")
-	}
-}
-
-func TestGatewayHostExplicitIgnoresPublicFlag(t *testing.T) {
-	h := NewHandler(filepath.Join(t.TempDir(), "config.json"))
-	h.SetServerOptions(18800, true, true, nil)
-	h.SetServerBindHost("127.0.0.1", true)
-
-	if got := h.effectiveLauncherPublic(); got {
-		t.Fatalf("effectiveLauncherPublic() = %t, want false when explicit host is set", got)
+		cfg := config.DefaultConfig()
+		if got := h.effectiveGatewayBindHost(cfg); got != cfg.Gateway.Host {
+			t.Fatalf("launcher host %q: effectiveGatewayBindHost() = %q, want the config's %q", host, got, cfg.Gateway.Host)
+		}
 	}
 }

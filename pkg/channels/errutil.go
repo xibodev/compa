@@ -3,6 +3,9 @@ package channels
 import (
 	"fmt"
 	"net/http"
+	"strconv"
+	"strings"
+	"time"
 )
 
 // ClassifySendError wraps a raw error with the appropriate sentinel based on
@@ -19,6 +22,34 @@ func ClassifySendError(statusCode int, rawErr error) error {
 	default:
 		return rawErr
 	}
+}
+
+// ClassifySendErrorRetryAfter is ClassifySendError for a response whose
+// Retry-After header says when a 429 may be retried.
+func ClassifySendErrorRetryAfter(statusCode int, retryAfter string, rawErr error) error {
+	if statusCode == http.StatusTooManyRequests {
+		if delay, ok := ParseRetryAfter(retryAfter, time.Now()); ok {
+			return NewRateLimitError(delay, rawErr)
+		}
+	}
+	return ClassifySendError(statusCode, rawErr)
+}
+
+// ParseRetryAfter parses an HTTP Retry-After value: a number of seconds
+// (fractions allowed, as some platforms send) or an HTTP date.
+func ParseRetryAfter(value string, now time.Time) (time.Duration, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, false
+	}
+	if seconds, err := strconv.ParseFloat(value, 64); err == nil {
+		seconds = min(max(seconds, 0), maxRetryAfter.Seconds())
+		return time.Duration(seconds * float64(time.Second)), true
+	}
+	if at, err := http.ParseTime(value); err == nil {
+		return max(at.Sub(now), 0), true
+	}
+	return 0, false
 }
 
 // ClassifyNetError wraps a network/timeout error as ErrTemporary.

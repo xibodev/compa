@@ -125,10 +125,12 @@ func NewWebChannel(
 
 	allowOrigins := cfg.AllowOrigins
 	checkOrigin := func(r *http.Request) bool {
-		if len(allowOrigins) == 0 {
-			return true // allow all if not configured
-		}
 		origin := r.Header.Get("Origin")
+		if len(allowOrigins) == 0 {
+			// Not configured: only the page this server itself serves. A
+			// client without Origin is no browser, and its token is the gate.
+			return origin == "" || sameOriginAsRequest(origin, r)
+		}
 		for _, allowed := range allowOrigins {
 			if allowed == "*" || allowed == origin {
 				return true
@@ -470,18 +472,6 @@ func (c *WebChannel) FinalizeToolFeedbackMessage(ctx context.Context, msg bus.Ou
 		payload,
 		msg.ContextUsage,
 	)
-}
-
-func copySelectionPayload(payload map[string]any, raw map[string]string) {
-	for metadataKey, payloadKey := range map[string]string{
-		bus.MetadataKeyModelSelection: PayloadKeySelection,
-		bus.MetadataKeyServedTarget:   PayloadKeyServedTarget,
-		bus.MetadataKeyServedIdentity: PayloadKeyServedIdentity,
-	} {
-		if value := strings.TrimSpace(raw[metadataKey]); value != "" {
-			payload[payloadKey] = value
-		}
-	}
 }
 
 // StartTyping implements channels.TypingCapable.
@@ -910,15 +900,26 @@ func webInferAttachmentType(filename, contentType string) string {
 	}
 }
 
-func webAllowsInlineDisplay(filename, contentType string) bool {
-	contentType = strings.ToLower(strings.TrimSpace(contentType))
-	filename = strings.ToLower(strings.TrimSpace(filename))
-
-	if strings.Contains(contentType, "svg") || filepath.Ext(filename) == ".svg" {
+func webAllowsInlineDisplay(contentType string) bool {
+	mediaType, _, err := mime.ParseMediaType(contentType)
+	if err != nil {
 		return false
 	}
-
-	return webInferAttachmentType(filename, contentType) == "image"
+	// Only what a browser renders without running anything: raster images,
+	// audio and video, judged by the stored type and never by the name a
+	// model chose. SVG, XML and HTML can carry scripts.
+	if strings.Contains(mediaType, "svg") || strings.Contains(mediaType, "xml") || strings.Contains(mediaType, "html") {
+		return false
+	}
+	switch {
+	case strings.HasPrefix(mediaType, "audio/"), strings.HasPrefix(mediaType, "video/"):
+		return true
+	}
+	switch mediaType {
+	case "image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp", "image/avif", "image/apng":
+		return true
+	}
+	return false
 }
 
 func (c *WebChannel) handleMediaDownload(w http.ResponseWriter, r *http.Request) {
@@ -972,7 +973,7 @@ func (c *WebChannel) handleMediaDownload(w http.ResponseWriter, r *http.Request)
 	}
 
 	dispositionType := "attachment"
-	if webAllowsInlineDisplay(filename, contentType) {
+	if webAllowsInlineDisplay(contentType) {
 		dispositionType = "inline"
 	}
 
@@ -980,7 +981,23 @@ func (c *WebChannel) handleMediaDownload(w http.ResponseWriter, r *http.Request)
 		w.Header().Set("Content-Disposition", cd)
 	}
 	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Security-Policy", MediaContentSecurityPolicy)
 	http.ServeContent(w, r, filename, info.ModTime(), file)
+}
+
+// MediaContentSecurityPolicy is the CSP of every downloaded file: opened in
+// the browser, it runs no script and loads nothing.
+const MediaContentSecurityPolicy = "sandbox; default-src 'none'"
+
+// sameOriginAsRequest reports whether origin names the host the request was
+// sent to.
+func sameOriginAsRequest(origin string, r *http.Request) bool {
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	return strings.EqualFold(u.Host, r.Host)
 }
 
 // broadcast routes through broadcastFn when set (tests), else broadcastToSession.

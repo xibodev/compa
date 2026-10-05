@@ -3,8 +3,6 @@ package config
 import (
 	"encoding/json"
 	"fmt"
-	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -95,20 +93,16 @@ func (f *FlexibleStringSlice) UnmarshalText(text []byte) error {
 	return nil
 }
 
-const (
-	notHere = `"[NOT_HERE]"`
-)
+// notHere is SecretPlaceholder as a JSON string.
+const notHere = `"` + SecretPlaceholder + `"`
 
 // SecureStrings is a slice of SecureString
 //
 //nolint:recvcheck
 type SecureStrings []*SecureString
 
-// IsZero returns true if the SecureStrings is nil or empty.
+// IsZero reports whether the list is empty.
 func (s SecureStrings) IsZero() bool {
-	if !callerFromYaml() {
-		return true
-	}
 	return len(s) == 0
 }
 
@@ -150,8 +144,11 @@ func (s SecureStrings) MarshalJSON() ([]byte, error) {
 	return []byte(notHere), nil
 }
 
+// UnmarshalJSON reads a list of values. The placeholder, for the whole list
+// or an entry, reads as unset: the values are in .security.yml.
 func (s *SecureStrings) UnmarshalJSON(value []byte) error {
 	if string(value) == notHere {
+		*s = nil
 		return nil
 	}
 	var v []*SecureString
@@ -159,8 +156,7 @@ func (s *SecureStrings) UnmarshalJSON(value []byte) error {
 	if err != nil {
 		return err
 	}
-	// Filter out elements where SecureString.UnmarshalJSON was a no-op
-	// (e.g. "[NOT_HERE]" entries), keeping only actually populated values.
+	// Leave out the entries that read as unset, such as placeholders.
 	filtered := make(SecureStrings, 0, len(v))
 	for _, ss := range v {
 		if ss == nil {
@@ -178,32 +174,18 @@ func (s *SecureStrings) UnmarshalJSON(value []byte) error {
 	return nil
 }
 
-// SecureString the string value that can be decrypted or resolved
+// SecureString is a secret setting. JSON shows a placeholder instead of a
+// value that is set; the value is kept in .security.yml, as written or as a
+// file:// reference to a file beside it.
 //
 //nolint:recvcheck
 type SecureString struct {
-	resolved string // Decrypted/resolved value returned by String()
-	raw      string // Persisted raw value (enc://, file://, or plaintext)
+	resolved string // The value String returns; a file:// reference is read
+	raw      string // The value as written: plain or a file:// reference
 }
 
-func callerFromYaml() bool {
-	_, file, _, ok := runtime.Caller(2)
-	if ok {
-		d := filepath.Dir(file)
-		// check the caller is from yaml.v
-		if !strings.Contains(d, "yaml.v") {
-			return false
-		}
-	}
-	return true
-}
-
-// IsZero returns true if the SecureString is empty
-// if caller not yaml, just return true for prevent marshal this field
+// IsZero reports whether the value is empty.
 func (s SecureString) IsZero() bool {
-	if !callerFromYaml() {
-		return true
-	}
 	return s.resolved == ""
 }
 
@@ -232,10 +214,9 @@ func (s SecureString) MarshalJSON() ([]byte, error) {
 	return []byte(notHere), nil
 }
 
+// UnmarshalJSON reads a plain value or a file:// reference. The placeholder
+// reads as unset: the value is in .security.yml.
 func (s *SecureString) UnmarshalJSON(value []byte) error {
-	if string(value) == notHere {
-		return nil
-	}
 	var v string
 	if err := json.Unmarshal(value, &v); err != nil {
 		return err
@@ -243,35 +224,26 @@ func (s *SecureString) UnmarshalJSON(value []byte) error {
 	return s.fromRaw(v)
 }
 
+// MarshalYAML writes the value for .security.yml: a file:// reference as
+// the reference, any other value as it is.
 func (s SecureString) MarshalYAML() (any, error) {
-	// Preserve raw value if it is already a reference (enc:// or file://)
-	if strings.HasPrefix(s.raw, credential.EncScheme) || strings.HasPrefix(s.raw, credential.FileScheme) {
+	if strings.HasPrefix(s.raw, credential.FileScheme) {
 		return s.raw, nil
 	}
-	// If resolved is a reference format (e.g. set via Set), copy back to raw
-	if strings.HasPrefix(s.resolved, credential.EncScheme) || strings.HasPrefix(s.resolved, credential.FileScheme) {
-		s.raw = s.resolved
-		return s.raw, nil
-	}
-	// Try to encrypt the resolved value
-	if passphrase := credential.PassphraseProvider(); passphrase != "" {
-		encrypted, err := credential.Encrypt(passphrase, "", s.resolved)
-		if err != nil {
-			logger.Errorf("Encrypt error: %v", err)
-			return nil, err
-		}
-		s.raw = encrypted
-	} else {
-		s.raw = s.resolved
-	}
-	return s.raw, nil
+	return s.resolved, nil
 }
 
 func (s *SecureString) UnmarshalYAML(value *yaml.Node) error {
 	return s.fromRaw(value.Value)
 }
 
+// fromRaw sets the value from its written form; the placeholder, which only
+// stands for a value kept elsewhere, reads as unset.
 func (s *SecureString) fromRaw(v string) error {
+	if v == SecretPlaceholder {
+		*s = SecureString{}
+		return nil
+	}
 	s.raw = v
 	vv, err := resolveKey(v)
 	if err != nil {
@@ -292,22 +264,24 @@ func updateResolver(path string) {
 	secResolver = credential.NewResolver(path)
 }
 
+// resolveKey returns the value v stands for: the content of the file a
+// file:// reference names, or v itself.
 func resolveKey(v string) (string, error) {
+	if !strings.HasPrefix(v, credential.FileScheme) {
+		return v, nil
+	}
 	secResolverMu.RLock()
 	resolver := secResolver
 	secResolverMu.RUnlock()
 	if resolver == nil {
 		resolver = credential.NewResolver("")
 	}
-	if strings.HasPrefix(v, "enc://") || strings.HasPrefix(v, "file://") {
-		decrypted, err := resolver.Resolve(v)
-		if err != nil {
-			logger.Errorf("Resolve error: %v", err)
-			return "", err
-		}
-		return decrypted, nil
+	resolved, err := resolver.Resolve(v)
+	if err != nil {
+		logger.Errorf("Resolve error: %v", err)
+		return "", err
 	}
-	return v, nil
+	return resolved, nil
 }
 
 func (s *SecureString) UnmarshalText(text []byte) error {

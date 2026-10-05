@@ -14,29 +14,41 @@ func toolWithEffects(e modproto.Effects, summary string) *CapabilityTool {
 	}
 }
 
-// The bug this exists for: the description said a paid capability "requires
-// human approval", and the model read that as something it could satisfy.
-// Asked directly whether "I approve the cost" in chat would let it run a paid
-// tool, it reasoned about filling in approved_by and paid_generation_approved.
-//
-// It cannot. The host strips approval claims arriving through the agent, so a
-// consent the model constructs is discarded however the user phrases their
-// permission. This is what the model reads while DECIDING -- the failure
-// message only arrives after it has already promised the user a result.
-func TestUnpricedCapabilitySaysWhoCanApprove(t *testing.T) {
-	tool := toolWithEffects(modproto.Effects{Network: true}, "Run a creative tool.")
-
-	got := tool.Description()
-
-	for _, want := range []string{
-		"COST UNKNOWN",
-		"only the user can give",
-		"Modules page",
-		"must not construct a consent field",
+// The description states what a capability does, and nothing about approval:
+// the approval policy decides each call, and the owner is asked when it says
+// to, so a model told "needs an approval" only learns to promise less.
+func TestDescriptionsStateEffectsWithoutApproval(t *testing.T) {
+	for _, e := range []modproto.Effects{
+		{Network: true},
+		{CostKnown: true, ExternalWrites: true},
+		{CostKnown: true, Network: true},
 	} {
+		got := toolWithEffects(e, "Run a creative tool.").Description()
+		for _, banned := range []string{"approv", "Modules page", "consent"} {
+			if strings.Contains(got, banned) {
+				t.Errorf("%+v: description mentions %q:\n%s", e, banned, got)
+			}
+		}
+	}
+
+	got := toolWithEffects(modproto.Effects{Network: true, Provider: "p"}, "Run a creative tool.").Description()
+	for _, want := range []string{"COST UNKNOWN", "reaches the network", "provider p"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("description does not contain %q:\n%s", want, got)
 		}
+	}
+}
+
+// The agent's summary of a module names its tools and their unknown cost,
+// and says nothing about approval either.
+func TestSummariesStateCostWithoutApproval(t *testing.T) {
+	d := &modproto.Descriptor{Module: "m", Name: "M", Capabilities: []modproto.Capability{
+		{ID: "paid", Summary: "Paid.", Effects: modproto.Effects{Network: true}},
+		{ID: "writes", Summary: "Writes.", Effects: modproto.Effects{CostKnown: true, ExternalWrites: true}},
+	}}
+	got := summarize(d, nil)
+	if !strings.Contains(got, "m__paid (paid): Paid. [cost unknown]") || strings.Contains(got, "approv") {
+		t.Fatalf("summary:\n%s", got)
 	}
 }
 

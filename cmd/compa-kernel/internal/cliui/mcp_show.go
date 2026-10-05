@@ -14,8 +14,10 @@ type MCPShowServer struct {
 	Type              string
 	Target            string
 	Enabled           bool
-	EffectiveDeferred bool     // resolved value (per-server override or global default)
-	DeferredExplicit  bool     // true = per-server override set, false = inherited from global
+	EffectiveDeferred bool // resolved value (per-server override or global default)
+	DeferredExplicit  bool // true = per-server override set, false = inherited from global
+	Trusted           bool
+	Cwd               string
 	EnvKeys           []string // sorted env var names (values intentionally omitted)
 	EnvFile           string
 	Headers           []string // sorted header names
@@ -58,6 +60,10 @@ func printMCPShowPlain(w io.Writer, server MCPShowServer, tools []MCPShowTool, d
 		deferredLabel += " (default)"
 	}
 	fmt.Fprintf(w, "Deferred: %s\n", deferredLabel)
+	fmt.Fprintf(w, "Trusted: %s\n", boolWord(server.Trusted))
+	if server.Cwd != "" {
+		fmt.Fprintf(w, "Cwd: %s\n", server.Cwd)
+	}
 	if len(server.EnvKeys) > 0 {
 		fmt.Fprintf(w, "Env vars: %s\n", strings.Join(server.EnvKeys, ", "))
 	}
@@ -154,6 +160,10 @@ func printMCPShowFancy(w io.Writer, server MCPShowServer, tools []MCPShowTool, d
 		deferredVal += "  " + mcpTagStyle().Render("(default)")
 	}
 	writeKV("Deferred", deferredVal)
+	writeKV("Trusted", coloredBool(server.Trusted))
+	if server.Cwd != "" {
+		writeKV("Cwd", mutedStyle().Render(server.Cwd))
+	}
 	if len(server.EnvKeys) > 0 {
 		writeKV("Env vars", mutedStyle().Render(strings.Join(server.EnvKeys, ", ")))
 	}

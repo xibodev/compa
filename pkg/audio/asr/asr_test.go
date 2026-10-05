@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/xibodev/compa/pkg/auth"
@@ -143,5 +145,38 @@ func TestTranscriberDropsTranscriptsWithoutSpeech(t *testing.T) {
 		if err != nil || resp.Text != "" {
 			t.Errorf("transcript %q: Text = %q, err = %v, want empty", transcript, resp.Text, err)
 		}
+	}
+}
+
+// An audio file over the size speech-to-text APIs accept is refused before
+// it is read into memory and sent.
+func TestTranscriberRefusesAnOversizedFile(t *testing.T) {
+	var sent atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sent.Store(true)
+		_ = json.NewEncoder(w).Encode(TranscriptionResponse{Text: "heard"})
+	}))
+	defer server.Close()
+	tr := DetectTranscriber(voiceConfig("voice/whisper-1", voiceInstance("voice", server.URL+"/v1")))
+	if tr == nil {
+		t.Fatal("DetectTranscriber() = nil")
+	}
+
+	clip := filepath.Join(t.TempDir(), "long.ogg")
+	f, err := os.Create(clip)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Truncate(maxAudioFileBytes + 1); err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	f.Close()
+
+	if _, err := tr.Transcribe(context.Background(), clip); err == nil || !strings.Contains(err.Error(), "larger than") {
+		t.Fatalf("Transcribe() error = %v, want the file refused as too large", err)
+	}
+	if sent.Load() {
+		t.Fatal("the oversized file was sent")
 	}
 }

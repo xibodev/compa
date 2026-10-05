@@ -18,15 +18,15 @@ func TestNewOnboardCommand(t *testing.T) {
 	assert.Len(t, cmd.Aliases, 1)
 	assert.True(t, cmd.HasAlias("o"))
 
-	assert.NotNil(t, cmd.Run)
-	assert.Nil(t, cmd.RunE)
+	assert.Nil(t, cmd.Run)
+	assert.NotNil(t, cmd.RunE)
 
 	assert.Nil(t, cmd.PersistentPreRun)
 	assert.Nil(t, cmd.PersistentPostRun)
 
 	assert.True(t, cmd.HasFlags())
-	encFlag := cmd.Flags().Lookup("enc")
-	require.NotNil(t, encFlag, "expected --enc flag to be registered")
-	assert.Equal(t, "false", encFlag.DefValue, "--enc should default to false")
+	forceFlag := cmd.Flags().Lookup("force")
+	require.NotNil(t, forceFlag, "expected --force flag to be registered")
+	assert.Equal(t, "false", forceFlag.DefValue, "--force should default to false")
 	assert.False(t, cmd.HasSubCommands())
 }

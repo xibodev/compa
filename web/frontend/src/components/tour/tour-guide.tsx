@@ -1,5 +1,7 @@
 import { IconChevronLeft, IconChevronRight } from "@tabler/icons-react"
 import { useAtom } from "jotai"
+import { Dialog as DialogPrimitive } from "radix-ui"
+import { useEffect, useState } from "react"
 import { useTranslation } from "react-i18next"
 
 import { BrandLogo } from "@/components/brand-logo"
@@ -28,6 +30,13 @@ export function TourGuide() {
   const [, setCurrentStep] = useAtom(tourCurrentStepAtom)
   const [, setIsActive] = useAtom(tourIsActiveAtom)
   const { goToNextStep, goToPrevStep } = useTourActions()
+  // The highlight and the card follow the target when the window resizes.
+  const [, setViewportVersion] = useState(0)
+  useEffect(() => {
+    const onResize = () => setViewportVersion((version) => version + 1)
+    window.addEventListener("resize", onResize)
+    return () => window.removeEventListener("resize", onResize)
+  }, [])
 
   const steps: Record<TourStep, TourStepConfig> = {
     welcome: {
@@ -49,8 +58,7 @@ export function TourGuide() {
   }
 
   // A stored step this version does not have ends the tour.
-  const currentConfig: TourStepConfig | undefined =
-    steps[tourState.currentStep]
+  const currentConfig: TourStepConfig | undefined = steps[tourState.currentStep]
   if (
     !tourState.isActive ||
     tourState.currentStep === "completed" ||
@@ -168,66 +176,76 @@ export function TourGuide() {
         />
       )}
 
-      <div
-        role="dialog"
-        aria-labelledby="tour-step-title"
-        aria-describedby="tour-step-description"
-        className={cn(
-          "bg-background fixed z-[102] w-80 max-w-[calc(100vw-2rem)] rounded-xl border p-4 shadow-2xl",
-          isCentered && "max-w-md",
-        )}
-        style={position}
+      {/* A dialog primitive gives the card focus on open, Escape to skip, and
+          a focus trap while it covers the page. A step that points at the
+          sidebar leaves the page usable, so the user can follow it. */}
+      <DialogPrimitive.Root
+        open
+        modal={isCentered}
+        onOpenChange={(open) => {
+          if (!open) handleSkip()
+        }}
       >
-        <div className="mb-3 flex items-center gap-2">
-          {tourState.currentStep === "welcome" && (
-            <BrandLogo withName={false} decorative markClassName="size-6" />
+        <DialogPrimitive.Content
+          aria-modal={isCentered || undefined}
+          onPointerDownOutside={(event) => event.preventDefault()}
+          onInteractOutside={(event) => event.preventDefault()}
+          className={cn(
+            "bg-background fixed z-[102] w-80 max-w-[calc(100vw-2rem)] rounded-xl border p-4 shadow-2xl outline-none",
+            isCentered && "max-w-md",
           )}
-          <h3 id="tour-step-title" className="font-semibold">
-            {currentConfig.title}
-          </h3>
-        </div>
-
-        <p
-          id="tour-step-description"
-          className="text-muted-foreground mb-4 text-sm leading-relaxed"
+          style={position}
         >
-          {currentConfig.description}
-        </p>
-
-        <div className="flex items-center justify-between">
-          <div className="text-muted-foreground text-xs">
-            {currentStepIndex + 1} / {totalSteps}
-          </div>
-
-          <div className="flex items-center gap-2">
-            {currentStepIndex > 0 && (
-              <Button variant="outline" size="sm" onClick={handlePrev}>
-                <IconChevronLeft className="size-4" />
-                {t("tour.prev")}
-              </Button>
+          <div className="mb-3 flex items-center gap-2">
+            {tourState.currentStep === "welcome" && (
+              <BrandLogo withName={false} decorative markClassName="size-6" />
             )}
-            <Button size="sm" onClick={handleNext}>
-              {currentStepIndex === totalSteps - 1
-                ? t("tour.finish")
-                : t("tour.next")}
-              {currentStepIndex < totalSteps - 1 && (
-                <IconChevronRight className="size-4" />
-              )}
-            </Button>
+            <DialogPrimitive.Title asChild>
+              <h3 className="font-semibold">{currentConfig.title}</h3>
+            </DialogPrimitive.Title>
           </div>
-        </div>
 
-        {currentStepIndex < totalSteps - 1 && (
-          <Button
-            variant="link"
-            size="sm"
-            className="mt-2 h-auto p-0 text-xs"
-            onClick={handleSkip}
-          >
-            {t("tour.skip")}
-          </Button>
-        )}
-      </div>
+          <DialogPrimitive.Description asChild>
+            <p className="text-muted-foreground mb-4 text-sm leading-relaxed">
+              {currentConfig.description}
+            </p>
+          </DialogPrimitive.Description>
+
+          <div className="flex items-center justify-between">
+            <div className="text-muted-foreground text-xs">
+              {currentStepIndex + 1} / {totalSteps}
+            </div>
+
+            <div className="flex items-center gap-2">
+              {currentStepIndex > 0 && (
+                <Button variant="outline" size="sm" onClick={handlePrev}>
+                  <IconChevronLeft className="size-4" />
+                  {t("tour.prev")}
+                </Button>
+              )}
+              <Button size="sm" onClick={handleNext}>
+                {currentStepIndex === totalSteps - 1
+                  ? t("tour.finish")
+                  : t("tour.next")}
+                {currentStepIndex < totalSteps - 1 && (
+                  <IconChevronRight className="size-4" />
+                )}
+              </Button>
+            </div>
+          </div>
+
+          {currentStepIndex < totalSteps - 1 && (
+            <Button
+              variant="link"
+              size="sm"
+              className="mt-2 h-auto p-0 text-xs"
+              onClick={handleSkip}
+            >
+              {t("tour.skip")}
+            </Button>
+          )}
+        </DialogPrimitive.Content>
+      </DialogPrimitive.Root>
     </>
   )
 }

@@ -322,6 +322,39 @@ func (c *WeixinChannel) handleInboundMessage(ctx context.Context, msg WeixinMess
 		}
 	}
 
+	sender := bus.SenderInfo{
+		Platform:    "weixin",
+		PlatformID:  fromUserID,
+		CanonicalID: identity.BuildCanonicalID("weixin", fromUserID),
+		Username:    fromUserID,
+		DisplayName: fromUserID,
+	}
+	inboundCtx := bus.InboundContext{
+		Channel:   c.Name(),
+		ChatID:    fromUserID,
+		ChatType:  "direct",
+		SenderID:  fromUserID,
+		MessageID: messageID,
+		Raw: map[string]string{
+			"from_user_id":  fromUserID,
+			"context_token": msg.ContextToken,
+			"session_id":    msg.SessionID,
+		},
+	}
+
+	// Decide before downloading media or keeping the reply token. A message
+	// from an unpaired sender still goes to the access policy, without its
+	// media, so that the sender is recorded.
+	if !c.Admits(inboundCtx.ChatType, sender, fromUserID) {
+		logger.DebugCF("weixin", "Message rejected by access policy", map[string]any{
+			"from_user_id": fromUserID,
+		})
+		if text := strings.Join(parts, "\n"); text != "" {
+			c.HandleInboundContext(ctx, fromUserID, text, nil, inboundCtx, sender)
+		}
+		return
+	}
+
 	var mediaRefs []string
 	if mediaItem := selectInboundMediaItem(msg); mediaItem != nil {
 		ref, err := c.downloadMediaFromItem(ctx, fromUserID, messageID, mediaItem)
@@ -342,27 +375,6 @@ func (c *WeixinChannel) handleInboundMessage(ctx context.Context, msg WeixinMess
 		return
 	}
 
-	sender := bus.SenderInfo{
-		Platform:    "weixin",
-		PlatformID:  fromUserID,
-		CanonicalID: identity.BuildCanonicalID("weixin", fromUserID),
-		Username:    fromUserID,
-		DisplayName: fromUserID,
-	}
-
-	if !c.IsAllowedSender(sender) {
-		logger.DebugCF("weixin", "Message rejected by allowlist", map[string]any{
-			"from_user_id": fromUserID,
-		})
-		return
-	}
-
-	metadata := map[string]string{
-		"from_user_id":  fromUserID,
-		"context_token": msg.ContextToken,
-		"session_id":    msg.SessionID,
-	}
-
 	logger.DebugCF("weixin", "Received message", map[string]any{
 		"from_user_id": fromUserID,
 		"content_len":  len(content),
@@ -375,14 +387,6 @@ func (c *WeixinChannel) handleInboundMessage(ctx context.Context, msg WeixinMess
 		c.persistContextTokens()
 	}
 
-	inboundCtx := bus.InboundContext{
-		Channel:   "weixin",
-		ChatID:    fromUserID,
-		ChatType:  "direct",
-		SenderID:  fromUserID,
-		MessageID: messageID,
-		Raw:       metadata,
-	}
 	if msg.ContextToken != "" {
 		inboundCtx.ReplyHandles = map[string]string{
 			"context_token": msg.ContextToken,

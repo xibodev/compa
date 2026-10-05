@@ -16,9 +16,11 @@ const reply = (value: unknown, status = 200) =>
   Promise.resolve(new Response(JSON.stringify(value), { status }))
 
 let calls: { path: string; body?: unknown }[] = []
+let setupStatus = 200
 
 beforeEach(() => {
   calls = []
+  setupStatus = 200
   vi.mocked(navigateTo).mockClear()
   vi.stubGlobal(
     "fetch",
@@ -30,14 +32,29 @@ beforeEach(() => {
       })
       if (path === "/api/auth/status")
         return reply({ authenticated: false, initialized: true })
+      if (path === "/api/auth/setup" && setupStatus !== 200)
+        return reply({ error: "refused" }, setupStatus)
       return reply({ status: "ok" })
     }),
   )
 })
 
-afterEach(() => vi.unstubAllGlobals())
+afterEach(() => {
+  vi.unstubAllGlobals()
+  window.history.replaceState({}, "", "/")
+})
 
 const posts = (path: string) => calls.filter((call) => call.path === path)
+
+const submitSetup = (password: string) => {
+  fireEvent.change(screen.getByLabelText("Password"), {
+    target: { value: password },
+  })
+  fireEvent.change(screen.getByLabelText("Confirm password"), {
+    target: { value: password },
+  })
+  fireEvent.click(screen.getByRole("button", { name: "Set password" }))
+}
 
 describe("setting the password", () => {
   it("shows the product and validates every field inline, the same way", async () => {
@@ -46,7 +63,8 @@ describe("setting the password", () => {
     expect(
       screen.getByRole("heading", { name: "Set a password for Compa" }),
     ).toBeInTheDocument()
-    const form = screen.getByRole("button", { name: "Set password" })
+    const form = screen
+      .getByRole("button", { name: "Set password" })
       .closest("form")
     expect(form).toHaveAttribute("novalidate")
 
@@ -80,23 +98,37 @@ describe("setting the password", () => {
   })
 
   it("signs in with the new password and opens the app", async () => {
+    window.history.replaceState({}, "", "/launcher-setup?token=tok-123")
     render(<SetupPage />)
-    fireEvent.change(screen.getByLabelText("Password"), {
-      target: { value: "correct horse" },
-    })
-    fireEvent.change(screen.getByLabelText("Confirm password"), {
-      target: { value: "correct horse" },
-    })
-    fireEvent.click(screen.getByRole("button", { name: "Set password" }))
+    submitSetup("correct horse")
 
     await waitFor(() => expect(navigateTo).toHaveBeenCalledWith("/"))
+    // The token of the link the launcher opened authorizes the first password.
     expect(posts("/api/auth/setup")[0].body).toEqual({
       password: "correct horse",
       confirm: "correct horse",
+      setup_token: "tok-123",
     })
     expect(posts("/api/auth/login")[0].body).toEqual({
       password: "correct horse",
     })
+  })
+
+  it.each([
+    [
+      403,
+      "This setup link is not valid. Use the link Compa opened or printed when it started.",
+    ],
+    [409, "A password is already set. Sign in instead."],
+  ])("says why a %i refused the password", async (status, message) => {
+    setupStatus = status
+    render(<SetupPage />)
+    submitSetup("correct horse")
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(message)
+    expect(posts("/api/auth/setup")[0].body).not.toHaveProperty("setup_token")
+    expect(posts("/api/auth/login")).toHaveLength(0)
+    expect(navigateTo).not.toHaveBeenCalled()
   })
 })
 

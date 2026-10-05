@@ -10,10 +10,12 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/xibodev/compa/pkg/fileutil"
+	"github.com/xibodev/compa/pkg/logger"
 	"github.com/xibodev/compa/pkg/utils"
 )
 
@@ -428,6 +430,20 @@ func (si *SkillInstaller) InstallFromGitHubToDir(
 		return nil, err
 	}
 	ref := target.Ref
+	// Install from the commit the ref points at now, and report it, so what
+	// was installed stays known after the branch moves. Pinning is best
+	// effort: when the ref can't be resolved (a host or proxy without the
+	// commits endpoint, say) the install uses the ref and is marked unpinned.
+	commit, err := si.resolveCommitWithAPIBaseURL(ctx, target.Endpoints.APIBaseURL, ref.Owner, ref.RepoName, ref.Ref)
+	listRef := commit
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, ctxErr
+		}
+		logger.WarnCF("skills", "Couldn't pin the skill to a commit; installing from the ref",
+			map[string]any{"repo": ref.Owner + "/" + ref.RepoName, "ref": ref.Ref, "error": err.Error()})
+		commit, listRef = "", ref.Ref
+	}
 	apiSubPath := strings.Trim(ref.SubPath, "/")
 	if isSkillMarkdownPath(apiSubPath) {
 		if dir := path.Dir(apiSubPath); dir == "." {
@@ -442,70 +458,212 @@ func (si *SkillInstaller) InstallFromGitHubToDir(
 	if apiSubPath != "" {
 		apiPath = path.Join(apiPath, apiSubPath)
 	}
-	apiURL := fmt.Sprintf("%s/repos/%s?ref=%s", target.Endpoints.APIBaseURL, apiPath, url.QueryEscape(ref.Ref))
+	apiURL := fmt.Sprintf("%s/repos/%s?ref=%s", target.Endpoints.APIBaseURL, apiPath, url.QueryEscape(listRef))
 
-	if err := si.getGithubDirAllFiles(ctx, apiURL, skillDirectory, true); err != nil {
-		// Fallback to raw download
-		if downloadErr := si.downloadRaw(
-			ctx,
-			target.Endpoints.RawBaseURL,
-			ref.Owner,
-			ref.RepoName,
-			ref.Ref,
-			ref.SubPath,
-			skillDirectory,
-		); downloadErr != nil {
-			return nil, downloadErr
-		}
-	} else if _, err := os.Stat(filepath.Join(skillDirectory, "SKILL.md")); err != nil {
+	// A listing failure (a rate limit, say) fails the install: falling back
+	// to SKILL.md alone would report success for a partial skill.
+	fetch := si.newGitHubFetch(target.Endpoints, apiURL)
+	if err := fetch.dir(ctx, apiURL, skillDirectory, 0); err != nil {
+		return nil, fmt.Errorf("couldn't download the skill from GitHub: %w", err)
+	}
+	if _, err := os.Stat(filepath.Join(skillDirectory, "SKILL.md")); err != nil {
 		return nil, fmt.Errorf("SKILL.md not found in repository")
 	}
 
-	return &InstallResult{Version: ref.Ref}, nil
+	return &InstallResult{Version: ref.Ref, Commit: commit, Unpinned: commit == ""}, nil
 }
 
-// downloadDir recursively downloads a directory from GitHub API
-// isRoot: true if this is the skill root directory (only download SKILL.md at root)
-func (si *SkillInstaller) getGithubDirAllFiles(ctx context.Context, apiURL, localDir string, isRoot bool) error {
-	req, err := http.NewRequestWithContext(ctx, "GET", apiURL, nil)
-	if err != nil {
-		return err
+var commitSHAPattern = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
+// resolveCommitWithAPIBaseURL returns the commit SHA a ref points at.
+func (si *SkillInstaller) resolveCommitWithAPIBaseURL(
+	ctx context.Context,
+	apiBaseURL, owner, repo, ref string,
+) (string, error) {
+	if commitSHAPattern.MatchString(ref) {
+		return ref, nil
 	}
+	segments := strings.Split(ref, "/")
+	for i, segment := range segments {
+		segments[i] = url.PathEscape(segment)
+	}
+	apiURL := fmt.Sprintf("%s/repos/%s/%s/commits/%s",
+		strings.TrimRight(apiBaseURL, "/"), owner, repo, strings.Join(segments, "/"))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Accept", "application/vnd.github.sha")
 	if si.githubToken != "" {
 		req.Header.Set("Authorization", "Bearer "+si.githubToken)
 	}
 
 	resp, err := utils.DoRequestWithRetry(si.client, req)
 	if err != nil {
+		return "", fmt.Errorf("couldn't resolve %q to a commit: %w", ref, err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", fmt.Errorf("couldn't resolve %q to a commit: %w", ref, err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("couldn't resolve %q to a commit: HTTP %d: %s",
+			ref, resp.StatusCode, utils.Truncate(string(body), 200))
+	}
+	sha := strings.TrimSpace(string(body))
+	if !commitSHAPattern.MatchString(sha) {
+		// A server that ignores the SHA media type answers with the commit.
+		var commit struct {
+			SHA string `json:"sha"`
+		}
+		if json.Unmarshal(body, &commit) != nil || !commitSHAPattern.MatchString(commit.SHA) {
+			return "", fmt.Errorf("couldn't resolve %q to a commit: unexpected response", ref)
+		}
+		sha = commit.SHA
+	}
+	return sha, nil
+}
+
+// Download limits for one skill install.
+const (
+	maxSkillFiles      = 500
+	maxSkillFileBytes  = 5 << 20
+	maxSkillTotalBytes = 50 << 20
+	maxSkillDirDepth   = 5
+)
+
+// gitHubFetch downloads one skill folder through the contents API. It follows
+// listing URLs only on the API origin it started from (they carry the token)
+// and downloads files only from the configured GitHub origins.
+type gitHubFetch struct {
+	si          *SkillInstaller
+	apiOrigin   string
+	fileOrigins map[string]bool
+	files       int
+	bytes       int64
+}
+
+func (si *SkillInstaller) newGitHubFetch(endpoints gitHubEndpoints, rootAPIURL string) *gitHubFetch {
+	f := &gitHubFetch{
+		si:          si,
+		apiOrigin:   urlOrigin(rootAPIURL),
+		fileOrigins: map[string]bool{urlOrigin(rootAPIURL): true},
+	}
+	for _, base := range []string{endpoints.APIBaseURL, endpoints.RawBaseURL, endpoints.WebBaseURL} {
+		if origin := urlOrigin(base); origin != "" {
+			f.fileOrigins[origin] = true
+		}
+	}
+	return f
+}
+
+// urlOrigin returns "scheme://host" in lower case, or "" for a URL that isn't
+// http(s).
+func urlOrigin(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" || (u.Scheme != "https" && u.Scheme != "http") {
+		return ""
+	}
+	return strings.ToLower(u.Scheme + "://" + u.Host)
+}
+
+// validateGitHubItemName rejects listing names that could leave the skill
+// folder when joined into a local path (on Windows a backslash or drive
+// letter would).
+func validateGitHubItemName(name string) error {
+	if name == "" || name == "." || strings.Contains(name, "..") ||
+		strings.ContainsAny(name, `/\:`) || strings.ContainsRune(name, 0) {
+		return fmt.Errorf("unsafe file name %q in the GitHub listing", name)
+	}
+	return nil
+}
+
+// getGithubDirAllFiles downloads a skill folder listed at apiURL.
+// isRoot: true if this is the skill root directory (only download SKILL.md at root)
+func (si *SkillInstaller) getGithubDirAllFiles(ctx context.Context, apiURL, localDir string, isRoot bool) error {
+	fetch := si.newGitHubFetch(gitHubEndpoints{
+		WebBaseURL: si.githubBaseURL,
+		APIBaseURL: si.githubAPIBaseURL,
+		RawBaseURL: si.githubRawBaseURL,
+	}, apiURL)
+	depth := 0
+	if !isRoot {
+		depth = 1
+	}
+	return fetch.dir(ctx, apiURL, localDir, depth)
+}
+
+func (f *gitHubFetch) dir(ctx context.Context, apiURL, localDir string, depth int) error {
+	if depth > maxSkillDirDepth {
+		return fmt.Errorf("skill folders nest deeper than %d levels", maxSkillDirDepth)
+	}
+	if origin := urlOrigin(apiURL); origin == "" || origin != f.apiOrigin {
+		return fmt.Errorf("refusing to follow a listing URL outside %s", f.apiOrigin)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
+	if err != nil {
+		return err
+	}
+	if f.si.githubToken != "" {
+		req.Header.Set("Authorization", "Bearer "+f.si.githubToken)
+	}
+
+	resp, err := utils.DoRequestWithRetry(f.si.client, req)
+	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
-		return fmt.Errorf("HTTP %d", resp.StatusCode)
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		if f.si.githubToken == "" && (resp.StatusCode == http.StatusForbidden ||
+			resp.StatusCode == http.StatusTooManyRequests) {
+			return fmt.Errorf("HTTP %d listing the skill files (%s): %s",
+				resp.StatusCode, githubAuthTokenHelp, strings.TrimSpace(string(body)))
+		}
+		return fmt.Errorf("HTTP %d listing the skill files: %s", resp.StatusCode, strings.TrimSpace(string(body)))
 	}
 
 	var items []GitHubContent
-	if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
-		return err
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 2<<20)).Decode(&items); err != nil {
+		return fmt.Errorf("couldn't read the skill file listing: %w", err)
 	}
 
 	for _, item := range items {
+		if err := validateGitHubItemName(item.Name); err != nil {
+			return err
+		}
 		localPath := filepath.Join(localDir, item.Name)
 
 		switch item.Type {
 		case "file":
-			if !shouldDownload(item.Name, isRoot) {
+			if !shouldDownload(item.Name, depth == 0) {
 				continue
 			}
-			if err := si.downloadFile(ctx, item.DownloadURL, localPath); err != nil {
+			if f.files >= maxSkillFiles {
+				return fmt.Errorf("skill has more than %d files", maxSkillFiles)
+			}
+			if !f.fileOrigins[urlOrigin(item.DownloadURL)] {
+				return fmt.Errorf("refusing to download %s from outside the configured GitHub host", item.Name)
+			}
+			remaining := int64(maxSkillTotalBytes) - f.bytes
+			if remaining <= 0 {
+				return fmt.Errorf("skill is larger than %d MB", maxSkillTotalBytes>>20)
+			}
+			written, err := f.si.downloadFileLimited(ctx, item.DownloadURL, localPath, min(maxSkillFileBytes, remaining))
+			if err != nil {
 				return fmt.Errorf("download %s: %w", item.Name, err)
 			}
+			f.files++
+			f.bytes += written
 		case "dir":
 			if !isSkillDirectory(item.Name) {
 				continue
 			}
-			if err := si.getGithubDirAllFiles(ctx, item.URL, localPath, false); err != nil {
+			if err := f.dir(ctx, item.URL, localPath, depth+1); err != nil {
 				return err
 			}
 		}
@@ -513,66 +671,39 @@ func (si *SkillInstaller) getGithubDirAllFiles(ctx context.Context, apiURL, loca
 	return nil
 }
 
-// downloadRaw is a fallback that downloads just SKILL.md from raw.githubusercontent.com
-func (si *SkillInstaller) downloadRaw(
-	ctx context.Context,
-	rawBaseURL, owner, repo, ref, subPath, localDir string,
-) error {
-	urlPath := path.Join(owner, repo, ref)
-	if subPath != "" {
-		if isSkillMarkdownPath(subPath) {
-			urlPath = strings.TrimSuffix(path.Join(urlPath, subPath), "/SKILL.md")
-		} else {
-			urlPath = path.Join(urlPath, subPath)
-		}
-	}
-	url := fmt.Sprintf("%s/%s/SKILL.md", strings.TrimRight(rawBaseURL, "/"), urlPath)
-
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return fmt.Errorf("failed to create request: %w", err)
-	}
-
-	// Use chunked download to temporary file.
-	tmpPath, err := utils.DownloadToFile(ctx, si.client, req, 0)
-	if err != nil {
-		return fmt.Errorf("failed to fetch skill: %w", err)
-	}
-	defer os.Remove(tmpPath)
-
-	if err := os.MkdirAll(localDir, 0o755); err != nil {
-		return fmt.Errorf("failed to create skill directory: %w", err)
-	}
-
-	localPath := filepath.Join(localDir, "SKILL.md")
-
-	if err := fileutil.CopyFile(tmpPath, localPath, 0o600); err != nil {
-		return fmt.Errorf("failed to write skill file: %w", err)
-	}
-	return nil
+func (si *SkillInstaller) downloadFile(ctx context.Context, url, localPath string) error {
+	_, err := si.downloadFileLimited(ctx, url, localPath, maxSkillFileBytes)
+	return err
 }
 
-func (si *SkillInstaller) downloadFile(ctx context.Context, url, localPath string) error {
+// downloadFileLimited downloads at most maxBytes to localPath and returns the
+// size written.
+func (si *SkillInstaller) downloadFileLimited(ctx context.Context, url, localPath string, maxBytes int64) (int64, error) {
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
-		return err
+		return 0, err
 	}
 
 	// Use chunked download to temporary file, then move atomically to target.
-	tmpPath, err := utils.DownloadToFile(ctx, si.client, req, 0)
+	tmpPath, err := utils.DownloadToFile(ctx, si.client, req, maxBytes)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	defer os.Remove(tmpPath)
 
+	info, err := os.Stat(tmpPath)
+	if err != nil {
+		return 0, err
+	}
+
 	if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
-		return err
+		return 0, err
 	}
 
 	if err := fileutil.CopyFile(tmpPath, localPath, 0o600); err != nil {
-		return fmt.Errorf("failed to move downloaded file: %w", err)
+		return 0, fmt.Errorf("failed to move downloaded file: %w", err)
 	}
-	return nil
+	return info.Size(), nil
 }
 
 // shouldDownload determines if a file should be downloaded
@@ -594,27 +725,39 @@ func isSkillDirectory(name string) bool {
 }
 
 func (si *SkillInstaller) Uninstall(skillName string) error {
-	parts := strings.Split(skillName, "/")
-	var finalSkillName string
-	for i := len(parts) - 1; i >= 0; i-- {
-		if parts[i] != "" {
-			finalSkillName = parts[i]
-			break
-		}
-	}
-	if finalSkillName == "" {
-		finalSkillName = skillName
+	name := strings.Trim(strings.TrimSpace(skillName), "/")
+	if strings.Contains(name, "/") {
+		// owner/repo/path installs into a folder named after the last part.
+		name = path.Base(name)
 	}
 
-	skillDir := filepath.Join(si.workspace, "skills", finalSkillName)
+	skillDir, err := SkillDir(filepath.Join(si.workspace, "skills"), name)
+	if err != nil {
+		return fmt.Errorf("invalid skill name %q: %w", skillName, err)
+	}
 
 	if _, err := os.Stat(skillDir); os.IsNotExist(err) {
-		return fmt.Errorf("skill '%s' not found (processed as '%s')", skillName, finalSkillName)
+		return fmt.Errorf("skill '%s' not found (processed as '%s')", skillName, name)
 	}
 
 	if err := os.RemoveAll(skillDir); err != nil {
-		return fmt.Errorf("failed to remove skill '%s': %w", finalSkillName, err)
+		return fmt.Errorf("failed to remove skill '%s': %w", name, err)
 	}
 
 	return nil
+}
+
+// SkillDir returns the folder of the named skill inside skillsRoot. The name
+// must be a valid skill name, so the result is always a direct child of
+// skillsRoot: a name like `..\..\x` can't reach outside it on Windows.
+func SkillDir(skillsRoot, name string) (string, error) {
+	if err := ValidateSkillName(name); err != nil {
+		return "", err
+	}
+	root := filepath.Clean(skillsRoot)
+	dir := filepath.Join(root, name)
+	if filepath.Dir(dir) != root {
+		return "", fmt.Errorf("skill name %q is not a folder name", name)
+	}
+	return dir, nil
 }

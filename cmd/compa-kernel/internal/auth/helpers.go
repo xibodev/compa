@@ -4,8 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"strings"
 	"time"
+
+	"golang.org/x/term"
 
 	"github.com/xibodev/compa/cmd/compa-kernel/internal"
 	"github.com/xibodev/compa/pkg/auth"
@@ -32,11 +36,41 @@ func authLoginCmd(provider string) error {
 	default:
 		return fmt.Errorf("unsupported provider: %s (%s)", provider, supportedProvidersMsg)
 	}
-	cred, err := auth.LoginPasteToken(provider, os.Stdin)
+	key, err := readAPIKey(provider, os.Stdin, os.Stdout)
 	if err != nil {
 		return fmt.Errorf("login failed: %w", err)
 	}
-	return connectProvider(provider, cred.AccessToken)
+	return connectProvider(provider, key)
+}
+
+// stdinIsTerminal and readHidden are variables so tests can stand in for a
+// terminal.
+var (
+	stdinIsTerminal = func(f *os.File) bool { return term.IsTerminal(int(f.Fd())) }
+	readHidden      = func(f *os.File) ([]byte, error) { return term.ReadPassword(int(f.Fd())) }
+)
+
+// readAPIKey reads the key without echoing it when stdin is a terminal, so it
+// doesn't stay on screen or in the scrollback; piped input is read as a line.
+func readAPIKey(provider string, in *os.File, out io.Writer) (string, error) {
+	if !stdinIsTerminal(in) {
+		cred, err := auth.LoginPasteToken(provider, in)
+		if err != nil {
+			return "", err
+		}
+		return cred.AccessToken, nil
+	}
+	fmt.Fprintf(out, "Paste your %s API key (input hidden): ", provider)
+	raw, err := readHidden(in)
+	fmt.Fprintln(out)
+	if err != nil {
+		return "", fmt.Errorf("reading key: %w", err)
+	}
+	key := strings.TrimSpace(string(raw))
+	if key == "" {
+		return "", fmt.Errorf("token cannot be empty")
+	}
+	return key, nil
 }
 
 func connectProvider(provider, key string) error {

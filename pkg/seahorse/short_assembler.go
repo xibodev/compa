@@ -130,7 +130,6 @@ func (a *Assembler) Assemble(ctx context.Context, convID int64, input AssembleIn
 	// Build result
 	var messages []Message
 	var summaries []Summary
-	var sourceIDs []string
 	totalTokens := 0
 	maxDepth := 0
 	condensedCount := 0
@@ -139,7 +138,6 @@ func (a *Assembler) Assemble(ctx context.Context, convID int64, input AssembleIn
 		totalTokens += r.tokenCount
 		if r.itemType == "message" && r.message != nil {
 			messages = append(messages, *r.message)
-			sourceIDs = append(sourceIDs, fmt.Sprintf("msg:%d", r.message.ID))
 		} else if r.itemType == "summary" && r.summary != nil {
 			summaries = append(summaries, *r.summary)
 			if r.summary.Depth > maxDepth {
@@ -157,10 +155,9 @@ func (a *Assembler) Assemble(ctx context.Context, convID int64, input AssembleIn
 		if maxDepth >= 2 || condensedCount >= 2 {
 			systemPromptAddition = "Your context has been heavily compressed through multi-level summarization.\n" +
 				"- Do NOT assert specific facts (commands, SHAs, paths, timestamps) from summaries without expanding.\n" +
-				"- When uncertain, use expand to recover original detail before making claims.\n" +
-				"- Tool escalation: grep \xe2\x86\x92 describe \xe2\x86\x92 expand"
+				"- When uncertain, use short_grep to find the original messages and short_expand to read them before making claims."
 		} else {
-			systemPromptAddition = "Some earlier messages have been summarized. Use expand tools to recover details if needed."
+			systemPromptAddition = "Some earlier messages have been summarized. Use short_grep and short_expand to recover details if needed."
 		}
 	}
 

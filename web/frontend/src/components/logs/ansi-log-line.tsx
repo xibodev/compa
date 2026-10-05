@@ -1,4 +1,4 @@
-import { Fragment, useMemo } from "react"
+import { Fragment, memo, useMemo } from "react"
 
 import { parseAnsiSegments } from "@/lib/ansi-log"
 
@@ -6,7 +6,9 @@ type AnsiLogLineProps = {
   line: string
 }
 
-export function AnsiLogLine({ line }: AnsiLogLineProps) {
+export const AnsiLogLine = memo(function AnsiLogLine({
+  line,
+}: AnsiLogLineProps) {
   const segments = useMemo(() => {
     return parseAnsiSegments(line)
   }, [line])
@@ -20,4 +22,4 @@ export function AnsiLogLine({ line }: AnsiLogLineProps) {
       ))}
     </div>
   )
-}
+})

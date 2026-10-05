@@ -3,14 +3,11 @@ package config
 import (
 	"encoding/json"
 	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/caarlos0/env/v11"
 	"github.com/stretchr/testify/assert"
 	"gopkg.in/yaml.v3"
-
-	"github.com/xibodev/compa/pkg/credential"
 )
 
 func TestLoadSecurityValue(t *testing.T) {
@@ -118,18 +115,6 @@ func TestLoadSecurityValue(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotNil(t, v5.Tools.Web.Token)
 	assert.Equal(t, "token1", v5.Tools.Web.Token.raw)
-
-	dir := t.TempDir()
-	sshKeyPath := filepath.Join(dir, "compa_ed25519.key")
-	if err = os.WriteFile(sshKeyPath, []byte("fake-ssh-key-material\n"), 0o600); err != nil {
-		t.Fatalf("setup: %v", err)
-	}
-
-	const passphrase = "test-passphrase-32bytes-long-ok!"
-
-	t.Setenv(credential.SSHKeyPathEnvVar, sshKeyPath)
-
-	t.Setenv(credential.PassphraseEnvVar, passphrase)
 
 	v5.Tools.Web.Token.Set("newtoken1")
 	v5.Tools.Web.ApiKeys[0].Set("newapi-key1")

@@ -609,6 +609,7 @@ func (c *QQChannel) accountID() string {
 // handleC2CMessage handles QQ private messages.
 func (c *QQChannel) handleC2CMessage() event.C2CMessageEventHandler {
 	return func(event *dto.WSPayload, data *dto.WSC2CMessageData) error {
+		defer channels.RecoverPanic(c.Name(), "c2c message")
 		// deduplication check
 		if c.isDuplicate(data.ID) {
 			return nil
@@ -629,12 +630,27 @@ func (c *QQChannel) handleC2CMessage() event.C2CMessageEventHandler {
 			CanonicalID: identity.BuildCanonicalID("qq", data.Author.ID),
 		}
 
-		if !c.IsAllowedSender(sender) {
+		// Decide on the message before downloading its attachments. A
+		// message the policy rejects still goes to it, as text only, so that
+		// an unpaired sender is recorded for the owner to approve.
+		if !c.Admits("direct", sender, senderID) {
+			content := strings.TrimSpace(data.Content)
+			if content == "" {
+				content = "[attachment]"
+			}
+			c.HandleInboundContext(c.ctx, senderID, content, nil, bus.InboundContext{
+				Channel:   c.Name(),
+				Account:   c.accountID(),
+				ChatID:    senderID,
+				ChatType:  "direct",
+				SenderID:  senderID,
+				MessageID: data.ID,
+			}, sender)
 			return nil
 		}
 
 		content := strings.TrimSpace(data.Content)
-		mediaPaths, attachmentNotes := c.extractInboundAttachments(senderID, data.ID, data.Attachments)
+		mediaPaths, attachmentNotes := extractAttachments(c, senderID, data.ID, data.Attachments)
 		for _, note := range attachmentNotes {
 			content = appendContent(content, note)
 		}
@@ -678,6 +694,7 @@ func (c *QQChannel) handleC2CMessage() event.C2CMessageEventHandler {
 // handleGroupATMessage handles QQ group @ messages.
 func (c *QQChannel) handleGroupATMessage() event.GroupATMessageEventHandler {
 	return func(event *dto.WSPayload, data *dto.WSGroupATMessageData) error {
+		defer channels.RecoverPanic(c.Name(), "group message")
 		// deduplication check
 		if c.isDuplicate(data.ID) {
 			return nil
@@ -698,15 +715,12 @@ func (c *QQChannel) handleGroupATMessage() event.GroupATMessageEventHandler {
 			CanonicalID: identity.BuildCanonicalID("qq", data.Author.ID),
 		}
 
-		if !c.IsAllowedSender(sender) {
+		// Decide on the message before downloading its attachments.
+		if !c.Admits("group", sender, data.GroupID) {
 			return nil
 		}
 
 		content := strings.TrimSpace(data.Content)
-		mediaPaths, attachmentNotes := c.extractInboundAttachments(data.GroupID, data.ID, data.Attachments)
-		for _, note := range attachmentNotes {
-			content = appendContent(content, note)
-		}
 
 		// GroupAT event means bot is always mentioned; apply group trigger filtering.
 		respond, cleaned := c.ShouldRespondInGroup(true, content)
@@ -714,6 +728,11 @@ func (c *QQChannel) handleGroupATMessage() event.GroupATMessageEventHandler {
 			return nil
 		}
 		content = cleaned
+
+		mediaPaths, attachmentNotes := extractAttachments(c, data.GroupID, data.ID, data.Attachments)
+		for _, note := range attachmentNotes {
+			content = appendContent(content, note)
+		}
 		if content == "" && len(mediaPaths) == 0 {
 			logger.DebugC("qq", "Received empty group message with no attachments, ignoring")
 			return nil
@@ -753,6 +772,9 @@ func (c *QQChannel) handleGroupATMessage() event.GroupATMessageEventHandler {
 		return nil
 	}
 }
+
+// extractAttachments downloads a message's attachments; tests replace it.
+var extractAttachments = (*QQChannel).extractInboundAttachments
 
 func (c *QQChannel) extractInboundAttachments(
 	chatID, messageID string,

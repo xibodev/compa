@@ -7,11 +7,12 @@ import (
 
 	"github.com/xibodev/compa/internal/module"
 	"github.com/xibodev/compa/internal/moduletools"
+	"github.com/xibodev/compa/pkg/approval"
 	"github.com/xibodev/compa/pkg/modproto"
 )
 
 func TestModuleViewOptionalListsAreArrays(t *testing.T) {
-	v := moduleView(moduletools.Installed{Descriptor: &modproto.Descriptor{Module: "test"}, Runner: &module.Runner{Binary: "test.exe"}})
+	v := moduleView(moduletools.Installed{Descriptor: &modproto.Descriptor{Module: "test"}, Runner: &module.Runner{Binary: "test.exe"}}, approval.DefaultPolicy())
 	b, err := json.Marshal(v)
 	if err != nil {
 		t.Fatal(err)

@@ -529,12 +529,6 @@ func hasMediaRefs(messages []providers.Message) bool {
 	return false
 }
 
-func closeProviderIfStateful(provider providers.LLMProvider) {
-	if stateful, ok := provider.(providers.StatefulProvider); ok {
-		stateful.Close()
-	}
-}
-
 // activeRequestsInc atomically increments the active request count.
 func (al *AgentLoop) activeRequestsInc() {
 	al.activeReqMu.Lock()

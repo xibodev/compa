@@ -14,6 +14,166 @@ import (
 	"github.com/xibodev/compa/pkg/evolution"
 )
 
+// runColdPathWithApproval runs the cold path, approves the candidate drafts it
+// left (as a human would, except the ids in skip), and runs it again so apply
+// mode writes them. Apply mode never writes unapproved drafts (EV-06).
+func runColdPathWithApproval(
+	t *testing.T, rt *evolution.Runtime, store *evolution.Store, root string, skip ...string,
+) error {
+	t.Helper()
+	if err := rt.RunColdPathOnce(context.Background(), root); err != nil {
+		return err
+	}
+	drafts, err := store.LoadDrafts()
+	if err != nil {
+		t.Fatalf("LoadDrafts: %v", err)
+	}
+	var approved []evolution.SkillDraft
+	for _, draft := range drafts {
+		if draft.Status != evolution.DraftStatusCandidate || slicesContains(skip, draft.ID) {
+			continue
+		}
+		draft.Status = evolution.DraftStatusApproved
+		approved = append(approved, draft)
+	}
+	if len(approved) == 0 {
+		t.Fatal("cold path left no candidate draft to approve")
+	}
+	if err := store.SaveDrafts(approved); err != nil {
+		t.Fatalf("SaveDrafts: %v", err)
+	}
+	return rt.RunColdPathOnce(context.Background(), root)
+}
+
+func slicesContains(values []string, v string) bool {
+	for _, value := range values {
+		if value == v {
+			return true
+		}
+	}
+	return false
+}
+
+// Apply mode leaves new drafts as candidates until a human accepts them.
+func TestRuntime_RunColdPathOnce_ApplyModeDoesNotWriteUnapprovedDraft(t *testing.T) {
+	root := t.TempDir()
+	store := evolution.NewStore(evolution.NewPaths(root, ""))
+	if err := store.AppendLearningRecords([]evolution.LearningRecord{{
+		ID: "rule-1", Kind: evolution.RecordKindPattern, WorkspaceID: root,
+		CreatedAt: time.Unix(1700000000, 0).UTC(), Summary: "weather native-name path",
+		Status: evolution.RecordStatus("ready"), EventCount: 4,
+	}}); err != nil {
+		t.Fatalf("AppendLearningRecords: %v", err)
+	}
+	rt, err := evolution.NewRuntime(evolution.RuntimeOptions{
+		Config:  config.EvolutionConfig{Enabled: true, Mode: "apply"},
+		Now:     recordsClock,
+		Store:   store,
+		Applier: evolution.NewApplier(evolution.NewPaths(root, ""), nil),
+		DraftGenerator: stubDraftGenerator{draft: evolution.SkillDraft{
+			ID: "draft-1", WorkspaceID: root, SourceRecordID: "rule-1", TargetSkillName: "weather",
+			DraftType: evolution.DraftTypeShortcut, ChangeKind: evolution.ChangeKindCreate,
+			HumanSummary: "weather helper",
+			BodyOrPatch:  "---\nname: weather\ndescription: weather helper\n---\n# Weather\nUse native names.\n",
+		}},
+		SkillsRecaller: evolution.NewSkillsRecaller(root),
+	})
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := rt.RunColdPathOnce(context.Background(), root); err != nil {
+			t.Fatalf("RunColdPathOnce: %v", err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, "skills", "weather", "SKILL.md")); !os.IsNotExist(err) {
+		t.Fatalf("unapproved draft was written (stat err = %v)", err)
+	}
+	drafts, _ := store.LoadDrafts()
+	if len(drafts) != 1 || drafts[0].Status != evolution.DraftStatusCandidate {
+		t.Fatalf("drafts = %+v, want one candidate", drafts)
+	}
+
+	// The human accepts it in apply mode: written at once, with a profile.
+	accepted, err := evolution.AcceptDraft(context.Background(), evolution.NewPaths(root, ""), root, "draft-1", true, nil)
+	if err != nil {
+		t.Fatalf("AcceptDraft: %v", err)
+	}
+	if accepted.Status != evolution.DraftStatusAccepted {
+		t.Fatalf("status = %q, want accepted", accepted.Status)
+	}
+	if _, err := os.Stat(filepath.Join(root, "skills", "weather", "SKILL.md")); err != nil {
+		t.Fatalf("accepted draft not written: %v", err)
+	}
+	if _, err := evolution.RejectDraft(evolution.NewPaths(root, ""), root, "draft-1", nil); err == nil {
+		t.Fatal("RejectDraft of an applied draft succeeded")
+	}
+}
+
+// Accepted outside the apply mode, a draft is approved but not written; the
+// next run in the apply mode writes it.
+func TestAcceptDraftOutsideApplyModeWaitsForAnApplyRun(t *testing.T) {
+	root := t.TempDir()
+	paths := evolution.NewPaths(root, "")
+	store := evolution.NewStore(paths)
+	body := "---\nname: weather\ndescription: weather helper\n---\n# Weather\nUse native names.\n"
+	if err := store.SaveDrafts([]evolution.SkillDraft{{
+		ID: "d1", WorkspaceID: root, TargetSkillName: "weather",
+		DraftType: evolution.DraftTypeShortcut, ChangeKind: evolution.ChangeKindCreate,
+		HumanSummary: "weather helper", BodyOrPatch: body, Status: evolution.DraftStatusCandidate,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	skill := filepath.Join(root, "skills", "weather", "SKILL.md")
+
+	accepted, err := evolution.AcceptDraft(context.Background(), paths, root, "d1", false, nil)
+	if err != nil || accepted.Status != evolution.DraftStatusApproved {
+		t.Fatalf("AcceptDraft = %+v, %v; want the draft approved", accepted, err)
+	}
+	if _, err := os.Stat(skill); !os.IsNotExist(err) {
+		t.Fatalf("the draft was written outside the apply mode (stat err = %v)", err)
+	}
+
+	rt, err := evolution.NewRuntime(evolution.RuntimeOptions{
+		Config:         config.EvolutionConfig{Enabled: true, Mode: "apply"},
+		Now:            recordsClock,
+		Store:          store,
+		Applier:        evolution.NewApplier(paths, nil),
+		SkillsRecaller: evolution.NewSkillsRecaller(root),
+	})
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+	if err := rt.RunColdPathOnce(context.Background(), root); err != nil {
+		t.Fatalf("RunColdPathOnce: %v", err)
+	}
+	if got, err := os.ReadFile(skill); err != nil || strings.TrimSpace(string(got)) != strings.TrimSpace(body) {
+		t.Fatalf("skill = %q, %v; want the approved draft written", got, err)
+	}
+	drafts, _ := store.LoadDrafts()
+	if len(drafts) != 1 || drafts[0].Status != evolution.DraftStatusAccepted {
+		t.Fatalf("drafts = %+v, want the draft accepted", drafts)
+	}
+}
+
+func TestRejectDraftMarksDraftRejected(t *testing.T) {
+	root := t.TempDir()
+	paths := evolution.NewPaths(root, "")
+	store := evolution.NewStore(paths)
+	if err := store.SaveDrafts([]evolution.SkillDraft{{
+		ID: "d1", WorkspaceID: root, TargetSkillName: "weather", Status: evolution.DraftStatusCandidate,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	draft, err := evolution.RejectDraft(paths, root, "d1", nil)
+	if err != nil || draft.Status != evolution.DraftStatusRejected {
+		t.Fatalf("RejectDraft = %+v, %v", draft, err)
+	}
+	if _, err := evolution.AcceptDraft(context.Background(), paths, root, "d1", true, nil); err == nil {
+		t.Fatal("AcceptDraft of a rejected draft succeeded")
+	}
+}
+
 func TestRuntime_RunColdPathOnce_ApplyModeWritesSkillAndProfile(t *testing.T) {
 	root := t.TempDir()
 	store := evolution.NewStore(evolution.NewPaths(root, ""))
@@ -62,7 +222,7 @@ func TestRuntime_RunColdPathOnce_ApplyModeWritesSkillAndProfile(t *testing.T) {
 		t.Fatalf("NewRuntime: %v", err)
 	}
 
-	if runErr := rt.RunColdPathOnce(context.Background(), root); runErr != nil {
+	if runErr := runColdPathWithApproval(t, rt, store, root); runErr != nil {
 		t.Fatalf("RunColdPathOnce: %v", runErr)
 	}
 
@@ -329,7 +489,7 @@ func TestRuntime_RunColdPathOnce_ApplyModeAppliesExistingCandidateDraft(t *testi
 		t.Fatalf("NewRuntime: %v", err)
 	}
 
-	if runErr := rt.RunColdPathOnce(context.Background(), root); runErr != nil {
+	if runErr := runColdPathWithApproval(t, rt, store, root); runErr != nil {
 		t.Fatalf("RunColdPathOnce: %v", runErr)
 	}
 
@@ -417,7 +577,7 @@ func TestRuntime_RunColdPathOnce_ApplyModeSkipsOrphanCandidateDraft(t *testing.T
 		t.Fatalf("NewRuntime: %v", err)
 	}
 
-	if runErr := rt.RunColdPathOnce(context.Background(), root); runErr != nil {
+	if runErr := runColdPathWithApproval(t, rt, store, root, "draft-orphan"); runErr != nil {
 		t.Fatalf("RunColdPathOnce: %v", runErr)
 	}
 
@@ -501,7 +661,7 @@ func TestRuntime_RunColdPathOnce_ApplyModeNormalizesExistingCombinedCandidateDra
 		t.Fatalf("NewRuntime: %v", err)
 	}
 
-	if runErr := rt.RunColdPathOnce(context.Background(), root); runErr != nil {
+	if runErr := runColdPathWithApproval(t, rt, store, root); runErr != nil {
 		t.Fatalf("RunColdPathOnce: %v", runErr)
 	}
 
@@ -592,7 +752,7 @@ func TestRuntime_RunColdPathOnce_ApplyModeRetargetsStableMultiSkillPathIntoCombi
 		t.Fatalf("NewRuntime: %v", err)
 	}
 
-	if runErr := rt.RunColdPathOnce(context.Background(), root); runErr != nil {
+	if runErr := runColdPathWithApproval(t, rt, store, root); runErr != nil {
 		t.Fatalf("RunColdPathOnce: %v", runErr)
 	}
 
@@ -715,7 +875,7 @@ func TestRuntime_RunColdPathOnce_CombinedShortcutKeepsReadableLongGuidance(t *te
 		t.Fatalf("NewRuntime: %v", err)
 	}
 
-	if runErr := rt.RunColdPathOnce(context.Background(), root); runErr != nil {
+	if runErr := runColdPathWithApproval(t, rt, store, root); runErr != nil {
 		t.Fatalf("RunColdPathOnce: %v", runErr)
 	}
 
@@ -829,7 +989,7 @@ func TestRuntime_RunColdPathOnce_ApplyFailureQuarantinesDraftAndWritesRollbackAu
 		t.Fatalf("NewRuntime: %v", err)
 	}
 
-	err = rt.RunColdPathOnce(context.Background(), root)
+	err = runColdPathWithApproval(t, rt, store, root)
 	if err == nil {
 		t.Fatal("expected RunColdPathOnce to fail")
 	}
@@ -918,7 +1078,7 @@ func TestRuntime_RunColdPathOnce_FirstApplyFailureDoesNotCreateGhostProfile(t *t
 		t.Fatalf("NewRuntime: %v", err)
 	}
 
-	err = rt.RunColdPathOnce(context.Background(), root)
+	err = runColdPathWithApproval(t, rt, store, root)
 	if err == nil {
 		t.Fatal("expected RunColdPathOnce to fail")
 	}
@@ -1141,7 +1301,7 @@ func TestRuntime_RunColdPathOnce_ProfileSaveFailureRollsBackSkillAndQuarantinesD
 		t.Fatalf("NewRuntime: %v", err)
 	}
 
-	err = rt.RunColdPathOnce(context.Background(), root)
+	err = runColdPathWithApproval(t, rt, store, root)
 	if err == nil {
 		t.Fatal("expected RunColdPathOnce to fail")
 	}

@@ -1,14 +1,21 @@
-import { IconPlus, IconTrash } from "@tabler/icons-react"
-import { useState } from "react"
+import { IconPlus, IconSelector, IconTrash } from "@tabler/icons-react"
+import { useId, useState } from "react"
 import type { ReactNode } from "react"
 import { useTranslation } from "react-i18next"
+import { toast } from "sonner"
 
+import { launcherFetch } from "@/api/http"
 import {
+  APPROVAL_ACTIONS,
+  APPROVAL_HINTS,
+  APPROVAL_ORIGINS,
+  type ApprovalRuleForm,
   type CoreConfigForm,
   DM_SCOPE_OPTIONS,
   type LauncherForm,
   type MCPServerForm,
   type MCPServerType,
+  type RemoteImages,
   type TurnProfileForm,
   type TurnProfileMode,
 } from "@/components/config/form-model"
@@ -21,6 +28,12 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
 import { Input } from "@/components/ui/input"
 import {
   Select,
@@ -30,6 +43,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
+import { cn } from "@/lib/utils"
 
 type UpdateCoreField = <K extends keyof CoreConfigForm>(
   key: K,
@@ -80,11 +94,14 @@ export function AgentDefaultsSection({
   onTurnProfileFieldChange,
 }: AgentDefaultsSectionProps) {
   const { t } = useTranslation()
+  const turnProfileId = useId()
   const renderModeSelect = ({
+    id,
     value,
     onValueChange,
     allowCustom,
   }: {
+    id: string
     value: TurnProfileMode
     onValueChange: (mode: TurnProfileMode) => void
     allowCustom: boolean
@@ -93,7 +110,7 @@ export function AgentDefaultsSection({
       value={value}
       onValueChange={(next) => onValueChange(next as TurnProfileMode)}
     >
-      <SelectTrigger className="h-9">
+      <SelectTrigger id={id} className="h-9">
         <SelectValue />
       </SelectTrigger>
       <SelectContent>
@@ -272,10 +289,14 @@ export function AgentDefaultsSection({
 
           <div className="grid gap-3 lg:grid-cols-2">
             <div className="space-y-2">
-              <label className="text-sm font-medium">
+              <label
+                htmlFor={`${turnProfileId}-history`}
+                className="text-sm font-medium"
+              >
                 {t("pages.config.turn_profile_history")}
               </label>
               {renderModeSelect({
+                id: `${turnProfileId}-history`,
                 value: form.turnProfile.historyMode,
                 onValueChange: (mode) =>
                   onTurnProfileFieldChange(
@@ -290,10 +311,14 @@ export function AgentDefaultsSection({
             </div>
 
             <div className="space-y-2">
-              <label className="text-sm font-medium">
+              <label
+                htmlFor={`${turnProfileId}-system-prompt`}
+                className="text-sm font-medium"
+              >
                 {t("pages.config.turn_profile_system_prompt")}
               </label>
               {renderModeSelect({
+                id: `${turnProfileId}-system-prompt`,
                 value: form.turnProfile.systemPromptMode,
                 onValueChange: (mode) =>
                   onTurnProfileFieldChange(
@@ -308,10 +333,14 @@ export function AgentDefaultsSection({
             </div>
 
             <div className="space-y-2">
-              <label className="text-sm font-medium">
+              <label
+                htmlFor={`${turnProfileId}-skills`}
+                className="text-sm font-medium"
+              >
                 {t("pages.config.turn_profile_skills")}
               </label>
               {renderModeSelect({
+                id: `${turnProfileId}-skills`,
                 value: form.turnProfile.skillsMode,
                 onValueChange: (mode) =>
                   onTurnProfileFieldChange("skillsMode", mode),
@@ -335,10 +364,14 @@ export function AgentDefaultsSection({
             </div>
 
             <div className="space-y-2">
-              <label className="text-sm font-medium">
+              <label
+                htmlFor={`${turnProfileId}-tools`}
+                className="text-sm font-medium"
+              >
                 {t("pages.config.turn_profile_tools")}
               </label>
               {renderModeSelect({
+                id: `${turnProfileId}-tools`,
                 value: form.turnProfile.toolsMode,
                 onValueChange: (mode) =>
                   onTurnProfileFieldChange("toolsMode", mode),
@@ -680,7 +713,7 @@ export function MCPSection({
                       }
                     >
                       <SelectTrigger
-                        aria-label={t("pages.config.mcp_server_discovery_mode")}
+                        aria-label={t("pages.config.mcp_server_transport")}
                       >
                         <SelectValue />
                       </SelectTrigger>
@@ -869,6 +902,33 @@ export function ExecSection({ form, onFieldChange }: ExecSectionProps) {
   } | null>(null)
   const [isLoading, setIsLoading] = useState(false)
 
+  // The patterns that do not compile are named; other refusals keep the
+  // server's message.
+  const readPatternTestError = async (res: Response): Promise<string> => {
+    const detail = (await res.text().catch(() => "")).trim()
+    try {
+      const body = JSON.parse(detail) as {
+        error?: unknown
+        invalid_patterns?: unknown
+      }
+      if (
+        Array.isArray(body.invalid_patterns) &&
+        body.invalid_patterns.length > 0
+      ) {
+        return t("pages.config.pattern_detector_invalid", {
+          patterns: body.invalid_patterns.map(String).join("; "),
+          interpolation: { escapeValue: false },
+        })
+      }
+      if (typeof body.error === "string" && body.error.trim() !== "") {
+        return body.error
+      }
+    } catch {
+      // Not JSON: the text is the message.
+    }
+    return detail
+  }
+
   const testPatterns = async () => {
     if (!testCommand.trim()) {
       setTestResult(null)
@@ -888,7 +948,7 @@ export function ExecSection({ form, onFieldChange }: ExecSectionProps) {
 
     setIsLoading(true)
     try {
-      const res = await fetch("/api/config/test-command-patterns", {
+      const res = await launcherFetch("/api/config/test-command-patterns", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -897,6 +957,12 @@ export function ExecSection({ form, onFieldChange }: ExecSectionProps) {
           command: testCommand,
         }),
       })
+      // A refused test is an error, not a "no match" result.
+      if (!res.ok) {
+        throw new Error(
+          (await readPatternTestError(res)) || t("models.requestFailed"),
+        )
+      }
       const data = await res.json()
       setTestResult({
         allowed: data.allowed,
@@ -904,8 +970,13 @@ export function ExecSection({ form, onFieldChange }: ExecSectionProps) {
         matchedWhitelist: data.matched_whitelist ?? null,
         matchedBlacklist: data.matched_blacklist ?? null,
       })
-    } catch {
+    } catch (err) {
       setTestResult(null)
+      toast.error(
+        err instanceof Error && err.message
+          ? err.message
+          : t("models.requestFailed"),
+      )
     } finally {
       setIsLoading(false)
     }
@@ -985,6 +1056,7 @@ export function ExecSection({ form, onFieldChange }: ExecSectionProps) {
               <div className="flex gap-2">
                 <Input
                   value={testCommand}
+                  aria-label={t("pages.config.pattern_detector_title")}
                   placeholder={t(
                     "pages.config.pattern_detector_input_placeholder",
                   )}
@@ -1039,6 +1111,230 @@ export function ExecSection({ form, onFieldChange }: ExecSectionProps) {
   )
 }
 
+interface ApprovalsSectionProps {
+  form: CoreConfigForm
+  onFieldChange: UpdateCoreField
+  onAddRule: () => void
+  onRemoveRule: (id: string) => void
+  onRuleFieldChange: <K extends keyof ApprovalRuleForm>(
+    id: string,
+    key: K,
+    value: ApprovalRuleForm[K],
+  ) => void
+}
+
+// Tool, Source, From, Hints, Action and the remove button.
+const APPROVAL_RULE_COLUMNS =
+  "grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.4fr)_8rem_2.25rem] items-center gap-2"
+
+interface ApprovalValuesSelectProps {
+  label: string
+  values: string[]
+  options: readonly string[]
+  optionLabel: (value: string) => string
+  disabled: boolean
+  onValuesChange: (values: string[]) => void
+}
+
+/** Picks any number of a rule's values; none matches every call. */
+function ApprovalValuesSelect({
+  label,
+  values,
+  options,
+  optionLabel,
+  disabled,
+  onValuesChange,
+}: ApprovalValuesSelectProps) {
+  const text = values.map(optionLabel).join(", ")
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild disabled={disabled}>
+        <Button
+          type="button"
+          variant="outline"
+          aria-label={label}
+          title={text || undefined}
+          className="w-full min-w-0 justify-between font-normal"
+        >
+          <span className={cn("truncate", !text && "text-muted-foreground")}>
+            {text || "*"}
+          </span>
+          <IconSelector className="text-muted-foreground size-4" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start">
+        {options.map((option) => (
+          <DropdownMenuCheckboxItem
+            key={option}
+            checked={values.includes(option)}
+            // The menu stays open, so several values are picked in one go.
+            onSelect={(event) => event.preventDefault()}
+            onCheckedChange={(checked) =>
+              onValuesChange(
+                checked
+                  ? options.filter((o) => o === option || values.includes(o))
+                  : values.filter((value) => value !== option),
+              )
+            }
+          >
+            {optionLabel(option)}
+          </DropdownMenuCheckboxItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  )
+}
+
+export function ApprovalsSection({
+  form,
+  onFieldChange,
+  onAddRule,
+  onRemoveRule,
+  onRuleFieldChange,
+}: ApprovalsSectionProps) {
+  const { t } = useTranslation()
+  // A value the form does not know, in a rule it keeps, shows as it is.
+  const labelOf =
+    (options: readonly string[], key: string) => (value: string) =>
+      options.includes(value) ? t(`pages.config.${key}_${value}`) : value
+  const actionLabel = labelOf(APPROVAL_ACTIONS, "approval_action")
+  const originLabel = labelOf(APPROVAL_ORIGINS, "approval_origin")
+  const hintLabel = labelOf(APPROVAL_HINTS, "approval_hint")
+  const toolLabel = t("pages.config.approval_tool")
+  const sourceLabel = t("pages.config.approval_source")
+  const fromLabel = t("pages.config.approval_origin")
+  const hintsLabel = t("pages.config.approval_hints")
+  const actionColumnLabel = t("pages.config.approval_action")
+  const actionItems = APPROVAL_ACTIONS.map((action) => (
+    <SelectItem key={action} value={action}>
+      {actionLabel(action)}
+    </SelectItem>
+  ))
+
+  return (
+    <ConfigSectionCard title={t("pages.config.sections.approvals")}>
+      {/* A flex gap: the rows' negative margin would cancel space-y. */}
+      <div className="flex flex-col gap-3 py-4">
+        {form.approvalRules.length > 0 && (
+          // On a narrow screen the rows keep their columns and scroll.
+          <div className="-m-1 overflow-x-auto p-1">
+            <div className="min-w-[40rem] space-y-2">
+              <div
+                aria-hidden="true"
+                className={cn(
+                  APPROVAL_RULE_COLUMNS,
+                  "text-muted-foreground text-xs font-medium",
+                )}
+              >
+                <span>{toolLabel}</span>
+                <span>{sourceLabel}</span>
+                <span>{fromLabel}</span>
+                <span>{hintsLabel}</span>
+                <span>{actionColumnLabel}</span>
+                <span />
+              </div>
+              <ol
+                aria-label={t("pages.config.sections.approvals")}
+                className="space-y-2"
+              >
+                {form.approvalRules.map((rule) => {
+                  const kept = "kept" in rule
+                  return (
+                    <li key={rule.id} className={APPROVAL_RULE_COLUMNS}>
+                      <Input
+                        value={rule.tool}
+                        placeholder="*"
+                        aria-label={toolLabel}
+                        disabled={kept}
+                        onChange={(e) =>
+                          onRuleFieldChange(rule.id, "tool", e.target.value)
+                        }
+                      />
+                      <Input
+                        value={rule.source}
+                        placeholder="*"
+                        aria-label={sourceLabel}
+                        disabled={kept}
+                        onChange={(e) =>
+                          onRuleFieldChange(rule.id, "source", e.target.value)
+                        }
+                      />
+                      <ApprovalValuesSelect
+                        label={fromLabel}
+                        values={rule.origin}
+                        options={APPROVAL_ORIGINS}
+                        optionLabel={originLabel}
+                        disabled={kept}
+                        onValuesChange={(values) =>
+                          onRuleFieldChange(rule.id, "origin", values)
+                        }
+                      />
+                      <ApprovalValuesSelect
+                        label={hintsLabel}
+                        values={rule.hints}
+                        options={APPROVAL_HINTS}
+                        optionLabel={hintLabel}
+                        disabled={kept}
+                        onValuesChange={(values) =>
+                          onRuleFieldChange(rule.id, "hints", values)
+                        }
+                      />
+                      <Select
+                        value={rule.action}
+                        disabled={kept}
+                        onValueChange={(value) =>
+                          onRuleFieldChange(rule.id, "action", value)
+                        }
+                      >
+                        <SelectTrigger
+                          aria-label={actionColumnLabel}
+                          className="w-full"
+                        >
+                          <SelectValue>{actionLabel(rule.action)}</SelectValue>
+                        </SelectTrigger>
+                        <SelectContent>{actionItems}</SelectContent>
+                      </Select>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        aria-label={t("pages.config.approval_remove")}
+                        onClick={() => onRemoveRule(rule.id)}
+                      >
+                        <IconTrash className="size-4" />
+                      </Button>
+                    </li>
+                  )
+                })}
+              </ol>
+            </div>
+          </div>
+        )}
+
+        <div>
+          <Button type="button" variant="outline" onClick={onAddRule}>
+            <IconPlus className="size-4" />
+            {t("pages.config.approval_add")}
+          </Button>
+        </div>
+      </div>
+
+      <Field label={t("pages.config.approval_default")} layout="setting-row">
+        <Select
+          value={form.approvalDefault}
+          onValueChange={(value) => onFieldChange("approvalDefault", value)}
+        >
+          <SelectTrigger aria-label={t("pages.config.approval_default")}>
+            <SelectValue>{actionLabel(form.approvalDefault)}</SelectValue>
+          </SelectTrigger>
+          <SelectContent>{actionItems}</SelectContent>
+        </Select>
+      </Field>
+    </ConfigSectionCard>
+  )
+}
+
 interface RuntimeSectionProps {
   form: CoreConfigForm
   onFieldChange: UpdateCoreField
@@ -1046,6 +1342,7 @@ interface RuntimeSectionProps {
 
 export function RuntimeSection({ form, onFieldChange }: RuntimeSectionProps) {
   const { t } = useTranslation()
+  const dmScopeId = useId()
   const selectedDmScopeOption = DM_SCOPE_OPTIONS.find(
     (scope) => scope.value === form.dmScope,
   )
@@ -1056,12 +1353,13 @@ export function RuntimeSection({ form, onFieldChange }: RuntimeSectionProps) {
         label={t("pages.config.session_scope")}
         hint={t("pages.config.session_scope_hint")}
         layout="setting-row"
+        htmlFor={dmScopeId}
       >
         <Select
           value={form.dmScope}
           onValueChange={(value) => onFieldChange("dmScope", value)}
         >
-          <SelectTrigger className="w-full">
+          <SelectTrigger id={dmScopeId} className="w-full">
             <SelectValue>
               {selectedDmScopeOption
                 ? t(
@@ -1085,6 +1383,15 @@ export function RuntimeSection({ form, onFieldChange }: RuntimeSectionProps) {
           </SelectContent>
         </Select>
       </Field>
+
+      <SwitchCardField
+        label={t("pages.config.commands_owner_only")}
+        layout="setting-row"
+        checked={form.commandsOwnerOnly}
+        onCheckedChange={(checked) =>
+          onFieldChange("commandsOwnerOnly", checked)
+        }
+      />
 
       <SwitchCardField
         label={t("pages.config.heartbeat_enabled")}
@@ -1208,6 +1515,24 @@ export function LauncherSection({
         </Field>
       )}
 
+      {launcherForm.dashboardPassword.trim() !== "" && (
+        <Field
+          label={t("pages.config.dashboard_password_current")}
+          layout="setting-row"
+          controlClassName="md:max-w-md"
+        >
+          <Input
+            type="password"
+            value={launcherForm.dashboardPasswordCurrent}
+            disabled={disabled}
+            autoComplete="current-password"
+            onChange={(e) =>
+              onFieldChange("dashboardPasswordCurrent", e.target.value)
+            }
+          />
+        </Field>
+      )}
+
       <SwitchCardField
         label={t("pages.config.lan_access")}
         hint={t("pages.config.lan_access_hint")}
@@ -1215,6 +1540,16 @@ export function LauncherSection({
         checked={launcherForm.publicAccess}
         disabled={disabled}
         onCheckedChange={(checked) => onFieldChange("publicAccess", checked)}
+      />
+
+      <SwitchCardField
+        label={t("pages.config.allow_lan_without_password")}
+        layout="setting-row"
+        checked={launcherForm.allowLANWithoutPassword}
+        disabled={disabled}
+        onCheckedChange={(checked) =>
+          onFieldChange("allowLANWithoutPassword", checked)
+        }
       />
 
       <Field
@@ -1247,6 +1582,20 @@ export function LauncherSection({
         />
       </Field>
 
+      <Field
+        label={t("pages.config.allowed_hosts")}
+        layout="setting-row"
+        controlClassName="md:max-w-md"
+      >
+        <Textarea
+          value={launcherForm.allowedHostsText}
+          disabled={disabled}
+          placeholder="compa.example.com"
+          className="min-h-[88px]"
+          onChange={(e) => onFieldChange("allowedHostsText", e.target.value)}
+        />
+      </Field>
+
       <SwitchCardField
         label={t("pages.config.allow_localhost_bypass")}
         hint={t("pages.config.allow_localhost_bypass_hint")}
@@ -1273,6 +1622,28 @@ export function LauncherSection({
             onFieldChange("trustedProxyCIDRsText", e.target.value)
           }
         />
+      </Field>
+
+      <Field label={t("pages.config.remote_images")} layout="setting-row">
+        <Select
+          value={launcherForm.remoteImages}
+          disabled={disabled}
+          onValueChange={(value) =>
+            onFieldChange("remoteImages", value as RemoteImages)
+          }
+        >
+          <SelectTrigger aria-label={t("pages.config.remote_images")}>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="click">
+              {t("pages.config.remote_images_click")}
+            </SelectItem>
+            <SelectItem value="always">
+              {t("pages.config.remote_images_always")}
+            </SelectItem>
+          </SelectContent>
+        </Select>
       </Field>
     </ConfigSectionCard>
   )
@@ -1323,6 +1694,46 @@ export function DevicesSection({
         disabled={autoStartDisabled}
         onCheckedChange={onAutoStartChange}
       />
+    </ConfigSectionCard>
+  )
+}
+
+interface LoggingSectionProps {
+  form: CoreConfigForm
+  onFieldChange: UpdateCoreField
+}
+
+export function LoggingSection({ form, onFieldChange }: LoggingSectionProps) {
+  const { t } = useTranslation()
+
+  return (
+    <ConfigSectionCard title={t("pages.config.sections.logging")}>
+      <SwitchCardField
+        label={t("pages.config.log_redact_secrets")}
+        layout="setting-row"
+        checked={form.logRedactSecrets}
+        onCheckedChange={(checked) =>
+          onFieldChange("logRedactSecrets", checked)
+        }
+      />
+
+      <Field label={t("pages.config.log_max_size_mb")} layout="setting-row">
+        <Input
+          type="number"
+          min={1}
+          value={form.logMaxSizeMB}
+          onChange={(e) => onFieldChange("logMaxSizeMB", e.target.value)}
+        />
+      </Field>
+
+      <Field label={t("pages.config.log_max_files")} layout="setting-row">
+        <Input
+          type="number"
+          min={1}
+          value={form.logMaxFiles}
+          onChange={(e) => onFieldChange("logMaxFiles", e.target.value)}
+        />
+      </Field>
     </ConfigSectionCard>
   )
 }

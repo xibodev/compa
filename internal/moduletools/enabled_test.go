@@ -355,95 +355,42 @@ func TestTheLoaderStillReportsAMissingModule(t *testing.T) {
 	}
 }
 
-// A capability that may bill is refused BEFORE the module runs, on the agent
-// path as well as the cockpit's.
-//
-// The agent cannot approve it: approval is a person clicking on the Modules
-// page against the declared effects, and an approval arriving through the model
-// is stripped by design. Running it and hoping the module asks is not a gate.
-//
-// Verified against the real agent before this existed: asked to produce a
-// notebook pack, it produced one, from a cost_known:false capability, with
-// nobody having approved anything.
-func TestTheAgentRefusesAnUnpricedCapability(t *testing.T) {
-	home := t.TempDir()
-	tool := &CapabilityTool{
-		descriptor: &modproto.Descriptor{Module: "test.module"},
-		capability: modproto.Capability{
-			ID:      "test.paid",
-			Effects: modproto.Effects{CostKnown: false},
-		},
-		home:      home,
-		workspace: filepath.Join(home, "workspace"),
-	}
-
-	res := tool.Execute(context.Background(), map[string]any{})
-
-	if res == nil || !res.IsError {
-		t.Fatal("an unpriced capability ran through the agent with no approval")
-	}
-	for _, want := range []string{"Approve and run", "Modules page"} {
-		if !strings.Contains(res.ForLLM, want) {
-			t.Errorf("the refusal does not tell the agent where approval lives"+
-				" (%q):\n%s", want, res.ForLLM)
-		}
-	}
-	// It must not send the user to approve in chat: the host strips that, so
-	// the user would do exactly as asked and still fail.
-	if !strings.Contains(res.ForLLM, "Do not ask the user to approve here") {
-		t.Errorf("the refusal invites a chat approval, which is stripped:\n%s", res.ForLLM)
-	}
-}
-
-// A priced capability is untouched: a gate that stops free work would train the
-// operator to ignore it.
+// The tool runs what the approval policy let through and refuses nothing on
+// its own: an unpriced capability runs as a priced one does. It used to refuse
+// it with consent_required whatever the owner had decided.
 //
 // It runs the REAL Execute against the REAL fake module, so the assertion is
-// about the code path rather than about a condition restated in the test. An
-// earlier version asserted `!c.Effects.CostKnown` on a literal it had just
-// built, which cannot fail and proved only that the test compiled.
-func TestTheAgentRunsAPricedCapability(t *testing.T) {
+// about the code path rather than about a condition restated in the test.
+func TestTheToolLeavesTheDecisionToThePolicy(t *testing.T) {
 	home := t.TempDir()
-	dir := installFakeModule(t, home)
-	bin := filepath.Join(dir, "fake")
-	if runtime.GOOS == "windows" {
-		bin += ".exe"
-	}
+	installFakeModule(t, home)
 
 	in := Discover(context.Background(), home)
 	if len(in) == 0 || in[0].Descriptor == nil {
 		t.Skip("the fake module did not describe itself here")
 	}
 
-	var echo modproto.Capability
-	for _, c := range in[0].Descriptor.Capabilities {
-		if c.ID == "fake.echo" {
-			echo = c
+	for _, id := range []string{"fake.echo", "fake.estimate.unpriced"} {
+		var c modproto.Capability
+		for _, declared := range in[0].Descriptor.Capabilities {
+			if declared.ID == id {
+				c = declared
+			}
+		}
+		if c.ID == "" {
+			t.Fatalf("fixture changed: the fake module no longer declares %s", id)
+		}
+		tool := &CapabilityTool{
+			descriptor: in[0].Descriptor,
+			capability: c,
+			runner:     in[0].Runner,
+			home:       home,
+			workspace:  filepath.Join(home, "workspace"),
+		}
+
+		res := tool.Execute(context.Background(), map[string]any{"name": "hi"})
+		if res == nil || res.IsError {
+			t.Fatalf("%s did not run through the tool: %+v", id, res)
 		}
 	}
-	if !echo.Effects.CostKnown {
-		t.Fatalf("fixture changed: fake.echo no longer declares a known cost")
-	}
-
-	tool := &CapabilityTool{
-		descriptor: in[0].Descriptor,
-		capability: echo,
-		runner:     in[0].Runner,
-		home:       home,
-		workspace:  filepath.Join(home, "workspace"),
-	}
-
-	res := tool.Execute(context.Background(), map[string]any{"name": "hi"})
-
-	if res == nil {
-		t.Fatal("no result")
-	}
-	if res.IsError && strings.Contains(res.ForLLM, "Approve and run") {
-		t.Fatalf("a capability declaring a KNOWN cost was gated on approval:\n%s",
-			res.ForLLM)
-	}
-	if res.IsError {
-		t.Fatalf("the free capability failed for another reason:\n%s", res.ForLLM)
-	}
-	_ = bin
 }

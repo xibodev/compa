@@ -14,9 +14,11 @@ import (
 	"regexp"
 	"runtime"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/creack/pty"
 
@@ -41,6 +43,7 @@ func getSessionManager() *SessionManager {
 type ExecTool struct {
 	workingDir          string
 	timeout             time.Duration
+	timeoutSet          bool
 	denyPatterns        []*regexp.Regexp
 	allowPatterns       []*regexp.Regexp
 	customAllowPatterns []*regexp.Regexp
@@ -50,9 +53,65 @@ type ExecTool struct {
 	sessionManager      *SessionManager
 }
 
+const (
+	// defaultExecTimeout bounds a command run from a chat app when no
+	// timeout is configured: such a turn never runs a command without one.
+	defaultExecTimeout = 60 * time.Second
+	// execTimeoutCapFactor bounds the timeout argument: a command may ask
+	// for up to this many times the configured timeout.
+	execTimeoutCapFactor = 10
+	// maxExecTimeoutArg bounds the timeout argument when no timeout is
+	// configured, so a huge value cannot overflow a Duration.
+	maxExecTimeoutArg = 24 * time.Hour
+	// maxExecCaptureBytes bounds what one stream of a command run in the
+	// foreground keeps in memory; the rest is counted and dropped.
+	maxExecCaptureBytes = 1 << 20
+	// maxExecResultChars is how much output a command returns.
+	maxExecResultChars = 10000
+	// execWaitDelay bounds how long Wait waits for output pipes that a
+	// descendant still holds open after the shell has exited.
+	execWaitDelay = 2 * time.Second
+	// execKillGrace bounds the wait for a command after its process tree was
+	// killed; past it the result is returned without waiting further.
+	execKillGrace = 5 * time.Second
+)
+
+// The default deny patterns are a guard against the commands an agent most
+// often gets wrong, not a sandbox: a determined command can always be spelled
+// another way. They are matched against the lowercased command.
+//
+// The shell differs by platform -- sh -c on Unix, PowerShell on Windows -- so
+// the lists do too. Patterns that only reject shell syntax would block
+// ordinary PowerShell ($(...), ${env:X} and the backtick are everyday syntax
+// there), so each list keeps the dangerous operations, spelled the way its
+// shell spells them.
+const (
+	// windowsRemoveItem matches Remove-Item and the aliases PowerShell has
+	// for it.
+	windowsRemoveItem = `\b(?:remove-item|ri|rm|rmdir|rd|del|erase)\b`
+	// windowsRootTarget matches a path whose recursive deletion destroys far
+	// more than a project: a drive root, the current drive's root, the
+	// profile, or the system and program directories, optionally with \*.
+	windowsRootTarget = `(?:[a-z]:[\\/](?:windows|users|program files(?: \(x86\))?)|[a-z]:|[\\/]|~|\$home|` +
+		`\$\{?env:(?:userprofile|systemroot|windir|systemdrive|homedrive|programfiles)\}?)[\\/]?\*?`
+)
+
+// defaultDenyPatternsFor returns the default deny patterns for the shell the
+// exec tool uses on goos.
+func defaultDenyPatternsFor(goos string) []*regexp.Regexp {
+	shellPatterns := posixDenyPatterns
+	if goos == "windows" {
+		shellPatterns = windowsDenyPatterns
+	}
+	patterns := make([]*regexp.Regexp, 0, len(commonDenyPatterns)+len(shellPatterns))
+	patterns = append(patterns, commonDenyPatterns...)
+	return append(patterns, shellPatterns...)
+}
+
 var (
-	defaultDenyPatterns = []*regexp.Regexp{
-		regexp.MustCompile(`\brm\s+-[rf]{1,2}\b`),
+	// commonDenyPatterns name programs and operations that are dangerous
+	// whichever shell runs them.
+	commonDenyPatterns = []*regexp.Regexp{
 		regexp.MustCompile(`\bdel\s+/[fq]\b`),
 		regexp.MustCompile(`\brmdir\s+/s\b`),
 		// Match disk wiping commands (must be followed by space/args)
@@ -60,28 +119,10 @@ var (
 			`(^|[^-\w])\b(format|mkfs|diskpart)\b\s`,
 		),
 		regexp.MustCompile(`\bdd\s+if=`),
-		// Block writes to block devices (all common naming schemes).
-		regexp.MustCompile(
-			`>\s*/dev/(sd[a-z]|hd[a-z]|vd[a-z]|xvd[a-z]|nvme\d|mmcblk\d|loop\d|dm-\d|md\d|sr\d|nbd\d)`,
-		),
 		regexp.MustCompile(`\b(shutdown|reboot|poweroff)\b`),
-		regexp.MustCompile(`:\(\)\s*\{.*\};\s*:`),
-		regexp.MustCompile(`\$\([^)]+\)`),
-		regexp.MustCompile(`\$\{[^}]+\}`),
-		regexp.MustCompile("`[^`]+`"),
 		regexp.MustCompile(`\|\s*sh\b`),
 		regexp.MustCompile(`\|\s*bash\b`),
-		regexp.MustCompile(`;\s*rm\s+-[rf]`),
-		regexp.MustCompile(`&&\s*rm\s+-[rf]`),
-		regexp.MustCompile(`\|\|\s*rm\s+-[rf]`),
-		regexp.MustCompile(`<<\s*EOF`),
-		regexp.MustCompile(`\$\(\s*cat\s+`),
-		regexp.MustCompile(`\$\(\s*curl\s+`),
-		regexp.MustCompile(`\$\(\s*wget\s+`),
-		regexp.MustCompile(`\$\(\s*which\s+`),
 		regexp.MustCompile(`\bsudo\b`),
-		regexp.MustCompile(`\bchmod\s+[0-7]{3,4}\b`),
-		regexp.MustCompile(`\bchown\b`),
 		regexp.MustCompile(`\bpkill\b`),
 		regexp.MustCompile(`\bkillall\b`),
 		regexp.MustCompile(`\bkill\b`),
@@ -89,36 +130,72 @@ var (
 		regexp.MustCompile(`\bwget\b.*\|\s*(sh|bash)`),
 		regexp.MustCompile(`\bnpm\s+install\s+-g\b`),
 		regexp.MustCompile(`\bpip\s+install\s+--user\b`),
-		regexp.MustCompile(`\bapt\s+(install|remove|purge)\b`),
-		regexp.MustCompile(`\byum\s+(install|remove)\b`),
-		regexp.MustCompile(`\bdnf\s+(install|remove)\b`),
 		regexp.MustCompile(`\bdocker\s+run\b`),
 		regexp.MustCompile(`\bdocker\s+exec\b`),
 		regexp.MustCompile(`\bgit\s+push\b`),
 		regexp.MustCompile(`\bgit\s+force\b`),
 		regexp.MustCompile(`\bssh\b.*@`),
 		regexp.MustCompile(`\beval\b`),
+	}
+
+	// posixDenyPatterns cover sh syntax and Unix-only programs.
+	posixDenyPatterns = []*regexp.Regexp{
+		regexp.MustCompile(`\brm\s+-[rf]{1,2}\b`),
+		regexp.MustCompile(`;\s*rm\s+-[rf]`),
+		regexp.MustCompile(`&&\s*rm\s+-[rf]`),
+		regexp.MustCompile(`\|\|\s*rm\s+-[rf]`),
+		// Block writes to block devices (all common naming schemes).
+		regexp.MustCompile(
+			`>\s*/dev/(sd[a-z]|hd[a-z]|vd[a-z]|xvd[a-z]|nvme\d|mmcblk\d|loop\d|dm-\d|md\d|sr\d|nbd\d)`,
+		),
+		regexp.MustCompile(`:\(\)\s*\{.*\};\s*:`),
+		regexp.MustCompile(`\$\([^)]+\)`),
+		regexp.MustCompile(`\$\{[^}]+\}`),
+		regexp.MustCompile("`[^`]+`"),
+		regexp.MustCompile(`<<\s*EOF`),
+		regexp.MustCompile(`\$\(\s*cat\s+`),
+		regexp.MustCompile(`\$\(\s*curl\s+`),
+		regexp.MustCompile(`\$\(\s*wget\s+`),
+		regexp.MustCompile(`\$\(\s*which\s+`),
+		regexp.MustCompile(`\bchmod\s+[0-7]{3,4}\b`),
+		regexp.MustCompile(`\bchown\b`),
+		regexp.MustCompile(`\bapt\s+(install|remove|purge)\b`),
+		regexp.MustCompile(`\byum\s+(install|remove)\b`),
+		regexp.MustCompile(`\bdnf\s+(install|remove)\b`),
 		regexp.MustCompile(`\bsource\s+.*\.sh\b`),
 	}
 
-	// windowsDenyPatterns contains PowerShell-specific deny patterns that only
-	// apply on Windows, where commands are executed via powershell -Command.
+	// windowsDenyPatterns cover PowerShell, which runs commands on Windows.
 	windowsDenyPatterns = []*regexp.Regexp{
-		// [Text.Encoding] used to construct command strings at runtime.
-		// Matches [Text.Encoding] and [System.Text.Encoding] variants.
-		regexp.MustCompile(`\[(?:\w+\.)?text\.encoding\]`),
-		// PowerShell -EncodedCommand flag (base64-encoded command) and all short forms.
-		// Matches: -e, -ec, -enc, -en, -EncodedCommand (all with space prefix)
-		regexp.MustCompile(` -e(?:$|\s)| -ec(?:$|\s)| -enc(?:$|\s)| -en(?:$|\s)| -encodedcommand\b`),
-		// .GetString called on byte array to decode commands.
+		// Recursive deletion of a drive root, the profile or the system
+		// directory, through Remove-Item or any of its aliases, with -Recurse
+		// (or an abbreviation) before or after the target.
+		regexp.MustCompile(
+			windowsRemoveItem + `\s(?:[^;|&\n]*\s)?-r[a-z]*\b[^;|&\n]*\s["']?` + windowsRootTarget +
+				`["']?(?:\s|$|[;|&])`,
+		),
+		regexp.MustCompile(
+			windowsRemoveItem + `[^;|&\n]*\s["']?` + windowsRootTarget +
+				`["']?\s(?:[^;|&\n]*\s)?-r[a-z]*\b`,
+		),
+		// Disk wiping.
+		regexp.MustCompile(`\b(?:format-volume|clear-disk|initialize-disk|remove-partition)\b`),
+		// Shutting the machine down.
+		regexp.MustCompile(`\b(?:stop-computer|restart-computer)\b`),
+		// PowerShell's eval, and the usual "download and run" pipe into it.
+		regexp.MustCompile(`\b(?:invoke-expression|iex)\b`),
+		regexp.MustCompile(`\[scriptblock\]::create\b`),
+		// A nested PowerShell started with an encoded command: -EncodedCommand
+		// or any abbreviation of it, which PowerShell accepts.
+		regexp.MustCompile(
+			`\b(?:powershell|pwsh)(?:\.exe)?\b.*\s(?:-|--|/)` +
+				`(?:e|ec|en|enc|enco|encod|encode|encoded|encodedc|encodedco|encodedcom|encodedcomm|` +
+				`encodedcomma|encodedcomman|encodedcommand)(?:\s|$)`,
+		),
+		// Decoding bytes or base64 into a string to run.
+		regexp.MustCompile(`\[(?:system\.)?text\.encoding\]::[^;|\n]*\.getstring\s*\(`),
 		regexp.MustCompile(`\.getstring\s*\(\s*\[byte\[\]`),
-		// FromBase64String used in command construction chain.
-		regexp.MustCompile(`frombase64string\(`),
-		// PowerShell variable holding byte array used in GetString.
-		regexp.MustCompile(`\$[a-zA-Z_]\w*\s*=\s*\[byte\[\]`),
-		// Unicode escape sequences that could be used to construct commands.
-		// Matches \uXXXX format used to represent characters like i = "i"
-		regexp.MustCompile(`\\u[0-9a-fA-F]{4}`),
+		regexp.MustCompile(`frombase64string\s*\(`),
 	}
 
 	// absolutePathPattern matches absolute file paths in commands (Unix and Windows).
@@ -167,10 +244,7 @@ func NewExecToolWithConfig(
 		enableDenyPatterns := execConfig.EnableDenyPatterns
 		allowRemote = execConfig.AllowRemote
 		if enableDenyPatterns {
-			denyPatterns = append(denyPatterns, defaultDenyPatterns...)
-			if runtime.GOOS == "windows" {
-				denyPatterns = append(denyPatterns, windowsDenyPatterns...)
-			}
+			denyPatterns = append(denyPatterns, defaultDenyPatternsFor(runtime.GOOS)...)
 			if len(execConfig.CustomDenyPatterns) > 0 {
 				logger.InfoCF("tools", "using custom deny patterns", map[string]any{
 					"patterns": execConfig.CustomDenyPatterns,
@@ -195,10 +269,7 @@ func NewExecToolWithConfig(
 			customAllowPatterns = append(customAllowPatterns, re)
 		}
 	} else {
-		denyPatterns = append(denyPatterns, defaultDenyPatterns...)
-		if runtime.GOOS == "windows" {
-			denyPatterns = append(denyPatterns, windowsDenyPatterns...)
-		}
+		denyPatterns = append(denyPatterns, defaultDenyPatternsFor(runtime.GOOS)...)
 	}
 
 	var timeout time.Duration
@@ -267,11 +338,72 @@ func (t *ExecTool) Parameters() map[string]any {
 			},
 			"timeout": map[string]any{
 				"type":        "integer",
-				"description": "Timeout in seconds (0 = no timeout)",
+				"description": t.timeoutDescription(),
 			},
 		},
 		"required": []string{"action"},
 	}
+}
+
+// timeoutDescription documents the timeout argument with this tool's limits.
+func (t *ExecTool) timeoutDescription() string {
+	if t.timeout > 0 {
+		configured := int(t.timeout / time.Second)
+		return fmt.Sprintf(
+			"Timeout in seconds for a foreground run. 0 or omitted uses the configured %ds; at most %ds.",
+			configured, configured*execTimeoutCapFactor,
+		)
+	}
+	return fmt.Sprintf(
+		"Timeout in seconds for a foreground run. 0 or omitted means none in the terminal and %ds in chats.",
+		int(defaultExecTimeout/time.Second),
+	)
+}
+
+// commandTimeout returns the timeout of one foreground run: the timeout
+// argument, capped at execTimeoutCapFactor times the configured timeout, or
+// the configured timeout when the argument is absent or 0. A turn that came
+// from a chat app gets defaultExecTimeout rather than no timeout, unless the
+// owner of the tool explicitly set none (see SetTimeout).
+func (t *ExecTool) commandTimeout(ctx context.Context, args map[string]any) time.Duration {
+	base := t.timeout
+	if base <= 0 && !t.timeoutSet && !constants.IsInternalChannel(strings.TrimSpace(ToolChannel(ctx))) {
+		base = defaultExecTimeout
+	}
+	requested := timeoutArg(args["timeout"])
+	if requested <= 0 {
+		return base
+	}
+	limit := maxExecTimeoutArg
+	if base > 0 {
+		limit = base * execTimeoutCapFactor
+	}
+	return min(requested, limit)
+}
+
+// timeoutArg reads the timeout argument, in seconds, as the duration it
+// names; anything that is not a positive number gives 0.
+func timeoutArg(raw any) time.Duration {
+	var seconds float64
+	switch v := raw.(type) {
+	case float64:
+		seconds = v
+	case int:
+		seconds = float64(v)
+	case int64:
+		seconds = float64(v)
+	case json.Number:
+		seconds, _ = v.Float64()
+	case string:
+		seconds, _ = strconv.ParseFloat(strings.TrimSpace(v), 64)
+	}
+	if !(seconds > 0) {
+		return 0
+	}
+	if limit := maxExecTimeoutArg.Seconds(); seconds > limit {
+		seconds = limit
+	}
+	return time.Duration(seconds * float64(time.Second))
 }
 
 func (t *ExecTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
@@ -308,12 +440,10 @@ func (t *ExecTool) executeRun(ctx context.Context, args map[string]any) *ToolRes
 
 	// GHSA-pv8c-p6jf-3fpp: block exec from remote channels (e.g. Telegram webhooks)
 	// unless explicitly opted-in via config. Fail-closed: empty channel = blocked.
+	// The channel comes only from the turn's context, never from the
+	// arguments, which the model writes.
 	if !t.allowRemote {
-		channel := ToolChannel(ctx)
-		if channel == "" {
-			channel, _ = args["__channel"].(string)
-		}
-		channel = strings.TrimSpace(channel)
+		channel := strings.TrimSpace(ToolChannel(ctx))
 		if channel == "" || !constants.IsInternalChannel(channel) {
 			return ErrorResult("exec is restricted to internal channels")
 		}
@@ -388,41 +518,51 @@ func (t *ExecTool) executeRun(ctx context.Context, args map[string]any) *ToolRes
 		return t.runBackground(ctx, command, cwd, isPty)
 	}
 
-	return t.runSync(ctx, command, cwd)
+	return t.runSync(ctx, command, cwd, t.commandTimeout(ctx, args))
 }
 
-func (t *ExecTool) runSync(ctx context.Context, command, cwd string) *ToolResult {
+// shellCommand returns the command that runs a command line in the
+// platform's shell.
+func shellCommand(command string) *exec.Cmd {
+	if runtime.GOOS == "windows" {
+		return exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", command)
+	}
+	return exec.Command("sh", "-c", command)
+}
+
+func (t *ExecTool) runSync(ctx context.Context, command, cwd string, timeout time.Duration) *ToolResult {
 	// timeout == 0 means no timeout
 	var cmdCtx context.Context
 	var cancel context.CancelFunc
-	if t.timeout > 0 {
-		cmdCtx, cancel = context.WithTimeout(ctx, t.timeout)
+	if timeout > 0 {
+		cmdCtx, cancel = context.WithTimeout(ctx, timeout)
 	} else {
 		cmdCtx, cancel = context.WithCancel(ctx)
 	}
 	defer cancel()
 
-	var cmd *exec.Cmd
-	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(cmdCtx, "powershell", "-NoProfile", "-NonInteractive", "-Command", command)
-	} else {
-		cmd = exec.CommandContext(cmdCtx, "sh", "-c", command)
-	}
+	// The command is not tied to cmdCtx: cancelling is done below on the
+	// whole process tree, which killing only the shell would not reach.
+	cmd := shellCommand(command)
 	if cwd != "" {
 		cmd.Dir = cwd
 	}
 
-	prepareCommandForTermination(cmd)
-
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	stdout := newCappedBuffer(maxExecCaptureBytes)
+	stderr := newCappedBuffer(maxExecCaptureBytes)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	// A descendant that keeps the output pipes open must not keep Wait
+	// waiting once the shell has exited.
+	cmd.WaitDelay = execWaitDelay
 
 	// Route shell execution through the shared isolation entry point so exec tool
 	// subprocesses receive the same isolation policy as other integrations.
-	if err := isolation.Start(cmd); err != nil {
+	tree, err := startProcessTree(cmd)
+	if err != nil {
 		return ErrorResult(fmt.Sprintf("failed to start command: %v", err))
 	}
+	defer tree.release()
 
 	done := make(chan error, 1)
 	go func() {
@@ -439,37 +579,52 @@ func (t *ExecTool) runSync(ctx context.Context, command, cwd string) *ToolResult
 		done <- cmd.Wait()
 	}()
 
-	var err error
 	select {
 	case err = <-done:
 	case <-cmdCtx.Done():
-		_ = terminateProcessTree(cmd)
 		select {
 		case err = <-done:
-		case <-time.After(2 * time.Second):
-			if cmd.Process != nil {
-				_ = cmd.Process.Kill()
+			// It finished as the deadline passed.
+		default:
+			_ = tree.kill()
+			select {
+			case err = <-done:
+			case <-time.After(execKillGrace):
+				// Something the kill did not reach still holds the command;
+				// report what there is rather than wait for it.
+				err = fmt.Errorf("command did not exit within %v of being killed", execKillGrace)
 			}
-			err = <-done
 		}
 	}
 
 	output := stdout.String()
-	if stderr.Len() > 0 {
-		output += "\nSTDERR:\n" + stderr.String()
+	if errOut := stderr.String(); errOut != "" {
+		output += "\nSTDERR:\n" + errOut
 	}
 
 	if err != nil {
 		if errors.Is(cmdCtx.Err(), context.DeadlineExceeded) {
-			msg := fmt.Sprintf("Command timed out after %v", t.timeout)
+			msg := fmt.Sprintf("Command timed out after %v", timeout)
 			if output != "" {
-				msg += "\n\nPartial output before timeout:\n" + output
+				msg += "\n\nPartial output before timeout:\n" + truncateExecOutput(output)
 			}
 			return &ToolResult{
 				ForLLM:  msg,
 				ForUser: msg,
 				IsError: true,
 				Err:     fmt.Errorf("command timeout: %w", err),
+			}
+		}
+		if errors.Is(cmdCtx.Err(), context.Canceled) {
+			msg := "Command was cancelled"
+			if output != "" {
+				msg += "\n\nPartial output before it was cancelled:\n" + truncateExecOutput(output)
+			}
+			return &ToolResult{
+				ForLLM:  msg,
+				ForUser: msg,
+				IsError: true,
+				Err:     fmt.Errorf("command cancelled: %w", err),
 			}
 		}
 
@@ -492,10 +647,7 @@ func (t *ExecTool) runSync(ctx context.Context, command, cwd string) *ToolResult
 		output = "(no output)"
 	}
 
-	maxLen := 10000
-	if len(output) > maxLen {
-		output = output[:maxLen] + fmt.Sprintf("\n... (truncated, %d more chars)", len(output)-maxLen)
-	}
+	output = truncateExecOutput(output)
 
 	if err != nil {
 		return &ToolResult{
@@ -512,6 +664,81 @@ func (t *ExecTool) runSync(ctx context.Context, command, cwd string) *ToolResult
 	}
 }
 
+// truncateExecOutput cuts output to maxExecResultChars characters, never
+// inside a UTF-8 sequence, and says how much was left out.
+func truncateExecOutput(output string) string {
+	cut, rest := runePrefix(output, maxExecResultChars)
+	if rest == 0 {
+		return output
+	}
+	return cut + fmt.Sprintf("\n... (truncated, %d more chars)", rest)
+}
+
+// runePrefix returns the first limit runes of s and how many runes follow.
+func runePrefix(s string, limit int) (string, int) {
+	count := 0
+	for i := range s {
+		if count == limit {
+			return s[:i], utf8.RuneCountInString(s[i:])
+		}
+		count++
+	}
+	return s, 0
+}
+
+// cappedBuffer keeps the first limit bytes written to it and counts the rest,
+// so a command that prints without end cannot exhaust memory. Writes always
+// succeed: failing them would break the command's output pipe mid-run.
+type cappedBuffer struct {
+	mu      sync.Mutex
+	buf     bytes.Buffer
+	limit   int
+	dropped int64
+}
+
+func newCappedBuffer(limit int) *cappedBuffer {
+	return &cappedBuffer{limit: limit}
+}
+
+func (b *cappedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	room := b.limit - b.buf.Len()
+	switch {
+	case room >= len(p):
+		b.buf.Write(p)
+	case room > 0:
+		b.buf.Write(p[:room])
+		b.dropped += int64(len(p) - room)
+	default:
+		b.dropped += int64(len(p))
+	}
+	return len(p), nil
+}
+
+// String returns what was kept, followed by a marker when output was dropped.
+// A UTF-8 sequence split by the limit is left out.
+func (b *cappedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.dropped == 0 {
+		return b.buf.String()
+	}
+	kept := b.buf.Bytes()
+	if end := len(kept); end > 0 {
+		start := max(end-utf8.UTFMax, 0)
+		for i := end - 1; i >= start; i-- {
+			if utf8.RuneStart(kept[i]) {
+				if !utf8.FullRune(kept[i:]) {
+					kept = kept[:i]
+				}
+				break
+			}
+		}
+	}
+	return string(kept) + fmt.Sprintf("\n... [output truncated: %d more bytes]", b.dropped)
+}
+
 func (t *ExecTool) runBackground(ctx context.Context, command, cwd string, ptyEnabled bool) *ToolResult {
 	sessionID := generateSessionID()
 	session := &ProcessSession{
@@ -524,12 +751,7 @@ func (t *ExecTool) runBackground(ctx context.Context, command, cwd string, ptyEn
 		ptyKeyMode: PtyKeyModeCSI,
 	}
 
-	var cmd *exec.Cmd
-	if runtime.GOOS == "windows" {
-		cmd = exec.Command("powershell", "-NoProfile", "-NonInteractive", "-Command", command)
-	} else {
-		cmd = exec.Command("sh", "-c", command)
-	}
+	cmd := shellCommand(command)
 	if cwd != "" {
 		cmd.Dir = cwd
 	}
@@ -1464,8 +1686,11 @@ func localPathExists(cwd, token string) bool {
 	return err == nil && info != nil
 }
 
+// SetTimeout sets the timeout of foreground runs. 0 means none, also in turns
+// from chat apps, which otherwise get defaultExecTimeout.
 func (t *ExecTool) SetTimeout(timeout time.Duration) {
 	t.timeout = timeout
+	t.timeoutSet = true
 }
 
 func (t *ExecTool) SetRestrictToWorkspace(restrict bool) {

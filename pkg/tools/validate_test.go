@@ -91,7 +91,7 @@ func TestValidateToolArgs(t *testing.T) {
 			name:    "actual float for integer field",
 			schema:  baseSchema,
 			args:    map[string]any{"name": "dave", "age": float64(42.5)},
-			wantErr: "expected integer, got float64 with fractional part",
+			wantErr: "expected integer, got number with fractional part",
 		},
 		{
 			name: "number type accepts float",
@@ -189,10 +189,42 @@ func TestValidateToolArgs(t *testing.T) {
 			wantErr: "not in enum",
 		},
 		{
-			name:    "extra unexpected property rejected",
-			schema:  baseSchema,
+			name: "extra unexpected property rejected",
+			schema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"name": map[string]any{"type": "string"},
+				},
+				"additionalProperties": false,
+			},
 			args:    map[string]any{"name": "eve", "hobby": "chess"},
 			wantErr: "unexpected property \"hobby\"",
+		},
+		{
+			// JSON Schema allows other properties unless additionalProperties
+			// says otherwise; MCP servers rely on that.
+			name:   "extra property allowed without additionalProperties",
+			schema: baseSchema,
+			args:   map[string]any{"name": "eve", "hobby": "chess"},
+		},
+		{
+			name: "extra property validated against schema-valued additionalProperties",
+			schema: map[string]any{
+				"type":                 "object",
+				"properties":           map[string]any{"name": map[string]any{"type": "string"}},
+				"additionalProperties": map[string]any{"type": "integer"},
+			},
+			args: map[string]any{"name": "eve", "count": float64(3)},
+		},
+		{
+			name: "extra property of the wrong type for schema-valued additionalProperties",
+			schema: map[string]any{
+				"type":                 "object",
+				"properties":           map[string]any{"name": map[string]any{"type": "string"}},
+				"additionalProperties": map[string]any{"type": "integer"},
+			},
+			args:    map[string]any{"name": "eve", "count": "three"},
+			wantErr: "expected integer, got string",
 		},
 		{
 			name: "extra property allowed with additionalProperties true",
@@ -278,6 +310,123 @@ func TestValidateToolArgs(t *testing.T) {
 			schema: map[string]any{},
 			args:   map[string]any{"foo": "bar"},
 		},
+		{
+			name: "minimum enforced",
+			schema: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{"count": map[string]any{"type": "integer", "minimum": 1}},
+			},
+			args:    map[string]any{"count": float64(0)},
+			wantErr: "property \"count\": minimum",
+		},
+		{
+			name: "maximum enforced",
+			schema: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{"count": map[string]any{"type": "integer", "maximum": 10}},
+			},
+			args:    map[string]any{"count": float64(11)},
+			wantErr: "property \"count\": maximum",
+		},
+		{
+			name: "pattern enforced",
+			schema: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{"id": map[string]any{"type": "string", "pattern": "^[a-z]+$"}},
+			},
+			args:    map[string]any{"id": "ABC"},
+			wantErr: "property \"id\": pattern",
+		},
+		{
+			name: "anyOf satisfied by one branch",
+			schema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"content": map[string]any{"type": "string"},
+					"media":   map[string]any{"type": "array"},
+				},
+				"anyOf": []any{
+					map[string]any{"required": []string{"content"}},
+					map[string]any{"required": []string{"media"}},
+				},
+			},
+			args: map[string]any{"media": []any{}},
+		},
+		{
+			name: "anyOf satisfied by no branch",
+			schema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"content": map[string]any{"type": "string"},
+					"media":   map[string]any{"type": "array"},
+				},
+				"anyOf": []any{
+					map[string]any{"required": []string{"content"}},
+					map[string]any{"required": []string{"media"}},
+				},
+			},
+			args:    map[string]any{},
+			wantErr: "anyOf",
+		},
+		{
+			name: "$ref followed",
+			schema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"address": map[string]any{"$ref": "#/$defs/address"},
+				},
+				"$defs": map[string]any{
+					"address": map[string]any{
+						"type":       "object",
+						"properties": map[string]any{"city": map[string]any{"type": "string"}},
+						"required":   []string{"city"},
+					},
+				},
+			},
+			args:    map[string]any{"address": map[string]any{}},
+			wantErr: "property \"address\": missing required property \"city\"",
+		},
+		{
+			name: "nested object missing required property",
+			schema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"address": map[string]any{
+						"type":       "object",
+						"properties": map[string]any{"city": map[string]any{"type": "string"}},
+						"required":   []string{"city"},
+					},
+				},
+			},
+			args:    map[string]any{"address": map[string]any{}},
+			wantErr: "property \"address\": missing required property \"city\"",
+		},
+		{
+			// MCP servers declare older drafts; the schema still applies.
+			name: "older draft declared",
+			schema: map[string]any{
+				"$schema":    "https://json-schema.org/draft/2019-09/schema",
+				"type":       "object",
+				"properties": map[string]any{"q": map[string]any{"type": "string"}},
+				"required":   []any{"q"},
+			},
+			args:    map[string]any{},
+			wantErr: "missing required property \"q\"",
+		},
+		{
+			// An uncompilable schema (RE2 has no lookahead) is not enforced.
+			name: "uncompilable schema accepts the call",
+			schema: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{"id": map[string]any{"type": "string", "pattern": "^(?=a)a$"}},
+			},
+			args: map[string]any{"id": "b"},
+		},
+		{
+			name:   "integer arguments passed as Go ints",
+			schema: baseSchema,
+			args:   map[string]any{"name": "frank", "age": 30},
+		},
 	}
 
 	for _, tc := range tests {
@@ -309,7 +458,8 @@ func TestValidateToolArgs_RegistryIntegration(t *testing.T) {
 			"properties": map[string]any{
 				"path": map[string]any{"type": "string"},
 			},
-			"required": []string{"path"},
+			"required":             []string{"path"},
+			"additionalProperties": false,
 		},
 		result: SilentResult("file contents"),
 	})
@@ -406,10 +556,12 @@ func TestValidateToolArgs_RealSchemas(t *testing.T) {
 			wantErr: "expected string",
 		},
 		{
-			name:    "exec extra injected arg",
-			schema:  execSchema,
-			args:    map[string]any{"command": "ls", "malicious": "payload"},
-			wantErr: "unexpected property \"malicious\"",
+			// Other properties are allowed, as JSON Schema says; exec reads
+			// only the arguments it knows (see
+			// TestExecTool_ChannelArgumentDoesNotLiftRemoteRestriction).
+			name:   "exec extra arg allowed",
+			schema: execSchema,
+			args:   map[string]any{"command": "ls", "malicious": "payload"},
 		},
 
 		// CronTool

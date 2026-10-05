@@ -345,6 +345,12 @@ func (rt *Runtime) RunColdPathOnce(ctx context.Context, workspace string) error 
 	}
 
 	generator := rt.draftGeneratorForWorkspace(workspace)
+	applier := rt.applierForWorkspace(workspace)
+	if mode == "apply" && applier != nil {
+		if err := rt.applyApprovedDrafts(ctx, workspace, store, applier, runID); err != nil {
+			return err
+		}
+	}
 	if generator == nil {
 		logger.DebugCF("evolution", "Skipped drafting because no draft generator is available", map[string]any{
 			"workspace": workspace,
@@ -354,7 +360,6 @@ func (rt *Runtime) RunColdPathOnce(ctx context.Context, workspace string) error 
 	}
 
 	recaller := rt.skillsRecallerForWorkspace(workspace)
-	applier := rt.applierForWorkspace(workspace)
 	readyRules := filterReadyRules(patternRecords, workspace)
 	readyRules = enrichReadyRulesForDrafts(readyRules, taskRecords)
 	if len(readyRules) == 0 {
@@ -376,7 +381,6 @@ func (rt *Runtime) RunColdPathOnce(ctx context.Context, workspace string) error 
 	for _, rule := range readyRules {
 		readyRuleByID[rule.ID] = rule
 	}
-	appliedExistingDrafts := 0
 	changedExistingDrafts := false
 	for _, draft := range existingDrafts {
 		if draft.WorkspaceID != workspace || draft.Status != DraftStatusCandidate {
@@ -409,19 +413,10 @@ func (rt *Runtime) RunColdPathOnce(ctx context.Context, workspace string) error 
 		draft.ReviewNotes = appendUniqueStrings(draft.ReviewNotes, append(review.ReviewNotes, normalizationNotes...)...)
 		draft.ScanFindings = appendUniqueStrings(draft.ScanFindings, review.Findings...)
 		changedExistingDrafts = true
-		if draft.Status != DraftStatusCandidate || mode != "apply" || applier == nil {
-			if saveErr := store.SaveDrafts([]SkillDraft{draft}); saveErr != nil {
-				return saveErr
-			}
-			continue
-		}
-		updatedDraft, applyErr := rt.applyCandidateDraft(ctx, workspace, store, applier, draft, runID)
-		if applyErr != nil {
-			return applyErr
-		}
-		if updatedDraft.Status == DraftStatusAccepted {
-			appliedExistingDrafts++
-			changedExistingDrafts = true
+		// Candidates are only refreshed here; a human accepts them before
+		// anything is written (see applyApprovedDrafts).
+		if saveErr := store.SaveDrafts([]SkillDraft{draft}); saveErr != nil {
+			return saveErr
 		}
 	}
 	if changedExistingDrafts {
@@ -435,7 +430,6 @@ func (rt *Runtime) RunColdPathOnce(ctx context.Context, workspace string) error 
 		"workspace":            workspace,
 		"ready_patterns":       len(readyRules),
 		"existing_draft_count": len(existingBySource),
-		"applied_existing":     appliedExistingDrafts,
 		"ready_pattern_ids":    joinRecordIDs(readyRules),
 		"ready_patterns_info":  summarizePatternRecords(readyRules),
 		"run_id":               runID,
@@ -483,7 +477,6 @@ func (rt *Runtime) RunColdPathOnce(ctx context.Context, workspace string) error 
 		}
 
 		draft = rt.finalizeDraft(workspace, rule, matches, evidence, draft)
-		draftSaved := false
 		logger.DebugCF("evolution", "Finalized skill draft", map[string]any{
 			"workspace":    workspace,
 			"pattern_id":   rule.ID,
@@ -493,19 +486,10 @@ func (rt *Runtime) RunColdPathOnce(ctx context.Context, workspace string) error 
 			"status":       string(draft.Status),
 			"run_id":       runID,
 		})
-		if mode == "apply" && applier != nil && draft.Status == DraftStatusCandidate {
-			var err error
-			draft, err = rt.applyCandidateDraft(ctx, workspace, store, applier, draft, runID)
-			if err != nil {
-				return err
-			}
-			draftSaved = true
-		}
-
-		if !draftSaved {
-			if err := store.SaveDrafts([]SkillDraft{draft}); err != nil {
-				return err
-			}
+		// New drafts are never written directly, in any mode: they wait for
+		// `compa-kernel evolution drafts accept`.
+		if err := store.SaveDrafts([]SkillDraft{draft}); err != nil {
+			return err
 		}
 		logger.DebugCF("evolution", "Saved skill draft", map[string]any{
 			"workspace":    workspace,
@@ -536,6 +520,12 @@ func (rt *Runtime) recordsForColdPathInputs(
 	admitted := make([]LearningRecord, 0, len(records))
 	evidence := make([]LearningRecord, 0, len(records))
 	judge := rt.successJudgeForWorkspace(workspace)
+	judged := make(map[string]bool)
+	defer func() {
+		if len(judged) > 0 {
+			rt.saveJudgements(workspace, judged)
+		}
+	}()
 
 	for _, record := range records {
 		if record.Kind != RecordKindTask || record.WorkspaceID != workspace {
@@ -552,18 +542,24 @@ func (rt *Runtime) recordsForColdPathInputs(
 
 		evidenceRecord := record
 		if record.Success != nil && *record.Success && judge != nil {
-			decision, err := judge.JudgeTaskRecord(ctx, record)
-			if err != nil {
-				return nil, nil, err
-			}
-			judgedSuccess := decision.Success
-			evidenceRecord.Success = &judgedSuccess
-			if !decision.Success {
-				logger.DebugCF("evolution", "Rejected task record by success judge", map[string]any{
-					"workspace": workspace,
-					"record_id": record.ID,
-					"reason":    strings.TrimSpace(decision.Reason),
-				})
+			if record.JudgedSuccess != nil {
+				judgedSuccess := *record.JudgedSuccess
+				evidenceRecord.Success = &judgedSuccess
+			} else {
+				decision, err := judge.JudgeTaskRecord(ctx, record)
+				if err != nil {
+					return nil, nil, err
+				}
+				judgedSuccess := decision.Success
+				evidenceRecord.Success = &judgedSuccess
+				judged[record.ID] = decision.Success
+				if !decision.Success {
+					logger.DebugCF("evolution", "Rejected task record by success judge", map[string]any{
+						"workspace": workspace,
+						"record_id": record.ID,
+						"reason":    strings.TrimSpace(decision.Reason),
+					})
+				}
 			}
 		}
 		evidence = append(evidence, evidenceRecord)
@@ -682,12 +678,14 @@ func coldPathEvidenceRejectReason(record LearningRecord) string {
 	return ""
 }
 
+// storeForWorkspace returns the store of workspace, on the runtime's clock
+// for record retention.
 func (rt *Runtime) storeForWorkspace(workspace string) *Store {
 	paths := NewPaths(workspace, rt.cfg.StateDir)
 	if rt.store != nil && rt.store.paths.RootDir == paths.RootDir && rt.store.paths.Workspace == paths.Workspace {
-		return rt.store
+		return rt.store.withClock(rt.now)
 	}
-	return NewStore(paths)
+	return NewStore(paths).withClock(rt.now)
 }
 
 func (rt *Runtime) skillsRecallerForWorkspace(workspace string) *SkillsRecaller {

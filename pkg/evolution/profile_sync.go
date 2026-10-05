@@ -8,10 +8,17 @@ import (
 func SaveAppliedProfile(store *Store, workspace string, draft SkillDraft, now time.Time) error {
 	return store.UpdateProfile(workspace, draft.TargetSkillName, func(profile *SkillProfile, exists bool) error {
 		if !exists {
+			// Only a skill evolution created counts as evolved; a change to a
+			// skill it found (with no usage profile yet) keeps it manual, so
+			// it can't be replaced or merged later.
+			origin := "evolved"
+			if draft.ChangeKind != ChangeKindCreate {
+				origin = "manual"
+			}
 			*profile = SkillProfile{
 				SkillName:   draft.TargetSkillName,
 				WorkspaceID: workspace,
-				Origin:      "evolved",
+				Origin:      origin,
 			}
 		}
 

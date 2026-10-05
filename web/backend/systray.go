@@ -4,6 +4,9 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"os/signal"
+	"syscall"
 
 	"fyne.io/systray"
 
@@ -12,6 +15,17 @@ import (
 )
 
 func runTray() {
+	// SIGTERM or Ctrl+C quits like the tray's Quit: Run returns, and main's
+	// deferred shutdown stops the gateway this launcher started.
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(signals)
+	go func() {
+		if _, ok := <-signals; ok {
+			logger.Info("Shutting down...")
+			systray.Quit()
+		}
+	}()
 	systray.Run(onReady, onExit)
 }
 

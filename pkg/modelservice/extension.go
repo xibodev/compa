@@ -15,10 +15,14 @@ import (
 )
 
 // NewExtensionClient returns the client of the daemon at endpoint using secret.
+// The secret only goes to a daemon providers.CheckExtensionEndpoint accepts.
 func NewExtensionClient(endpoint, secret string) (*extension.Client, error) {
 	endpoint = strings.TrimSpace(endpoint)
 	if endpoint == "" {
 		return nil, errors.New("extension daemon URL is required")
+	}
+	if err := providers.CheckExtensionEndpoint(endpoint, secret); err != nil {
+		return nil, err
 	}
 	return extension.NewClient(extension.Config{BaseURL: endpoint, Secret: secret, HTTPClient: providers.ExtensionControlClient()})
 }

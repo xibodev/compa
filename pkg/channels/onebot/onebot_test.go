@@ -1,6 +1,7 @@
 package onebot
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -8,7 +9,10 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/xibodev/compa/pkg/bus"
+	"github.com/xibodev/compa/pkg/config"
 	"github.com/xibodev/compa/pkg/media"
 )
 
@@ -122,5 +126,93 @@ func TestParseMessageSegments_StoresDownloadedMediaRef(t *testing.T) {
 	}
 	if meta.Filename != "image.png" {
 		t.Fatalf("meta.Filename = %q, want %q", meta.Filename, "image.png")
+	}
+}
+
+func TestParseSegments_AtAllIsNotAMention(t *testing.T) {
+	raw := json.RawMessage(`[{"type":"at","data":{"qq":"all"}},{"type":"text","data":{"text":" meeting at 5"}}]`)
+	if parseSegments(raw, 10001).IsBotMentioned {
+		t.Fatal("@all addresses everyone, not the bot")
+	}
+	raw = json.RawMessage(`[{"type":"at","data":{"qq":"10001"}},{"type":"text","data":{"text":" hi"}}]`)
+	if !parseSegments(raw, 10001).IsBotMentioned {
+		t.Fatal("@bot is a mention")
+	}
+}
+
+func newGroupTestChannel(t *testing.T, gt config.GroupTriggerConfig, downloads *int) (*OneBotChannel, *bus.MessageBus) {
+	t.Helper()
+	messageBus := bus.NewMessageBus()
+	ch, err := NewOneBotChannel(&config.Channel{Type: config.ChannelOneBot, Enabled: true, GroupTrigger: gt},
+		&config.OneBotSettings{}, messageBus)
+	if err != nil {
+		t.Fatalf("NewOneBotChannel: %v", err)
+	}
+	ch.ctx = context.Background()
+	tmp := filepath.Join(t.TempDir(), "image.png")
+	if err := os.WriteFile(tmp, []byte("img"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ch.downloadFn = func(string, string) string {
+		*downloads++
+		return tmp
+	}
+	return ch, messageBus
+}
+
+func groupImageEvent(id string, mention bool) *oneBotRawEvent {
+	segments := `[{"type":"image","data":{"url":"https://cdn.example.com/a.png","file":"a.png"}}]`
+	if mention {
+		segments = `[{"type":"at","data":{"qq":"10001"}},{"type":"image","data":{"url":"https://cdn.example.com/a.png","file":"a.png"}}]`
+	}
+	return &oneBotRawEvent{
+		PostType:    "message",
+		MessageType: "group",
+		MessageID:   json.RawMessage(`"` + id + `"`),
+		UserID:      json.RawMessage(`20002`),
+		GroupID:     json.RawMessage(`30003`),
+		SelfID:      json.RawMessage(`10001`),
+		Message:     json.RawMessage(segments),
+	}
+}
+
+func TestHandleMessage_GroupTriggerBeforeDownload(t *testing.T) {
+	downloads := 0
+	ch, messageBus := newGroupTestChannel(t, config.GroupTriggerConfig{MentionOnly: true}, &downloads)
+
+	ch.handleRawEvent(groupImageEvent("m1", false))
+	select {
+	case inbound := <-messageBus.InboundChan():
+		t.Fatalf("an unmentioned group message is ignored: %#v", inbound)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if downloads != 0 {
+		t.Fatalf("media of an ignored message was downloaded %d times", downloads)
+	}
+
+	ch.handleRawEvent(groupImageEvent("m2", true))
+	select {
+	case inbound := <-messageBus.InboundChan():
+		if inbound.Content != "[image]" || len(inbound.Media) != 1 {
+			t.Fatalf("content = %q, media = %v", inbound.Content, inbound.Media)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("a mentioned group message with an image is forwarded")
+	}
+	if downloads != 1 {
+		t.Fatalf("downloads = %d, want 1", downloads)
+	}
+}
+
+func TestCheckWSURL(t *testing.T) {
+	ctx := context.Background()
+	if err := checkWSURL(ctx, "ws://127.0.0.1:3001"); err != nil {
+		t.Fatalf("a local ws:// URL is accepted: %v", err)
+	}
+	if err := checkWSURL(ctx, "wss://onebot.example.com/ws"); err != nil {
+		t.Fatalf("wss:// is accepted: %v", err)
+	}
+	if err := checkWSURL(ctx, "ws://8.8.8.8:3001"); err == nil {
+		t.Fatal("ws:// to an internet host is refused")
 	}
 }

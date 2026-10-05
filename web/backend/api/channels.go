@@ -41,18 +41,19 @@ type channelConfigResponse struct {
 	Variant           string   `json:"variant,omitempty"`
 }
 
-// registerChannelRoutes binds read-only channel catalog endpoints to the ServeMux.
+// registerChannelRoutes binds the channel catalog, channel config and
+// pairing request endpoints to the ServeMux.
 func (h *Handler) registerChannelRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/channels/catalog", h.handleListChannelCatalog)
 	mux.HandleFunc("GET /api/channels/{name}/config", h.handleGetChannelConfig)
+	h.registerPairingRoutes(mux)
 }
 
 // handleListChannelCatalog returns the channels supported by backend.
 //
 //	GET /api/channels/catalog
 func (h *Handler) handleListChannelCatalog(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
+	writeJSON(w, http.StatusOK, map[string]any{
 		"channels": channelCatalog,
 	})
 }
@@ -64,22 +65,17 @@ func (h *Handler) handleGetChannelConfig(w http.ResponseWriter, r *http.Request)
 	channelName := r.PathValue("name")
 	item, ok := findChannelCatalogItem(channelName)
 	if !ok {
-		http.Error(w, "Channel not found", http.StatusNotFound)
+		writeJSONError(w, http.StatusNotFound, "channel not found")
 		return
 	}
 
 	cfg, err := config.LoadConfig(h.configPath)
 	if err != nil {
-		http.Error(w, "Failed to load config", http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, "failed to load config")
 		return
 	}
 
-	resp := buildChannelConfigResponse(cfg, item)
-
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
-	}
+	writeJSON(w, http.StatusOK, buildChannelConfigResponse(cfg, item))
 }
 
 func findChannelCatalogItem(name string) (channelCatalogItem, bool) {
@@ -107,7 +103,7 @@ var channelSecretFieldMap = map[string][]string{
 	"irc":             {"password", "nickserv_password", "sasl_password"},
 	"whatsapp":        {},
 	"whatsapp_native": {},
-	"maixcam":         {},
+	"maixcam":         {"token"},
 	"mqtt":            {"username", "password"},
 }
 
@@ -145,6 +141,15 @@ func buildChannelConfigResponse(cfg *config.Config, item channelCatalogItem) cha
 		delete(settings, key)
 	}
 	addChannelCommonConfig(settings, bc)
+	if item.Name == "whatsapp_native" {
+		// The chats the native client takes as input; unset means the
+		// default, which the page shows like any other value.
+		if decoded, err := bc.GetDecoded(); err == nil {
+			if wa, ok := decoded.(*config.WhatsAppSettings); ok {
+				settings["chats"] = wa.EffectiveChats()
+			}
+		}
+	}
 	resp.Config = settings
 
 	return resp
@@ -154,17 +159,21 @@ func defaultChannelConfig(configKey string) *config.Channel {
 	return config.DefaultConfig().Channels.Get(configKey)
 }
 
+// addChannelCommonConfig adds the channel_list fields every channel shares
+// to its settings. dm_policy and group_policy are the policies in effect, so
+// a channel that never set one shows the one its allow_from implies, and
+// group_trigger is always present, so mention_only reads as saved.
 func addChannelCommonConfig(settings map[string]any, bc *config.Channel) {
 	settings["enabled"] = bc.Enabled
 	if len(bc.AllowFrom) > 0 {
 		settings["allow_from"] = []string(bc.AllowFrom)
 	}
+	settings["dm_policy"] = bc.EffectiveDMPolicy()
+	settings["group_policy"] = bc.EffectiveGroupPolicy()
 	if bc.ReasoningChannelID != "" {
 		settings["reasoning_channel_id"] = bc.ReasoningChannelID
 	}
-	if bc.GroupTrigger.MentionOnly || len(bc.GroupTrigger.Prefixes) > 0 {
-		settings["group_trigger"] = bc.GroupTrigger
-	}
+	settings["group_trigger"] = bc.GroupTrigger
 	if bc.Typing.Enabled {
 		settings["typing"] = bc.Typing
 	}

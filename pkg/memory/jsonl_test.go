@@ -803,6 +803,169 @@ func TestCrashRecovery_PartialLine(t *testing.T) {
 	}
 }
 
+func TestAddMessage_AfterTornLineStartsANewLine(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	if err := store.AddMessage(ctx, "torn", "user", "before"); err != nil {
+		t.Fatalf("AddMessage: %v", err)
+	}
+	f, err := os.OpenFile(store.jsonlPath("torn"), os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatalf("open for append: %v", err)
+	}
+	if _, err := f.WriteString(`{"role":"assistant","content":"cut sh`); err != nil {
+		t.Fatalf("write partial: %v", err)
+	}
+	f.Close()
+
+	if err := store.AddMessage(ctx, "torn", "user", "after"); err != nil {
+		t.Fatalf("AddMessage after torn line: %v", err)
+	}
+
+	history, err := store.GetHistory(ctx, "torn")
+	if err != nil {
+		t.Fatalf("GetHistory: %v", err)
+	}
+	if len(history) != 2 || history[0].Content != "before" || history[1].Content != "after" {
+		t.Fatalf("history = %+v, want the message after the torn line kept", history)
+	}
+}
+
+func TestGetHistory_SkipsOversizedLine(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	if err := store.AddMessage(ctx, "big", "user", "first"); err != nil {
+		t.Fatalf("AddMessage: %v", err)
+	}
+	huge, err := json.Marshal(providers.Message{
+		Role:    "tool",
+		Content: strings.Repeat("x", maxLineSize+1),
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	f, err := os.OpenFile(store.jsonlPath("big"), os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatalf("open for append: %v", err)
+	}
+	if _, err := f.Write(append(huge, '\n')); err != nil {
+		t.Fatalf("write oversized line: %v", err)
+	}
+	f.Close()
+	if err := store.AddMessage(ctx, "big", "user", "last"); err != nil {
+		t.Fatalf("AddMessage: %v", err)
+	}
+
+	history, err := store.GetHistory(ctx, "big")
+	if err != nil {
+		t.Fatalf("GetHistory: %v", err)
+	}
+	if len(history) != 2 || history[0].Content != "first" || history[1].Content != "last" {
+		t.Fatalf("history = %d messages, want the two around the oversized line", len(history))
+	}
+
+	// Line numbers still count the skipped line: keeping the last message
+	// skips the first three lines.
+	if err := store.TruncateHistory(ctx, "big", 1); err != nil {
+		t.Fatalf("TruncateHistory: %v", err)
+	}
+	history, err = store.GetHistory(ctx, "big")
+	if err != nil {
+		t.Fatalf("GetHistory after truncate: %v", err)
+	}
+	if len(history) != 1 || history[0].Content != "last" {
+		t.Fatalf("history after truncate = %+v", history)
+	}
+}
+
+func TestCommitSummary_KeepsMessagesAppendedMeanwhile(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	for _, content := range []string{"q1", "a1", "q2", "a2", "q3", "a3"} {
+		if err := store.AddMessage(ctx, "commit", "user", content); err != nil {
+			t.Fatalf("AddMessage: %v", err)
+		}
+	}
+	snapshot, err := store.GetHistory(ctx, "commit")
+	if err != nil {
+		t.Fatalf("GetHistory: %v", err)
+	}
+	// Messages a turn appends while the summary is being written.
+	for _, content := range []string{"q4", "a4"} {
+		if err := store.AddMessage(ctx, "commit", "user", content); err != nil {
+			t.Fatalf("AddMessage: %v", err)
+		}
+	}
+
+	ok, err := store.CommitSummary(ctx, "commit", snapshot[:4], "summary of q1-a2")
+	if err != nil || !ok {
+		t.Fatalf("CommitSummary = %v, %v; want committed", ok, err)
+	}
+	history, err := store.GetHistory(ctx, "commit")
+	if err != nil {
+		t.Fatalf("GetHistory: %v", err)
+	}
+	var got []string
+	for _, msg := range history {
+		got = append(got, msg.Content)
+	}
+	if want := []string{"q3", "a3", "q4", "a4"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("history = %v, want %v", got, want)
+	}
+	if summary, _ := store.GetSummary(ctx, "commit"); summary != "summary of q1-a2" {
+		t.Fatalf("summary = %q", summary)
+	}
+}
+
+func TestCommitSummary_RefusesWhenTheHistoryChanged(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	for _, content := range []string{"q1", "a1", "q2"} {
+		if err := store.AddMessage(ctx, "changed", "user", content); err != nil {
+			t.Fatalf("AddMessage: %v", err)
+		}
+	}
+	snapshot, err := store.GetHistory(ctx, "changed")
+	if err != nil {
+		t.Fatalf("GetHistory: %v", err)
+	}
+	// The session is cleared while the summary is being written.
+	if err := store.SetHistory(ctx, "changed", []providers.Message{{Role: "user", Content: "fresh"}}); err != nil {
+		t.Fatalf("SetHistory: %v", err)
+	}
+
+	ok, err := store.CommitSummary(ctx, "changed", snapshot[:2], "stale summary")
+	if err != nil || ok {
+		t.Fatalf("CommitSummary = %v, %v; want refused", ok, err)
+	}
+	history, _ := store.GetHistory(ctx, "changed")
+	if len(history) != 1 || history[0].Content != "fresh" {
+		t.Fatalf("history = %+v, want it untouched", history)
+	}
+	if summary, _ := store.GetSummary(ctx, "changed"); summary != "" {
+		t.Fatalf("summary = %q, want none", summary)
+	}
+}
+
+func TestStoresOnOneDirectoryShareSessionLocks(t *testing.T) {
+	dir := t.TempDir()
+	first, err := NewJSONLStore(dir)
+	if err != nil {
+		t.Fatalf("NewJSONLStore: %v", err)
+	}
+	second, err := NewJSONLStore(filepath.Join(dir, "."))
+	if err != nil {
+		t.Fatalf("NewJSONLStore: %v", err)
+	}
+	if first.sessionLock("s") != second.sessionLock("s") {
+		t.Fatal("stores on the same directory use different session locks")
+	}
+}
+
 func TestPersistence_AcrossInstances(t *testing.T) {
 	dir := t.TempDir()
 	ctx := context.Background()

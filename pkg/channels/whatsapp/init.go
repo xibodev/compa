@@ -19,7 +19,12 @@ func init() {
 			if !ok {
 				return nil, channels.ErrSendFailed
 			}
-			return NewWhatsAppChannel(bc, c, b)
+			ch, err := NewWhatsAppChannel(bc, c, b)
+			if err != nil {
+				return nil, err
+			}
+			ch.maxMediaBytes = int64(cfg.Agents.Defaults.GetMaxMediaSize())
+			return ch, nil
 		},
 	)
 }

@@ -3,6 +3,8 @@ package module_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,25 +17,68 @@ import (
 	"github.com/xibodev/compa/pkg/modproto"
 )
 
-// buildFakeModule compiles the fake module once per test binary.
+// fakeModuleBinary is the fake module, built once for the whole test binary
+// by TestMain.
+var fakeModuleBinary string
+
+// TestMain builds the fake module once.
 //
 // The tests run a REAL detached process rather than an in-process mock. That is
 // the point: a mock would test the host's idea of a module, while this tests
 // the boundary -- argv, stdout, stderr, exit codes, process trees, and the
 // filesystem -- which is where every defect inherited from the donor lives.
+//
+// A build failure fails the run. Skipping would let every test that needs
+// the module pass without having run.
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "compa-fakemodule-*")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "create build dir:", err)
+		os.Exit(1)
+	}
+	fakeModuleBinary = filepath.Join(dir, "fakemodule")
+	if runtime.GOOS == "windows" {
+		fakeModuleBinary += ".exe"
+	}
+	cmd := exec.Command("go", "build", "-tags", "goolm,stdjson", "-o", fakeModuleBinary, "../../cmd/fakemodule")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		fmt.Fprintf(os.Stderr, "build fakemodule: %v\n%s", err, out)
+		os.RemoveAll(dir)
+		os.Exit(1)
+	}
+	code := m.Run()
+	os.RemoveAll(dir)
+	os.Exit(code)
+}
+
+// buildFakeModule returns the shared fake module binary.
 func buildFakeModule(t *testing.T) string {
 	t.Helper()
+	return fakeModuleBinary
+}
 
-	bin := filepath.Join(t.TempDir(), "fakemodule")
-	if runtime.GOOS == "windows" {
-		bin += ".exe"
+// copyFakeModule copies the fake module into a directory of its own, for a
+// test that puts files beside the binary.
+func copyFakeModule(t *testing.T) string {
+	t.Helper()
+	dest := filepath.Join(t.TempDir(), filepath.Base(fakeModuleBinary))
+	in, err := os.Open(fakeModuleBinary)
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	cmd := exec.Command("go", "build", "-o", bin, "../../cmd/fakemodule")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("build fakemodule: %v\n%s", err, out)
+	defer in.Close()
+	out, err := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+	if err != nil {
+		t.Fatal(err)
 	}
-	return bin
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		t.Fatal(err)
+	}
+	if err := out.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return dest
 }
 
 func newRunner(t *testing.T) *module.Runner {
@@ -436,6 +481,10 @@ func TestUnknownCapabilityIsAStructuredError(t *testing.T) {
 // TestModuleInheritsNoEnvironment proves a module cannot pick up host
 // credentials or resolve paths from the ambient environment, which is what
 // makes "everything arrives in the request" enforceable.
+//
+// It asks the spawned process what it can see. An earlier version only checked
+// that a canary VALUE was absent from stderr, which the module never printed,
+// so it could not fail.
 func TestModuleInheritsNoEnvironment(t *testing.T) {
 	t.Setenv("COMPA_SECRET_CANARY", "must-not-leak")
 
@@ -445,18 +494,27 @@ func TestModuleInheritsNoEnvironment(t *testing.T) {
 		t.Fatalf("Describe: %v", err)
 	}
 
-	// The module echoes its own view of the environment via stderr diagnostics
-	// only; the strong check is that the host sets an empty Env, asserted here
-	// by confirming a successful run with no inherited variables needed.
 	res, err := r.Invoke(context.Background(), d, &modproto.Request{
-		Capability: "fake.echo",
-		Input:      json.RawMessage(`{"name":"x"}`),
+		Capability: "fake.env",
+		Input:      json.RawMessage(`{}`),
 	})
 	if err != nil {
 		t.Fatalf("a module must run correctly with no inherited environment: %v", err)
 	}
-	if strings.Contains(res.Stderr, "must-not-leak") {
-		t.Error("host environment leaked into the module process")
+	var seen struct {
+		Names []string `json:"names"`
+	}
+	if err := json.Unmarshal(res.Envelope.Result, &seen); err != nil {
+		t.Fatalf("result: %v", err)
+	}
+	if len(seen.Names) == 0 {
+		t.Fatal("the module reported no environment at all, so this cannot tell" +
+			" an empty environment from a broken probe")
+	}
+	for _, name := range seen.Names {
+		if strings.EqualFold(name, "COMPA_SECRET_CANARY") {
+			t.Fatal("host environment leaked into the module process")
+		}
 	}
 }
 

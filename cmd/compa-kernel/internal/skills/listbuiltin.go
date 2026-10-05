@@ -7,8 +7,12 @@ func newListBuiltinCommand() *cobra.Command {
 		Use:     "list-builtin",
 		Short:   "List available builtin skills",
 		Example: `compa-kernel skills list-builtin`,
-		Run: func(_ *cobra.Command, _ []string) {
-			skillsListBuiltinCmd()
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			fsys, err := builtinSkillsFS()
+			if err != nil {
+				return err
+			}
+			return skillsListBuiltin(cmd.OutOrStdout(), fsys)
 		},
 	}
 

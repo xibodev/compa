@@ -39,11 +39,7 @@ export type ChatInputDisabledReason =
   | "noModelAvailable"
 
 export type LiveVoiceStatus =
-  | "idle"
-  | "listening"
-  | "transcribing"
-  | "waiting"
-  | "speaking"
+  "idle" | "listening" | "transcribing" | "waiting" | "speaking"
 
 interface ChatComposerProps {
   input: string
@@ -214,7 +210,10 @@ export function ChatComposer({
                 <span className="text-xs font-semibold text-red-600 tabular-nums dark:text-red-400">
                   {t("chat.voice.recording", { seconds: recordingSeconds })}
                 </span>
-                <div aria-hidden="true" className="flex h-3 items-center gap-0.5">
+                <div
+                  aria-hidden="true"
+                  className="flex h-3 items-center gap-0.5"
+                >
                   {[20, 60, 40, 80, 50, 90, 30].map((h, i) => (
                     <span
                       key={i}

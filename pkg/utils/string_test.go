@@ -116,8 +116,15 @@ func TestSanitizeMessageContent(t *testing.T) {
 		{"strip ZWSP", "Hello\u200bworld", "Helloworld"},
 		{"strip RTL override", "Hi\u202eevil", "Hievil"},
 		{"strip BOM", "\uFEFFcontent", "content"},
-		{"strip multiple", "a\u200c\u202ab\u202cc", "abc"},
+		{"strip multiple", "a\u200b\u202ab\u202cc", "abc"},
 		{"unicode letters preserved", "café \u65e5\u672c\u8a9e", "café \u65e5\u672c\u8a9e"},
+		// ZWNJ and ZWJ shape words and join emoji: they stay.
+		{"persian ZWNJ kept", "می\u200cخواهم", "می\u200cخواهم"},
+		{"devanagari ZWJ kept", "क्\u200dष", "क्\u200dष"},
+		{"emoji ZWJ sequence kept", "👨\u200d👩\u200d👧", "👨\u200d👩\u200d👧"},
+		{"emoji variation selector kept", "❤\ufe0f", "❤\ufe0f"},
+		{"emoji tag sequence kept", "🏴\U000e0067\U000e0062\U000e0073\U000e0063\U000e0074\U000e007f", "🏴\U000e0067\U000e0062\U000e0073\U000e0063\U000e0074\U000e007f"},
+		{"joiner kept, override stripped", "a\u200c\u202eb", "a\u200cb"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

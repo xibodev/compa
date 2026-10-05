@@ -214,6 +214,88 @@ func TestMatchAllowed(t *testing.T) {
 	}
 }
 
+func TestMatchAllowedPlatformSpecificEntries(t *testing.T) {
+	matrixSender := bus.SenderInfo{
+		Platform:    "matrix",
+		PlatformID:  "@alice:matrix.org",
+		CanonicalID: "matrix:@alice:matrix.org",
+		Username:    "@alice:matrix.org",
+	}
+	telegramSender := bus.SenderInfo{
+		Platform:    "telegram",
+		PlatformID:  "123456",
+		CanonicalID: "telegram:123456",
+		Username:    "Alice_Bot",
+	}
+	discordSender := bus.SenderInfo{
+		Platform:    "discord",
+		PlatformID:  "98765432",
+		CanonicalID: "discord:98765432",
+		Username:    "bob",
+	}
+	slackSender := bus.SenderInfo{
+		Platform:    "slack",
+		PlatformID:  "U123",
+		CanonicalID: "slack:U123",
+		Username:    "Carol",
+	}
+	// DeltaChat crossposting names the sender by the local part only.
+	deltaSender := bus.SenderInfo{
+		Platform:    "deltachat",
+		PlatformID:  "alice@example.org",
+		CanonicalID: "deltachat:alice@example.org",
+		Username:    "alice",
+	}
+	ircSender := bus.SenderInfo{
+		Platform:    "irc",
+		PlatformID:  "nick:with:colons",
+		CanonicalID: "irc:nick:with:colons",
+	}
+
+	tests := []struct {
+		name    string
+		sender  bus.SenderInfo
+		allowed string
+		want    bool
+	}{
+		// Matrix user IDs contain a colon but are not "platform:id".
+		{"matrix user ID", matrixSender, "@alice:matrix.org", true},
+		{"matrix canonical user ID", matrixSender, "matrix:@alice:matrix.org", true},
+		{"matrix other user", matrixSender, "@alice:evil.org", false},
+		{"matrix user ID is case-sensitive", matrixSender, "@Alice:matrix.org", false},
+		// Only known channel names are platform prefixes.
+		{"unknown prefix is part of the ID", ircSender, "nick:with:colons", true},
+		{"unknown prefix does not match canonical form", telegramSender, "telegramx:123456", false},
+		{"known platform still canonical", telegramSender, "telegram:123456", true},
+		{"other known platform does not match", telegramSender, "discord:123456", false},
+		{"numeric prefix is an ID", bus.SenderInfo{Platform: "x", PlatformID: "1:2"}, "1:2", true},
+		// Telegram and Discord usernames ignore case.
+		{"telegram username any case", telegramSender, "@alice_bot", true},
+		{"telegram username upper case", telegramSender, "@ALICE_BOT", true},
+		{"telegram username differs", telegramSender, "@alice", false},
+		{"discord username any case", discordSender, "@Bob", true},
+		{"slack username keeps case", slackSender, "@carol", false},
+		{"slack username exact", slackSender, "@Carol", true},
+		{"platform-scoped username", telegramSender, "telegram:@alice_bot", true},
+		{"platform-scoped username on other platform", telegramSender, "discord:@alice_bot", false},
+		// DeltaChat "@name" never matches a bare local part.
+		{"deltachat local part only", deltaSender, "@alice", false},
+		{"deltachat other domain", deltaSender, "@alice@evil.org", false},
+		{"deltachat full address with @", deltaSender, "@alice@example.org", true},
+		{"deltachat full address any case", deltaSender, "Alice@Example.org", true},
+		{"deltachat canonical", deltaSender, "deltachat:alice@example.org", true},
+		{"deltachat plain local part", deltaSender, "alice", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := MatchAllowed(tt.sender, tt.allowed); got != tt.want {
+				t.Errorf("MatchAllowed(%+v, %q) = %v, want %v", tt.sender, tt.allowed, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestIsNumeric(t *testing.T) {
 	tests := []struct {
 		input string

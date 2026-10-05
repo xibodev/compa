@@ -16,10 +16,22 @@ import (
 	"github.com/xibodev/compa/pkg/logger"
 )
 
+// An utterance ends after silenceTimeout without audio. One that goes on
+// without a pause ends at maxUtteranceDuration or maxUtteranceBytes of
+// audio, so a speaker can't grow a recording without bound; the speech that
+// follows starts the next utterance.
+const (
+	silenceTimeout       = 1500 * time.Millisecond
+	maxUtteranceDuration = 60 * time.Second
+	maxUtteranceBytes    = 5 << 20
+)
+
 type speechAccumulator struct {
 	writer      *oggwriter.OggWriter
 	file        string
+	startedAt   time.Time
 	lastAudioAt time.Time
+	bytes       int
 	mu          sync.Mutex
 	closed      bool
 	chatID      string
@@ -37,6 +49,7 @@ func (a *speechAccumulator) Push(chunk bus.AudioChunk) {
 	}
 
 	a.lastAudioAt = time.Now()
+	a.bytes += len(chunk.Data)
 
 	pkt := &rtp.Packet{
 		Header: rtp.Header{
@@ -50,6 +63,16 @@ func (a *speechAccumulator) Push(chunk bus.AudioChunk) {
 	if err := a.writer.WriteRTP(pkt); err != nil {
 		logger.ErrorCF("voice-agent", "Failed to write RTP", map[string]any{"error": err})
 	}
+}
+
+// ended reports whether the utterance is over at now: its speaker paused, or
+// it reached its maximum length.
+func (a *speechAccumulator) ended(now time.Time) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return now.Sub(a.lastAudioAt) > silenceTimeout ||
+		(!a.startedAt.IsZero() && now.Sub(a.startedAt) >= maxUtteranceDuration) ||
+		a.bytes >= maxUtteranceBytes
 }
 
 func (a *speechAccumulator) Close() {
@@ -106,12 +129,12 @@ func (a *Agent) listenChunks(ctx context.Context) {
 			if !ok {
 				return
 			}
-			a.handleChunk(chunk)
+			a.handleChunk(ctx, chunk)
 		}
 	}
 }
 
-func (a *Agent) handleChunk(chunk bus.AudioChunk) {
+func (a *Agent) handleChunk(ctx context.Context, chunk bus.AudioChunk) {
 	// Only accept Opus-encoded audio
 	if chunk.Format != "opus" {
 		logger.DebugCF("voice-agent", "Ignoring unsupported audio format", map[string]any{"format": chunk.Format})
@@ -122,6 +145,13 @@ func (a *Agent) handleChunk(chunk bus.AudioChunk) {
 
 	a.mu.Lock()
 	acc, exists := a.sessions[key]
+	if exists && acc.ended(time.Now()) {
+		// This chunk starts the next utterance.
+		acc.Close()
+		delete(a.sessions, key)
+		go a.processUtterance(ctx, acc)
+		exists = false
+	}
 	if !exists {
 		filename := filepath.Join(os.TempDir(), fmt.Sprintf("voice_%s_%d.ogg", key, time.Now().UnixNano()))
 		writer, err := oggwriter.New(filename, uint32(chunk.SampleRate), uint16(chunk.Channels))
@@ -131,10 +161,12 @@ func (a *Agent) handleChunk(chunk bus.AudioChunk) {
 			return
 		}
 
+		now := time.Now()
 		acc = &speechAccumulator{
 			writer:      writer,
 			file:        filename,
-			lastAudioAt: time.Now(),
+			startedAt:   now,
+			lastAudioAt: now,
 			chatID:      chunk.ChatID,
 			speakerID:   chunk.SpeakerID,
 			sessionID:   chunk.SessionID,
@@ -168,11 +200,7 @@ func (a *Agent) checkSilence(ctx context.Context) {
 	var finished []*speechAccumulator
 
 	for key, acc := range a.sessions {
-		acc.mu.Lock()
-		last := acc.lastAudioAt
-		acc.mu.Unlock()
-
-		if now.Sub(last) > 1500*time.Millisecond {
+		if acc.ended(now) {
 			acc.Close()
 			delete(a.sessions, key)
 			finished = append(finished, acc)

@@ -3,8 +3,7 @@
  * Uses plain fetch (not launcherFetch) to avoid redirect loops on auth pages.
  */
 export type LoginResult =
-  | { ok: true }
-  | { ok: false; status: number; error: string }
+  { ok: true } | { ok: false; status: number; error: string }
 
 export async function postLauncherDashboardLogin(
   password: string,
@@ -51,23 +50,57 @@ export async function postLauncherDashboardLogout(): Promise<boolean> {
   return res.ok
 }
 
-export type SetupResult = { ok: true } | { ok: false; error: string }
+/** Signs every browser out, this one included. */
+export async function postLauncherDashboardLogoutAll(): Promise<LoginResult> {
+  const res = await fetch("/api/auth/logout-all", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    credentials: "same-origin",
+    body: "{}",
+  })
+  if (res.ok) return { ok: true }
+  return {
+    ok: false,
+    status: res.status,
+    error: await readLauncherAuthError(res),
+  }
+}
+
+export type SetupResult =
+  { ok: true } | { ok: false; status: number; error: string }
+
+export interface SetupOptions {
+  /** The token of the setup link; the first password needs it. */
+  setupToken?: string
+  /** The password in use; changing it needs it. */
+  currentPassword?: string
+}
 
 export async function postLauncherDashboardSetup(
   password: string,
   confirm: string,
+  options: SetupOptions = {},
 ): Promise<SetupResult> {
+  const body: Record<string, string> = {
+    password: password.trim(),
+    confirm: confirm.trim(),
+  }
+  if (options.setupToken) body.setup_token = options.setupToken
+  if (options.currentPassword !== undefined) {
+    body.current_password = options.currentPassword.trim()
+  }
   const res = await fetch("/api/auth/setup", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     credentials: "same-origin",
-    body: JSON.stringify({
-      password: password.trim(),
-      confirm: confirm.trim(),
-    }),
+    body: JSON.stringify(body),
   })
   if (res.ok) return { ok: true }
-  return { ok: false, error: await readLauncherAuthError(res) }
+  return {
+    ok: false,
+    status: res.status,
+    error: await readLauncherAuthError(res),
+  }
 }
 
 async function readLauncherAuthError(res: Response): Promise<string> {

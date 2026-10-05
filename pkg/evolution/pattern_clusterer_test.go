@@ -250,60 +250,109 @@ func TestLLMPatternClusterer_RejectsClusterBelowEvidenceSuccessRatio(t *testing.
 	}
 }
 
-func TestLLMPatternClusterer_RejectsIncompleteEvidenceAssignment(t *testing.T) {
+// The model's valid clusters are kept when it leaves records out, and the
+// records it left out are clustered the simple way instead of every record
+// being dropped and sent again on the next run (EV-07).
+func TestLLMPatternClusterer_ClustersUnassignedRecordsWithTheFallback(t *testing.T) {
 	provider := &llmClusterTestProvider{
-		content:      `{"clusters":[{"label":"weather-lookup","summary":"lookup weather","task_record_ids":["task-success"],"cluster_reason":"same weather lookup goal"}]}`,
+		content:      `{"clusters":[{"label":"weather-lookup","summary":"lookup weather","task_record_ids":["task-weather"],"cluster_reason":"same weather lookup goal"}]}`,
 		defaultModel: "test-model",
 	}
 	clusterer := evolution.NewLLMPatternClusterer(
 		provider,
 		"test-model",
-		evolution.NewHeuristicPatternClusterer(1, nil),
+		evolution.NewHeuristicPatternClusterer(2, nil),
 		1,
 		func() time.Time { return time.Unix(1700000000, 0).UTC() },
 	)
 	success := true
-	failed := false
-	successfulTasks := []evolution.LearningRecord{
-		{
-			ID:          "task-success",
+	task := func(id, summary string) evolution.LearningRecord {
+		return evolution.LearningRecord{
+			ID:          id,
 			Kind:        evolution.RecordKindTask,
 			WorkspaceID: "workspace-a",
-			Summary:     "weather lookup shanghai",
-			FinalOutput: "sunny",
+			Summary:     summary,
+			FinalOutput: "done",
 			Status:      evolution.RecordStatus("new"),
 			Success:     &success,
-		},
+		}
 	}
-	evidenceTasks := []evolution.LearningRecord{
-		successfulTasks[0],
-		{
-			ID:          "task-failed",
-			Kind:        evolution.RecordKindTask,
-			WorkspaceID: "workspace-a",
-			Summary:     "forecast for shanghai",
-			FinalOutput: "could not complete",
-			Status:      evolution.RecordStatus("new"),
-			Success:     &failed,
-		},
+	tasks := []evolution.LearningRecord{
+		task("task-weather", "weather lookup shanghai"),
+		task("task-report-1", "convert report 1"),
+		task("task-report-2", "convert report 2"),
 	}
 
 	patterns, clusteredIDs, err := clusterer.BuildPatternsWithEvidence(
 		context.Background(),
 		"workspace-a",
-		successfulTasks,
-		evidenceTasks,
+		tasks,
+		tasks,
 		nil,
-		0.8,
+		0.5,
 	)
 	if err != nil {
 		t.Fatalf("BuildPatternsWithEvidence: %v", err)
 	}
-	if len(patterns) != 0 {
-		t.Fatalf("len(patterns) = %d, want 0: %#v", len(patterns), patterns)
+	byLabel := make(map[string]evolution.LearningRecord, len(patterns))
+	for _, pattern := range patterns {
+		byLabel[pattern.Label] = pattern
 	}
-	if len(clusteredIDs) != 0 {
-		t.Fatalf("clusteredIDs = %v, want none", clusteredIDs)
+	if got := strings.Join(byLabel["weather-lookup"].TaskRecordIDs, ","); got != "task-weather" {
+		t.Fatalf("model pattern TaskRecordIDs = %q, want the model's cluster kept; patterns = %#v", got, patterns)
+	}
+	if got := strings.Join(byLabel["convert-report"].TaskRecordIDs, ","); got != "task-report-1,task-report-2" {
+		t.Fatalf("fallback pattern TaskRecordIDs = %q, want the unassigned records; patterns = %#v", got, patterns)
+	}
+	if len(patterns) != 2 {
+		t.Fatalf("len(patterns) = %d, want 2: %#v", len(patterns), patterns)
+	}
+	if got := strings.Join(clusteredIDs, ","); got != "task-weather,task-report-1,task-report-2" {
+		t.Fatalf("clusteredIDs = %v, want every record", clusteredIDs)
+	}
+
+	// The same holds without evidence.
+	patterns, clusteredIDs, err = clusterer.BuildPatterns(context.Background(), "workspace-a", tasks, nil)
+	if err != nil {
+		t.Fatalf("BuildPatterns: %v", err)
+	}
+	if len(patterns) != 2 || len(clusteredIDs) != 3 {
+		t.Fatalf("BuildPatterns = %d patterns, clustered %v; want both clusters covering every record", len(patterns), clusteredIDs)
+	}
+}
+
+// A fallback cluster with the label of one of the model's clusters adds its
+// records to that pattern instead of replacing it.
+func TestLLMPatternClusterer_FallbackJoinsTheModelsClusterOfTheSameLabel(t *testing.T) {
+	provider := &llmClusterTestProvider{
+		content:      `{"clusters":[{"label":"convert-report","summary":"convert reports","task_record_ids":["task-report-1"],"cluster_reason":"same goal"}]}`,
+		defaultModel: "test-model",
+	}
+	clusterer := evolution.NewLLMPatternClusterer(
+		provider,
+		"test-model",
+		evolution.NewHeuristicPatternClusterer(2, nil),
+		1,
+		func() time.Time { return time.Unix(1700000000, 0).UTC() },
+	)
+	success := true
+	tasks := []evolution.LearningRecord{
+		{ID: "task-report-1", Kind: evolution.RecordKindTask, WorkspaceID: "w", Summary: "convert report 1", Success: &success},
+		{ID: "task-report-2", Kind: evolution.RecordKindTask, WorkspaceID: "w", Summary: "convert report 2", Success: &success},
+	}
+
+	patterns, clusteredIDs, err := clusterer.BuildPatternsWithEvidence(context.Background(), "w", tasks, tasks, nil, 0)
+	if err != nil {
+		t.Fatalf("BuildPatternsWithEvidence: %v", err)
+	}
+	if len(patterns) != 1 {
+		t.Fatalf("len(patterns) = %d, want one pattern: %#v", len(patterns), patterns)
+	}
+	if got := strings.Join(patterns[0].TaskRecordIDs, ","); got != "task-report-1,task-report-2" {
+		t.Fatalf("TaskRecordIDs = %q, want both records in the model's pattern", got)
+	}
+	if len(clusteredIDs) != 2 {
+		t.Fatalf("clusteredIDs = %v, want both records", clusteredIDs)
 	}
 }
 

@@ -4,12 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
+	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 
 	"github.com/xibodev/compa/pkg/bus"
@@ -21,10 +27,18 @@ import (
 	"github.com/xibodev/compa/pkg/utils"
 )
 
+const (
+	// wsReadLimit bounds one event from the OneBot implementation.
+	wsReadLimit        = 4 << 20
+	wsHandshakeTimeout = 10 * time.Second
+	mediaTimeout       = 60 * time.Second
+)
+
 type OneBotChannel struct {
 	*channels.BaseChannel
 	config        *config.OneBotSettings
 	downloadFn    func(urlStr, filename string) string
+	maxMediaBytes int64
 	conn          *websocket.Conn
 	ctx           context.Context
 	cancel        context.CancelFunc
@@ -109,12 +123,13 @@ func NewOneBotChannel(
 
 	const dedupSize = 1024
 	return &OneBotChannel{
-		BaseChannel: base,
-		config:      cfg,
-		dedup:       make(map[string]struct{}, dedupSize),
-		dedupRing:   make([]string, dedupSize),
-		dedupIdx:    0,
-		pending:     make(map[string]chan json.RawMessage),
+		BaseChannel:   base,
+		config:        cfg,
+		maxMediaBytes: config.DefaultMaxMediaSize,
+		dedup:         make(map[string]struct{}, dedupSize),
+		dedupRing:     make([]string, dedupSize),
+		dedupIdx:      0,
+		pending:       make(map[string]chan json.RawMessage),
 	}, nil
 }
 
@@ -159,6 +174,10 @@ func (c *OneBotChannel) Start(ctx context.Context) error {
 		"ws_url": c.config.WSUrl,
 	})
 
+	if err := checkWSURL(ctx, c.config.WSUrl); err != nil {
+		return err
+	}
+
 	c.ctx, c.cancel = context.WithCancel(ctx)
 
 	if err := c.connect(); err != nil {
@@ -185,8 +204,12 @@ func (c *OneBotChannel) Start(ctx context.Context) error {
 }
 
 func (c *OneBotChannel) connect() error {
-	dialer := websocket.DefaultDialer
-	dialer.HandshakeTimeout = 10 * time.Second
+	// A dialer of its own: changing the package-level websocket.DefaultDialer
+	// would change every other user's too.
+	dialer := websocket.Dialer{
+		Proxy:            http.ProxyFromEnvironment,
+		HandshakeTimeout: wsHandshakeTimeout,
+	}
 
 	header := make(map[string][]string)
 	if c.config.AccessToken.String() != "" {
@@ -200,6 +223,7 @@ func (c *OneBotChannel) connect() error {
 	if err != nil {
 		return err
 	}
+	conn.SetReadLimit(wsReadLimit)
 
 	conn.SetPongHandler(func(appData string) error {
 		_ = conn.SetReadDeadline(time.Now().Add(60 * time.Second))
@@ -713,14 +737,35 @@ type parseMessageResult struct {
 	IsBotMentioned bool
 	Media          []string
 	ReplyTo        string
+	// pending lists the media of the message; it is downloaded only once the
+	// message is admitted (see fetchMedia).
+	pending []pendingMedia
 }
 
+// pendingMedia is a media segment not downloaded yet.
+type pendingMedia struct {
+	tag      string // how the text marks it, such as "[image]"
+	url      string
+	filename string
+}
+
+// parseMessageSegments parses a message and downloads its media.
 func (c *OneBotChannel) parseMessageSegments(
 	raw json.RawMessage,
 	selfID int64,
 	store media.MediaStore,
 	scope string,
 ) parseMessageResult {
+	result := parseSegments(raw, selfID)
+	refs, tags := c.fetchMedia(result.pending, store, scope)
+	result.Media = refs
+	result.Text = strings.TrimSpace(result.Text + tags)
+	return result
+}
+
+// parseSegments reads a message's text, mention, reply and the media it lists,
+// without downloading anything.
+func parseSegments(raw json.RawMessage, selfID int64) parseMessageResult {
 	if len(raw) == 0 {
 		return parseMessageResult{}
 	}
@@ -747,23 +792,8 @@ func (c *OneBotChannel) parseMessageSegments(
 	var textParts []string
 	mentioned := false
 	selfIDStr := strconv.FormatInt(selfID, 10)
-	var mediaRefs []string
+	var pending []pendingMedia
 	var replyTo string
-
-	// Helper to register a local file with the media store
-	storeFile := func(localPath, filename string) string {
-		if store != nil {
-			ref, err := store.Store(localPath, media.MediaMeta{
-				Filename:      filename,
-				Source:        "onebot",
-				CleanupPolicy: media.CleanupPolicyDeleteOnCleanup,
-			}, scope)
-			if err == nil {
-				return ref
-			}
-		}
-		return localPath // fallback
-	}
 
 	for _, seg := range segments {
 		segType, _ := seg["type"].(string)
@@ -778,11 +808,9 @@ func (c *OneBotChannel) parseMessageSegments(
 			}
 
 		case "at":
-			if data != nil && selfID > 0 {
-				qqVal := fmt.Sprintf("%v", data["qq"])
-				if qqVal == selfIDStr || qqVal == "all" {
-					mentioned = true
-				}
+			// "@all" addresses everyone in the group, not the bot.
+			if data != nil && selfID > 0 && fmt.Sprintf("%v", data["qq"]) == selfIDStr {
+				mentioned = true
 			}
 
 		case "image", "video", "file":
@@ -796,11 +824,7 @@ func (c *OneBotChannel) parseMessageSegments(
 					} else if n, ok := data["name"].(string); ok && n != "" {
 						filename = n
 					}
-					localPath := c.downloadInboundFile(url, filename)
-					if localPath != "" {
-						mediaRefs = append(mediaRefs, storeFile(localPath, filename))
-						textParts = append(textParts, fmt.Sprintf("[%s]", segType))
-					}
+					pending = append(pending, pendingMedia{tag: "[" + segType + "]", url: url, filename: filename})
 				}
 			}
 
@@ -808,11 +832,7 @@ func (c *OneBotChannel) parseMessageSegments(
 			if data != nil {
 				url, _ := data["url"].(string)
 				if url != "" {
-					localPath := c.downloadInboundFile(url, "voice.amr")
-					if localPath != "" {
-						textParts = append(textParts, "[voice]")
-						mediaRefs = append(mediaRefs, storeFile(localPath, "voice.amr"))
-					}
+					pending = append(pending, pendingMedia{tag: "[voice]", url: url, filename: "voice.amr"})
 				}
 			}
 
@@ -839,38 +859,98 @@ func (c *OneBotChannel) parseMessageSegments(
 	return parseMessageResult{
 		Text:           strings.TrimSpace(strings.Join(textParts, "")),
 		IsBotMentioned: mentioned,
-		Media:          mediaRefs,
 		ReplyTo:        replyTo,
+		pending:        pending,
 	}
 }
 
+// fetchMedia downloads the listed media into the store and returns their refs
+// and the tags that stand for them in the text.
+func (c *OneBotChannel) fetchMedia(pending []pendingMedia, store media.MediaStore, scope string) ([]string, string) {
+	var refs []string
+	var tags strings.Builder
+	for _, item := range pending {
+		localPath := c.downloadInboundFile(item.url, item.filename)
+		if localPath == "" {
+			continue
+		}
+		ref := localPath // fallback when there is no store
+		if store != nil {
+			if stored, err := store.Store(localPath, media.MediaMeta{
+				Filename:      item.filename,
+				Source:        "onebot",
+				CleanupPolicy: media.CleanupPolicyDeleteOnCleanup,
+			}, scope); err == nil {
+				ref = stored
+			}
+		}
+		refs = append(refs, ref)
+		tags.WriteString(item.tag)
+	}
+	return refs, tags.String()
+}
+
+// downloadInboundFile downloads a media URL into the media directory,
+// refusing private and local network hosts and files over the size limit.
 func (c *OneBotChannel) downloadInboundFile(urlStr, filename string) string {
 	if c.downloadFn != nil {
 		return c.downloadFn(urlStr, filename)
 	}
-	return utils.DownloadFile(urlStr, filename, utils.DownloadOptions{
-		LoggerPrefix:        "onebot",
-		BlockPrivateTargets: true,
-	})
+
+	if err := utils.ValidateSafeHTTPURL(urlStr, nil, nil); err != nil {
+		logger.WarnCF("onebot", "Blocked unsafe media URL", map[string]any{"error": err.Error()})
+		return ""
+	}
+	client, err := utils.CreateSafeHTTPClient(utils.SafeHTTPClientOptions{Timeout: mediaTimeout})
+	if err != nil {
+		logger.ErrorCF("onebot", "Failed to create media download client", map[string]any{"error": err.Error()})
+		return ""
+	}
+	req, err := http.NewRequest(http.MethodGet, urlStr, nil)
+	if err != nil {
+		return ""
+	}
+	utils.AllowConfiguredProxyFirstHop(req, client.Transport)
+
+	ctx := c.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	maxBytes := c.maxMediaBytes
+	if maxBytes <= 0 {
+		maxBytes = config.DefaultMaxMediaSize
+	}
+	tmpPath, err := utils.DownloadToFile(ctx, client, req, maxBytes)
+	if err != nil {
+		logger.WarnCF("onebot", "Failed to download media", map[string]any{
+			"filename": filename,
+			"error":    err.Error(),
+		})
+		return ""
+	}
+	return moveToMediaDir(tmpPath, filename)
+}
+
+// moveToMediaDir moves a downloaded file into the media directory under its
+// file name, whose extension tells later steps what the file is.
+func moveToMediaDir(tmpPath, filename string) string {
+	if err := os.MkdirAll(media.TempDir(), 0o700); err != nil {
+		return tmpPath
+	}
+	dst := filepath.Join(media.TempDir(), uuid.New().String()[:8]+"_"+utils.SanitizeFilename(filename))
+	if err := os.Rename(tmpPath, dst); err != nil {
+		return tmpPath
+	}
+	return dst
 }
 
 func (c *OneBotChannel) handleRawEvent(raw *oneBotRawEvent) {
+	defer channels.RecoverPanic(c.Name(), "event")
+
 	switch raw.PostType {
 	case "message":
-		if userID, err := parseJSONInt64(raw.UserID); err == nil && userID > 0 {
-			// Build minimal sender for allowlist check
-			sender := bus.SenderInfo{
-				Platform:    "onebot",
-				PlatformID:  strconv.FormatInt(userID, 10),
-				CanonicalID: identity.BuildCanonicalID("onebot", strconv.FormatInt(userID, 10)),
-			}
-			if !c.IsAllowedSender(sender) {
-				logger.DebugCF("onebot", "Message rejected by allowlist", map[string]any{
-					"user_id": userID,
-				})
-				return
-			}
-		}
+		// handleMessage applies the access policy, before it downloads
+		// anything.
 		c.handleMessage(raw)
 
 	case "message_sent":
@@ -957,7 +1037,10 @@ func (c *OneBotChannel) handleMessage(raw *oneBotRawEvent) {
 	}
 	scope := channels.BuildMediaScope("onebot", chatIDForScope, messageID)
 
-	parsed := c.parseMessageSegments(raw.Message, selfID, c.GetMediaStore(), scope)
+	// Media is downloaded only after the group trigger and the allowlist
+	// admitted the message.
+	parsed := parseSegments(raw.Message, selfID)
+	hasMedia := len(parsed.pending) > 0
 	isBotMentioned := parsed.IsBotMentioned
 
 	content := raw.RawMessage
@@ -972,7 +1055,9 @@ func (c *OneBotChannel) handleMessage(raw *oneBotRawEvent) {
 		}
 	}
 
-	if parsed.Text != "" && content != parsed.Text && (len(parsed.Media) > 0 || parsed.ReplyTo != "") {
+	// The parsed text replaces raw CQ codes of media and replies; for media
+	// the tags are added once it is downloaded.
+	if content != parsed.Text && (hasMedia || (parsed.ReplyTo != "" && parsed.Text != "")) {
 		content = parsed.Text
 	}
 
@@ -993,7 +1078,7 @@ func (c *OneBotChannel) handleMessage(raw *oneBotRawEvent) {
 		return
 	}
 
-	if content == "" {
+	if content == "" && !hasMedia {
 		logger.DebugCF("onebot", "Received empty message, ignoring", map[string]any{
 			"message_id": messageID,
 		})
@@ -1053,33 +1138,15 @@ func (c *OneBotChannel) handleMessage(raw *oneBotRawEvent) {
 		return
 	}
 
-	logger.InfoCF("onebot", "Received "+raw.MessageType+" message", map[string]any{
-		"sender":      senderID,
-		"chat_id":     chatID,
-		"message_id":  messageID,
-		"length":      len(content),
-		"content":     truncate(content, 100),
-		"media_count": len(parsed.Media),
-	})
-
 	if sender.Nickname != "" {
 		metadata["nickname"] = sender.Nickname
 	}
-
-	c.lastMessageID.Store(chatID, messageID)
 
 	senderInfo := bus.SenderInfo{
 		Platform:    "onebot",
 		PlatformID:  senderID,
 		CanonicalID: identity.BuildCanonicalID("onebot", senderID),
 		DisplayName: sender.Nickname,
-	}
-
-	if !c.IsAllowedSender(senderInfo) {
-		logger.DebugCF("onebot", "Message rejected by allowlist (senderInfo)", map[string]any{
-			"sender": senderID,
-		})
-		return
 	}
 
 	inboundCtx := bus.InboundContext{
@@ -1092,6 +1159,42 @@ func (c *OneBotChannel) handleMessage(raw *oneBotRawEvent) {
 		ReplyToMessageID: parsed.ReplyTo,
 		Raw:              metadata,
 	}
+
+	// Decide on the message before downloading its media. A private message
+	// the policy rejects still goes to it, as text only, so that an unpaired
+	// sender is recorded for the owner to approve.
+	if !c.Admits(contextChatType, senderInfo, chatID) {
+		logger.DebugCF("onebot", "Message not admitted by the access policy", map[string]any{
+			"sender": senderID,
+		})
+		if contextChatType == "direct" {
+			if content == "" {
+				content = "[media]"
+			}
+			c.HandleInboundContext(c.ctx, chatID, content, nil, inboundCtx, senderInfo)
+		}
+		return
+	}
+
+	if hasMedia {
+		refs, tags := c.fetchMedia(parsed.pending, c.GetMediaStore(), scope)
+		parsed.Media = refs
+		content = strings.TrimSpace(content + tags)
+		if content == "" {
+			return
+		}
+	}
+
+	logger.InfoCF("onebot", "Received "+raw.MessageType+" message", map[string]any{
+		"sender":      senderID,
+		"chat_id":     chatID,
+		"message_id":  messageID,
+		"length":      len(content),
+		"content":     truncate(content, 100),
+		"media_count": len(parsed.Media),
+	})
+
+	c.lastMessageID.Store(chatID, messageID)
 
 	c.HandleInboundContext(c.ctx, chatID, content, parsed.Media, inboundCtx, senderInfo)
 }
@@ -1124,6 +1227,54 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return string(runes[:n]) + "..."
+}
+
+// checkWSURL refuses an unencrypted ws:// connection to a host outside this
+// computer and its local network: the access token and every message would
+// cross the internet in clear text. wss:// is accepted.
+func checkWSURL(ctx context.Context, rawURL string) error {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return fmt.Errorf("invalid OneBot ws_url: %w", err)
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "wss":
+		return nil
+	case "ws":
+	default:
+		return fmt.Errorf("OneBot ws_url must start with ws:// or wss://")
+	}
+
+	host := u.Hostname()
+	var ips []net.IP
+	if ip := net.ParseIP(host); ip != nil {
+		ips = []net.IP{ip}
+	} else {
+		addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+		if err != nil {
+			return fmt.Errorf("resolve OneBot host %q: %w", host, err)
+		}
+		for _, addr := range addrs {
+			ips = append(ips, addr.IP)
+		}
+	}
+	for _, ip := range ips {
+		if !isLocalNetworkIP(ip) {
+			return fmt.Errorf(
+				"OneBot ws_url %q uses unencrypted ws:// to a host outside this computer and its local network; use wss://",
+				rawURL,
+			)
+		}
+	}
+	return nil
+}
+
+// sharedAddressSpace is 100.64.0.0/10 (RFC 6598), used by carrier NAT and by
+// overlay networks such as Tailscale; it is not reachable from the internet.
+var sharedAddressSpace = &net.IPNet{IP: net.IPv4(100, 64, 0, 0), Mask: net.CIDRMask(10, 32)}
+
+func isLocalNetworkIP(ip net.IP) bool {
+	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || sharedAddressSpace.Contains(ip)
 }
 
 // VoiceCapabilities returns the voice capabilities of the channel.

@@ -31,8 +31,8 @@ func (a Accepted) Descriptor() *Descriptor { return a.d }
 // Decision is what a host may do with a counterparty, and it carries the
 // three-outcome evaluation rather than a boolean.
 //
-// The three states are EVALUATOR state, never transmitted (§4 of the wire
-// proposal). The wire carries exactly one value -- contract_version -- and the
+// The three states are EVALUATOR state, never transmitted. The wire carries
+// exactly one value -- contract_version -- and the
 // outcome is what the host CONCLUDES. A transmitted "state" field would let a
 // module assert its own evaluation, which is the thing the evaluation exists to
 // decide.

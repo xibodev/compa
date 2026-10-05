@@ -580,7 +580,11 @@ func firstMediaCaption(parts []bus.MediaPart) string {
 
 // --- Inbound message handling ---
 
+// fetchInboundMedia downloads a message's media; tests replace it.
+var fetchInboundMedia = (*FeishuChannel).downloadInboundMedia
+
 func (c *FeishuChannel) handleMessageReceive(ctx context.Context, event *larkim.P2MessageReceiveV1) error {
+	defer channels.RecoverPanic(c.Name(), "message")
 	if event == nil || event.Event == nil || event.Event.Message == nil {
 		return nil
 	}
@@ -602,24 +606,61 @@ func (c *FeishuChannel) handleMessageReceive(ctx context.Context, event *larkim.
 	messageID := stringValue(message.MessageId)
 	rawContent := stringValue(message.Content)
 
-	// Check allowlist early to avoid downloading media for rejected senders.
-	// BaseChannel.HandleMessage will check again, but this avoids wasted network I/O.
 	senderInfo := bus.SenderInfo{
 		Platform:    "feishu",
 		PlatformID:  senderID,
 		CanonicalID: identity.BuildCanonicalID("feishu", senderID),
 	}
-	if !c.IsAllowedSender(senderInfo) {
-		return nil
+	inboundChatType := "group"
+	if stringValue(message.ChatType) == "p2p" {
+		inboundChatType = "direct"
 	}
 
 	// Extract content based on message type
 	content := extractContent(messageType, rawContent)
 
+	// Decide on the message before downloading anything. A direct message
+	// the policy rejects still goes to it, as text only, so that an unpaired
+	// sender is recorded for the owner to approve.
+	if !c.Admits(inboundChatType, senderInfo, chatID) {
+		if inboundChatType == "direct" {
+			text := content
+			if text == "" {
+				text = "[" + messageType + "]"
+			}
+			c.HandleInboundContext(ctx, chatID, text, nil, bus.InboundContext{
+				Channel:   "feishu",
+				ChatID:    chatID,
+				ChatType:  inboundChatType,
+				SenderID:  senderID,
+				MessageID: messageID,
+			}, senderInfo)
+		}
+		return nil
+	}
+
+	// In group chats, apply the group trigger to the text before anything is
+	// downloaded: an ignored message costs no download.
+	isMentioned := false
+	if inboundChatType == "group" {
+		isMentioned = c.isBotMentioned(message)
+
+		// Strip mention placeholders from content before group trigger check
+		if len(message.Mentions) > 0 {
+			content = stripMentionPlaceholders(content, message.Mentions)
+		}
+
+		respond, cleaned := c.ShouldRespondInGroup(isMentioned, content)
+		if !respond {
+			return nil
+		}
+		content = cleaned
+	}
+
 	// Handle media messages (download and store)
 	var mediaRefs []string
 	if store := c.GetMediaStore(); store != nil && messageID != "" {
-		mediaRefs = c.downloadInboundMedia(ctx, chatID, messageID, messageType, rawContent, store)
+		mediaRefs = fetchInboundMedia(c, ctx, chatID, messageID, messageType, rawContent, store)
 	}
 
 	// For interactive cards, pass external image URLs via media refs.
@@ -637,33 +678,7 @@ func (c *FeishuChannel) handleMessageReceive(ctx context.Context, event *larkim.
 	if content == "" {
 		content = "[empty message]"
 	}
-	chatType := stringValue(message.ChatType)
 	metadata := buildInboundMetadata(message, sender)
-
-	var (
-		inboundChatType string
-		isMentioned     bool
-	)
-	if chatType == "p2p" {
-		inboundChatType = "direct"
-	} else {
-		inboundChatType = "group"
-
-		// Check if bot was mentioned
-		isMentioned = c.isBotMentioned(message)
-
-		// Strip mention placeholders from content before group trigger check
-		if len(message.Mentions) > 0 {
-			content = stripMentionPlaceholders(content, message.Mentions)
-		}
-
-		// In group chats, apply unified group trigger filtering
-		respond, cleaned := c.ShouldRespondInGroup(isMentioned, content)
-		if !respond {
-			return nil
-		}
-		content = cleaned
-	}
 
 	if replyTargetID(message) != "" || stringValue(message.ThreadId) != "" {
 		content, mediaRefs = c.prependReplyContext(ctx, message, chatID, content, mediaRefs)

@@ -41,11 +41,13 @@ func (al *AgentLoop) tryHandleStopCommand(
 		reply = "Failed to stop task: " + err.Error()
 	}
 
-	if al.channelManager != nil {
-		al.channelManager.InvokeTypingStop(msg.Channel, msg.ChatID)
+	if cm := al.currentChannelManager(); cm != nil {
+		cm.InvokeTypingStop(msg.Channel, msg.ChatID)
 	}
 	al.resetMessageToolRound(sessionKey)
-	al.PublishResponseIfNeeded(ctx, msg.Channel, msg.ChatID, sessionKey, reply)
+	// The stop acts at once, in order with the session's next messages; its
+	// reply goes out without holding up the receive loop.
+	go al.publishDirectReply(ctx, msg, sessionKey, reply)
 	return true
 }
 
@@ -57,7 +59,11 @@ func (al *AgentLoop) stopActiveTurnForSession(sessionKey string) (commands.StopR
 
 	result := commands.StopResult{}
 	cleared := al.clearSteeringMessagesForScope(sessionKey)
+	cleared += al.clearDeferredTurns(sessionKey)
 	al.clearPendingSkills(sessionKey)
+	// The session's sub-agents stop too, including the background ones of
+	// turns that already ended.
+	cleared += al.sessionWork.cancel(sessionKey)
 
 	ts := al.getActiveTurnState(sessionKey)
 	if ts == nil {
@@ -110,12 +116,11 @@ func (al *AgentLoop) resetMessageToolRound(sessionKey string) {
 	if strings.TrimSpace(sessionKey) == "" {
 		return
 	}
-	if registry := al.GetRegistry(); registry != nil {
-		if agent := registry.GetDefaultAgent(); agent != nil {
-			if tool, ok := agent.Tools.Get("message"); ok {
-				if resetter, ok := tool.(interface{ ResetSentInRound(sessionKey string) }); ok {
-					resetter.ResetSentInRound(sessionKey)
-				}
+	// The session's own agent: a routed agent has its own message tool.
+	if agent := al.agentForSession(sessionKey); agent != nil {
+		if tool, ok := agent.Tools.Get("message"); ok {
+			if resetter, ok := tool.(interface{ ResetSentInRound(sessionKey string) }); ok {
+				resetter.ResetSentInRound(sessionKey)
 			}
 		}
 	}

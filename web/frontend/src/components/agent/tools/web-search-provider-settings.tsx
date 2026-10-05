@@ -1,5 +1,5 @@
 import { IconChevronDown } from "@tabler/icons-react"
-import type { ReactNode } from "react"
+import { type ReactElement, cloneElement, useId } from "react"
 import { useTranslation } from "react-i18next"
 
 import type { WebSearchProviderConfig } from "@/api/tools"
@@ -152,6 +152,7 @@ function ProviderCard({
         >
           <Switch
             checked={settings.enabled}
+            aria-label={providerLabel}
             onCheckedChange={(checked) =>
               updateSettings((current) => ({
                 ...current,
@@ -178,7 +179,10 @@ function ProviderCard({
                 type="number"
                 min={1}
                 max={10}
-                value={settings.max_results || 5}
+                // Shows what is saved: 0 (cleared) means the provider's own
+                // default, so the field is empty rather than showing a number
+                // that is not what gets used.
+                value={settings.max_results > 0 ? settings.max_results : ""}
                 onChange={(event) =>
                   updateSettings((current) => ({
                     ...current,
@@ -266,14 +270,18 @@ function ProviderField({
 }: {
   label: string
   className?: string
-  children: ReactNode
+  children: ReactElement<{ id?: string }>
 }) {
+  const id = useId()
   return (
     <div className={cn("space-y-1.5", className)}>
-      <label className="text-foreground/80 text-[13px] font-semibold">
+      <label
+        htmlFor={id}
+        className="text-foreground/80 text-[13px] font-semibold"
+      >
         {label}
       </label>
-      {children}
+      {cloneElement(children, { id })}
     </div>
   )
 }

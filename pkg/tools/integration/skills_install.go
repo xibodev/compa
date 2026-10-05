@@ -23,6 +23,8 @@ var persistInstalledSkillOriginMeta = writeOriginMeta
 // InstallSkillTool allows the LLM agent to install skills from registries.
 // It shares the same RegistryManager that FindSkillsTool uses,
 // so all registries configured in config are available for installation.
+// Whether an install needs the owner's approval is the approval policy's
+// decision (tools.approval asks for install_skill by default).
 type InstallSkillTool struct {
 	registryMgr *skills.RegistryManager
 	workspace   string
@@ -74,11 +76,6 @@ func (t *InstallSkillTool) Parameters() map[string]any {
 }
 
 func (t *InstallSkillTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
-	// Install lock to prevent concurrent directory operations.
-	// Ideally this should be done at a `slug` level, currently, its at a `workspace` level.
-	t.mu.Lock()
-	defer t.mu.Unlock()
-
 	slug, _ := args["slug"].(string)
 	if strings.TrimSpace(slug) == "" {
 		return ErrorResult("identifier is required and must be a non-empty string")
@@ -107,6 +104,11 @@ func (t *InstallSkillTool) Execute(ctx context.Context, args map[string]any) *To
 
 	version, _ := args["version"].(string)
 	force, _ := args["force"].(bool)
+
+	// Install lock to prevent concurrent directory operations.
+	// Ideally this should be done at a `slug` level, currently, its at a `workspace` level.
+	t.mu.Lock()
+	defer t.mu.Unlock()
 
 	// Check if already installed.
 	skillsDir := filepath.Join(t.workspace, "skills")
@@ -208,7 +210,7 @@ func (t *InstallSkillTool) Execute(ctx context.Context, args map[string]any) *To
 	}
 
 	// Write origin metadata.
-	if err := persistInstalledSkillOriginMeta(targetDir, registry, slug, result.Version); err != nil {
+	if err := persistInstalledSkillOriginMeta(targetDir, registry, slug, result); err != nil {
 		logger.ErrorCF("tool", "Failed to write origin metadata",
 			map[string]any{
 				"tool":     "install_skill",
@@ -265,11 +267,19 @@ type originMeta struct {
 	Slug             string `json:"slug"`
 	RegistryURL      string `json:"registry_url,omitempty"`
 	InstalledVersion string `json:"installed_version"`
-	InstalledAt      int64  `json:"installed_at"`
+	// Commit is the commit a GitHub install was pinned to; Unpinned marks a
+	// GitHub install made from the ref because it couldn't be resolved.
+	Commit      string `json:"commit,omitempty"`
+	Unpinned    bool   `json:"unpinned,omitempty"`
+	InstalledAt int64  `json:"installed_at"`
 }
 
-func writeOriginMeta(targetDir string, registry skills.SkillRegistry, slug, version string) error {
-	normalizedSlug, registryURL := skills.BuildInstallMetadataForRegistryInstance(registry, slug, version)
+func writeOriginMeta(targetDir string, registry skills.SkillRegistry, slug string, result *skills.InstallResult) error {
+	var installed skills.InstallResult
+	if result != nil {
+		installed = *result
+	}
+	normalizedSlug, registryURL := skills.BuildInstallMetadataForRegistryInstance(registry, slug, installed.Version)
 	registryName := ""
 	if registry != nil {
 		registryName = registry.Name()
@@ -281,7 +291,9 @@ func writeOriginMeta(targetDir string, registry skills.SkillRegistry, slug, vers
 		Registry:         registryName,
 		Slug:             normalizedSlug,
 		RegistryURL:      registryURL,
-		InstalledVersion: version,
+		InstalledVersion: installed.Version,
+		Commit:           installed.Commit,
+		Unpinned:         installed.Unpinned,
 		InstalledAt:      time.Now().UnixMilli(),
 	}
 

@@ -234,8 +234,9 @@ func TestHandleGetSkillUsesResolvedPath(t *testing.T) {
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
+	// The folder name is the skill's identity; the frontmatter name is not.
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/api/skills/display-name", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/skills/folder-name", nil)
 	mux.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
@@ -246,11 +247,18 @@ func TestHandleGetSkillUsesResolvedPath(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("Unmarshal() error = %v", err)
 	}
-	if resp.Name != "display-name" {
-		t.Fatalf("resp.Name = %q, want display-name", resp.Name)
+	if resp.Name != "folder-name" || resp.Description != "Mismatched path skill" {
+		t.Fatalf("unexpected response: %#v", resp)
 	}
 	if resp.Content != "# Display Name\n" {
 		t.Fatalf("content = %q", resp.Content)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/skills/display-name", nil)
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("frontmatter name lookup status = %d, want %d", rec.Code, http.StatusNotFound)
 	}
 }
 
@@ -565,7 +573,7 @@ func TestHandleDeleteSkillPrefersWorkspaceMatch(t *testing.T) {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
 
-	workspaceSkillDir := filepath.Join(workspace, "skills", "delete-me-workspace")
+	workspaceSkillDir := filepath.Join(workspace, "skills", "delete-me")
 	if err := os.MkdirAll(workspaceSkillDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll(workspace) error = %v", err)
 	}
@@ -577,7 +585,7 @@ func TestHandleDeleteSkillPrefersWorkspaceMatch(t *testing.T) {
 		t.Fatalf("WriteFile(workspace) error = %v", err)
 	}
 
-	globalSkillDir := filepath.Join(homeDir, "skills", "delete-me-global")
+	globalSkillDir := filepath.Join(homeDir, "skills", "delete-me")
 	if err := os.MkdirAll(globalSkillDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll(global) error = %v", err)
 	}

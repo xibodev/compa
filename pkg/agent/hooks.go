@@ -4,11 +4,15 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"reflect"
+	"slices"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/xibodev/compa/pkg/approval"
 	runtimeevents "github.com/xibodev/compa/pkg/events"
 	"github.com/xibodev/compa/pkg/logger"
 	"github.com/xibodev/compa/pkg/providers"
@@ -27,7 +31,7 @@ type HookAction string
 const (
 	HookActionContinue  HookAction = "continue"
 	HookActionModify    HookAction = "modify"
-	HookActionRespond   HookAction = "respond" // Return result directly, skip tool execution. SECURITY: This bypasses ApproveTool checks, allowing hooks to return results for any tool (including sensitive ones like bash) without approval. Use with caution.
+	HookActionRespond   HookAction = "respond" // Return result directly, skip tool execution. SECURITY: This bypasses the approval policy (tools.approval), allowing hooks to return results for any tool (including sensitive ones like bash) without approval. Use with caution.
 	HookActionDenyTool  HookAction = "deny_tool"
 	HookActionAbortTurn HookAction = "abort_turn"
 	HookActionHardAbort HookAction = "hard_abort"
@@ -86,8 +90,28 @@ type ToolInterceptor interface {
 	AfterTool(ctx context.Context, result *ToolResultHookResponse) (*ToolResultHookResponse, HookDecision, error)
 }
 
+// ToolApprover decides the calls the approval policy says to ask about.
 type ToolApprover interface {
 	ApproveTool(ctx context.Context, req *ToolApprovalRequest) (ApprovalDecision, error)
+}
+
+// optionalToolApprover is implemented by hooks that have ApproveTool but
+// approve calls only when configured to, as a process hook does with
+// intercept "approve_tool"; the others are not approvers.
+type optionalToolApprover interface {
+	approvesTools() bool
+}
+
+// toolApprover returns reg's hook as an approver, when it is one.
+func toolApprover(reg HookRegistration) (ToolApprover, bool) {
+	approver, ok := reg.Hook.(ToolApprover)
+	if !ok {
+		return nil, false
+	}
+	if optional, ok := reg.Hook.(optionalToolApprover); ok && !optional.approvesTools() {
+		return nil, false
+	}
+	return approver, true
 }
 
 type LLMHookRequest struct {
@@ -152,11 +176,21 @@ func (r *ToolCallHookRequest) Clone() *ToolCallHookRequest {
 	return &cloned
 }
 
+// ToolApprovalRequest asks the approvers about a call the approval policy
+// (tools.approval) says to ask about.
 type ToolApprovalRequest struct {
 	Meta      HookMeta       `json:"meta"`
 	Context   *TurnContext   `json:"context,omitempty"`
 	Tool      string         `json:"tool"`
 	Arguments map[string]any `json:"arguments,omitempty"`
+	// Origin is where the turn that makes the call came from.
+	Origin approval.Origin `json:"origin"`
+	// Info is the tool's source, its name there, and what it declares.
+	Info approval.Info `json:"info"`
+	// Decision is the policy's decision, with the rule that matched.
+	Decision approval.Decision `json:"decision"`
+	// Job is the scheduled job a call made outside a turn runs for.
+	Job string `json:"job,omitempty"`
 }
 
 func (r *ToolApprovalRequest) Clone() *ToolApprovalRequest {
@@ -167,6 +201,14 @@ func (r *ToolApprovalRequest) Clone() *ToolApprovalRequest {
 	cloned.Meta = cloneHookMeta(r.Meta)
 	cloned.Context = cloneTurnContext(r.Context)
 	cloned.Arguments = cloneStringAnyMap(r.Arguments)
+	cloned.Info.Hints = slices.Clone(r.Info.Hints)
+	cloned.Info.Meta = maps.Clone(r.Info.Meta)
+	if r.Decision.Rule != nil {
+		rule := *r.Decision.Rule
+		rule.Origin = slices.Clone(rule.Origin)
+		rule.Hints = slices.Clone(rule.Hints)
+		cloned.Decision.Rule = &rule
+	}
 	return &cloned
 }
 
@@ -192,10 +234,15 @@ func (r *ToolResultHookResponse) Clone() *ToolResultHookResponse {
 }
 
 type HookManager struct {
-	runtimeEvents      runtimeevents.EventChannel
-	observerTimeout    time.Duration
-	interceptorTimeout time.Duration
-	approvalTimeout    time.Duration
+	runtimeEvents runtimeevents.EventChannel
+	// The timeouts are durations in nanoseconds: a reload configures them
+	// while turns call hooks.
+	observerTimeout    atomic.Int64
+	interceptorTimeout atomic.Int64
+	approvalTimeout    atomic.Int64
+	// failures counts hook calls that failed or timed out; the log line of
+	// each failure carries the count.
+	failures atomic.Uint64
 
 	mu      sync.RWMutex
 	hooks   map[string]HookRegistration
@@ -208,13 +255,13 @@ type HookManager struct {
 
 func NewHookManager(runtimeEvents runtimeevents.EventChannel) *HookManager {
 	hm := &HookManager{
-		runtimeEvents:      runtimeEvents,
-		observerTimeout:    defaultHookObserverTimeout,
-		interceptorTimeout: defaultHookInterceptorTimeout,
-		approvalTimeout:    defaultHookApprovalTimeout,
-		hooks:              make(map[string]HookRegistration),
-		runtimeDone:        make(chan struct{}),
+		runtimeEvents: runtimeEvents,
+		hooks:         make(map[string]HookRegistration),
+		runtimeDone:   make(chan struct{}),
 	}
+	hm.observerTimeout.Store(int64(defaultHookObserverTimeout))
+	hm.interceptorTimeout.Store(int64(defaultHookInterceptorTimeout))
+	hm.approvalTimeout.Store(int64(defaultHookApprovalTimeout))
 
 	if runtimeEvents != nil {
 		sub, ch, err := runtimeEvents.SubscribeChan(context.Background(), runtimeevents.SubscribeOptions{
@@ -255,19 +302,33 @@ func (hm *HookManager) Close() {
 	})
 }
 
+// ConfigureTimeouts sets the hook timeouts; a zero or negative one is left
+// unchanged. Safe while hooks run.
 func (hm *HookManager) ConfigureTimeouts(observer, interceptor, approval time.Duration) {
 	if hm == nil {
 		return
 	}
 	if observer > 0 {
-		hm.observerTimeout = observer
+		hm.observerTimeout.Store(int64(observer))
 	}
 	if interceptor > 0 {
-		hm.interceptorTimeout = interceptor
+		hm.interceptorTimeout.Store(int64(interceptor))
 	}
 	if approval > 0 {
-		hm.approvalTimeout = approval
+		hm.approvalTimeout.Store(int64(approval))
 	}
+}
+
+func (hm *HookManager) observerTimeoutValue() time.Duration {
+	return time.Duration(hm.observerTimeout.Load())
+}
+
+func (hm *HookManager) interceptorTimeoutValue() time.Duration {
+	return time.Duration(hm.interceptorTimeout.Load())
+}
+
+func (hm *HookManager) approvalTimeoutValue() time.Duration {
+	return time.Duration(hm.approvalTimeout.Load())
 }
 
 func (hm *HookManager) Mount(reg HookRegistration) error {
@@ -534,30 +595,35 @@ func (hm *HookManager) AfterTool(
 	return current, HookDecision{Action: HookActionContinue}
 }
 
-func (hm *HookManager) ApproveTool(ctx context.Context, req *ToolApprovalRequest) ApprovalDecision {
+// ApproveTool asks every registered approver, in order, about a call: the
+// first denial decides, and all approving approve it. An approver that fails
+// or times out denies. decided is false when no approver is registered: then
+// the caller asks the owner.
+func (hm *HookManager) ApproveTool(ctx context.Context, req *ToolApprovalRequest) (decision ApprovalDecision, decided bool) {
 	if hm == nil || req == nil {
-		return ApprovalDecision{Approved: true}
+		return ApprovalDecision{}, false
 	}
 
 	for _, reg := range hm.snapshotHooks() {
-		approver, ok := reg.Hook.(ToolApprover)
+		approver, ok := toolApprover(reg)
 		if !ok {
 			continue
 		}
+		decided = true
 
-		decision, ok := hm.callApproveTool(ctx, reg.Name, approver, req.Clone())
+		answer, ok := hm.callApproveTool(ctx, reg.Name, approver, req.Clone())
 		if !ok {
 			return ApprovalDecision{
 				Approved: false,
 				Reason:   fmt.Sprintf("tool approval hook %q failed", reg.Name),
-			}
+			}, true
 		}
-		if !decision.Approved {
-			return decision
+		if !answer.Approved {
+			return answer, true
 		}
 	}
 
-	return ApprovalDecision{Approved: true}
+	return ApprovalDecision{Approved: decided}, decided
 }
 
 func (hm *HookManager) rebuildOrdered() {
@@ -601,7 +667,7 @@ func (hm *HookManager) runRuntimeObserver(
 	observer RuntimeEventObserver,
 	evt runtimeevents.Event,
 ) {
-	ctx, cancel := context.WithTimeout(context.Background(), hm.observerTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), hm.observerTimeoutValue())
 	defer cancel()
 
 	done := make(chan error, 1)
@@ -622,7 +688,7 @@ func (hm *HookManager) runRuntimeObserver(
 		logger.WarnCF("hooks", "Runtime event observer timed out", map[string]any{
 			"hook":       name,
 			"event":      evt.Kind.String(),
-			"timeout_ms": hm.observerTimeout.Milliseconds(),
+			"timeout_ms": hm.observerTimeoutValue().Milliseconds(),
 		})
 	}
 }
@@ -634,8 +700,9 @@ func (hm *HookManager) callBeforeLLM(
 	req *LLMHookRequest,
 ) (*LLMHookRequest, HookDecision, bool) {
 	return runInterceptorHook(
+		&hm.failures,
 		parent,
-		hm.interceptorTimeout,
+		hm.interceptorTimeoutValue(),
 		name,
 		"before_llm",
 		func(ctx context.Context) (*LLMHookRequest, HookDecision, error) {
@@ -651,8 +718,9 @@ func (hm *HookManager) callAfterLLM(
 	resp *LLMHookResponse,
 ) (*LLMHookResponse, HookDecision, bool) {
 	return runInterceptorHook(
+		&hm.failures,
 		parent,
-		hm.interceptorTimeout,
+		hm.interceptorTimeoutValue(),
 		name,
 		"after_llm",
 		func(ctx context.Context) (*LLMHookResponse, HookDecision, error) {
@@ -668,8 +736,9 @@ func (hm *HookManager) callBeforeTool(
 	call *ToolCallHookRequest,
 ) (*ToolCallHookRequest, HookDecision, bool) {
 	return runInterceptorHook(
+		&hm.failures,
 		parent,
-		hm.interceptorTimeout,
+		hm.interceptorTimeoutValue(),
 		name,
 		"before_tool",
 		func(ctx context.Context) (*ToolCallHookRequest, HookDecision, error) {
@@ -685,8 +754,9 @@ func (hm *HookManager) callAfterTool(
 	resultView *ToolResultHookResponse,
 ) (*ToolResultHookResponse, HookDecision, bool) {
 	return runInterceptorHook(
+		&hm.failures,
 		parent,
-		hm.interceptorTimeout,
+		hm.interceptorTimeoutValue(),
 		name,
 		"after_tool",
 		func(ctx context.Context) (*ToolResultHookResponse, HookDecision, error) {
@@ -702,8 +772,9 @@ func (hm *HookManager) callApproveTool(
 	req *ToolApprovalRequest,
 ) (ApprovalDecision, bool) {
 	return runApprovalHook(
+		&hm.failures,
 		parent,
-		hm.approvalTimeout,
+		hm.approvalTimeoutValue(),
 		name,
 		"approve_tool",
 		func(ctx context.Context) (ApprovalDecision, error) {
@@ -712,7 +783,11 @@ func (hm *HookManager) callApproveTool(
 	)
 }
 
+// runInterceptorHook runs one interceptor call within timeout. A call that
+// fails or times out is skipped -- the turn continues as if the hook had
+// returned continue -- and is logged and counted in failures.
 func runInterceptorHook[T any](
+	failures *atomic.Uint64,
 	parent context.Context,
 	timeout time.Duration,
 	name string,
@@ -738,25 +813,28 @@ func runInterceptorHook[T any](
 	select {
 	case res := <-done:
 		if res.err != nil {
-			logger.WarnCF("hooks", "Interceptor hook failed", map[string]any{
-				"hook":  name,
-				"stage": stage,
-				"error": res.err.Error(),
+			logger.WarnCF("hooks", "Interceptor hook failed; continuing without it", map[string]any{
+				"hook":     name,
+				"stage":    stage,
+				"error":    res.err.Error(),
+				"failures": failures.Add(1),
 			})
 			return zero, HookDecision{}, false
 		}
 		return res.value, res.decision, true
 	case <-ctx.Done():
-		logger.WarnCF("hooks", "Interceptor hook timed out", map[string]any{
+		logger.WarnCF("hooks", "Interceptor hook timed out; continuing without it", map[string]any{
 			"hook":       name,
 			"stage":      stage,
 			"timeout_ms": timeout.Milliseconds(),
+			"failures":   failures.Add(1),
 		})
 		return zero, HookDecision{}, false
 	}
 }
 
 func runApprovalHook(
+	failures *atomic.Uint64,
 	parent context.Context,
 	timeout time.Duration,
 	name string,
@@ -780,9 +858,10 @@ func runApprovalHook(
 	case res := <-done:
 		if res.err != nil {
 			logger.WarnCF("hooks", "Approval hook failed", map[string]any{
-				"hook":  name,
-				"stage": stage,
-				"error": res.err.Error(),
+				"hook":     name,
+				"stage":    stage,
+				"error":    res.err.Error(),
+				"failures": failures.Add(1),
 			})
 			return ApprovalDecision{}, false
 		}
@@ -792,6 +871,7 @@ func runApprovalHook(
 			"hook":       name,
 			"stage":      stage,
 			"timeout_ms": timeout.Milliseconds(),
+			"failures":   failures.Add(1),
 		})
 		return ApprovalDecision{
 			Approved: false,

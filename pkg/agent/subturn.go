@@ -5,9 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"sync"
-	"sync/atomic"
 	"time"
 
+	"github.com/xibodev/compa/pkg/config"
 	runtimeevents "github.com/xibodev/compa/pkg/events"
 	"github.com/xibodev/compa/pkg/logger"
 	"github.com/xibodev/compa/pkg/providers"
@@ -34,7 +34,10 @@ var (
 
 // getSubTurnConfig returns the effective SubTurn configuration with defaults applied.
 func (al *AgentLoop) getSubTurnConfig() subTurnRuntimeConfig {
-	cfg := al.cfg.Agents.Defaults.SubTurn
+	var cfg config.SubTurnConfig
+	if loopCfg := al.GetConfig(); loopCfg != nil {
+		cfg = loopCfg.Agents.Defaults.SubTurn
+	}
 
 	maxDepth := cfg.MaxDepth
 	if maxDepth <= 0 {
@@ -61,7 +64,6 @@ func (al *AgentLoop) getSubTurnConfig() subTurnRuntimeConfig {
 		maxConcurrent:      maxConcurrent,
 		concurrencyTimeout: concurrencyTimeout,
 		defaultTimeout:     defaultTimeout,
-		defaultTokenBudget: cfg.DefaultTokenBudget,
 	}
 }
 
@@ -71,7 +73,6 @@ type subTurnRuntimeConfig struct {
 	maxConcurrent      int
 	concurrencyTimeout time.Duration
 	defaultTimeout     time.Duration
-	defaultTokenBudget int
 }
 
 // ====================== SubTurn Config ======================
@@ -102,9 +103,9 @@ type subTurnRuntimeConfig struct {
 //	// Result also available in parent's pendingResults channel
 //	// Parent turn will poll and process it in a later iteration
 type SubTurnConfig struct {
-	Tools        []tools.Tool
+	// SystemPrompt, despite its name, carries the task description: it is
+	// sent as the first 'user' message (see ActualSystemPrompt).
 	SystemPrompt string
-	MaxTokens    int
 
 	// Async controls the result delivery mechanism:
 	//
@@ -145,19 +146,6 @@ type SubTurnConfig struct {
 	// Default is 5 minutes (defaultSubTurnTimeout) if not specified.
 	Timeout time.Duration
 
-	// MaxContextRunes limits the context size (in runes) passed to the SubTurn.
-	// This prevents context window overflow by truncating message history before LLM calls.
-	//
-	// Values:
-	//   0  = Auto-calculate based on model's ContextWindow * 0.75 (default, recommended)
-	//   -1 = No limit (disable soft truncation, rely only on hard context errors)
-	//   >0 = Use specified rune limit
-	//
-	// The soft limit acts as a first line of defense before hitting the provider's
-	// hard context window limit. When exceeded, older messages are intelligently
-	// truncated while preserving system messages and recent context.
-	MaxContextRunes int
-
 	// ActualSystemPrompt is injected as the true 'system' role message for the childAgent.
 	// SystemPrompt, despite its name, carries the task description and is sent as
 	// the first 'user' message.
@@ -166,12 +154,6 @@ type SubTurnConfig struct {
 	// InitialMessages preloads the ephemeral session history before the agent loop starts.
 	// Used by evaluator-optimizer patterns to pass the full worker context across multiple iterations.
 	InitialMessages []providers.Message
-
-	// InitialTokenBudget is a shared atomic counter for tracking remaining tokens.
-	// If set, the SubTurn will inherit this budget and deduct tokens after each LLM call.
-	// If nil, the SubTurn will inherit the parent's tokenBudget (if any).
-	// Used by team tool to enforce token limits across all team members.
-	InitialTokenBudget *atomic.Int64
 
 	// TargetAgentID, when set, runs the sub-turn as the specified agent.
 	// The target agent's workspace, model, tools, and system prompt are used
@@ -221,18 +203,15 @@ func (s *AgentLoopSpawner) SpawnSubTurn(
 		)
 	}
 
-	// Convert tools.SubTurnConfig to agent.SubTurnConfig
+	// Convert tools.SubTurnConfig to agent.SubTurnConfig. The child runs as an
+	// agent, with that agent's own tools and model settings.
 	agentCfg := SubTurnConfig{
-		Tools:              cfg.Tools,
 		SystemPrompt:       cfg.SystemPrompt,
 		ActualSystemPrompt: cfg.ActualSystemPrompt,
 		InitialMessages:    cfg.InitialMessages,
-		InitialTokenBudget: cfg.InitialTokenBudget,
-		MaxTokens:          cfg.MaxTokens,
 		Async:              cfg.Async,
 		Critical:           cfg.Critical,
 		Timeout:            cfg.Timeout,
-		MaxContextRunes:    cfg.MaxContextRunes,
 		TargetAgentID:      cfg.TargetAgentID,
 	}
 
@@ -273,6 +252,17 @@ func spawnSubTurn(
 	// Get effective SubTurn configuration
 	rtCfg := al.getSubTurnConfig()
 
+	// Sub-agents run under their root session's work context, which /stop
+	// cancels whether or not the turn that started them still runs.
+	workCtx, releaseWork := al.sessionWork.acquire(al.lifetimeContext(), rootTurn(parentTS).sessionKey)
+	defer releaseWork()
+	// An async child outlives the tool call that started it: only /stop or
+	// its own timeout end it. A sync child ends with its caller as well.
+	waitCtx := workCtx
+	if !cfg.Async {
+		waitCtx = ctx
+	}
+
 	// 0. Acquire concurrency semaphore FIRST to ensure it's released even if early validation fails.
 	// Blocks if parent already has maxConcurrentSubTurns running, with a timeout to prevent indefinite blocking.
 	// Also respects context cancellation so we don't block forever if parent is aborted.
@@ -284,7 +274,7 @@ func spawnSubTurn(
 	var semAcquired bool
 	if parentTS.concurrencySem != nil {
 		// Create a timeout context for semaphore acquisition
-		timeoutCtx, cancel := context.WithTimeout(ctx, rtCfg.concurrencyTimeout)
+		timeoutCtx, cancel := context.WithTimeout(waitCtx, rtCfg.concurrencyTimeout)
 		defer cancel()
 
 		select {
@@ -295,10 +285,12 @@ func spawnSubTurn(
 					<-parentTS.concurrencySem
 				}
 			}()
+		case <-workCtx.Done():
+			return nil, workCtx.Err()
 		case <-timeoutCtx.Done():
 			// Check parent context first - if it was canceled, propagate that error
-			if ctx.Err() != nil {
-				return nil, ctx.Err()
+			if waitCtx.Err() != nil {
+				return nil, waitCtx.Err()
 			}
 			// Otherwise it's our timeout
 			return nil, fmt.Errorf("%w: all %d slots occupied for %v",
@@ -322,11 +314,21 @@ func spawnSubTurn(
 		timeout = rtCfg.defaultTimeout
 	}
 
-	// 3. Create INDEPENDENT child context (not derived from parent ctx).
-	// This allows the child to continue running after parent finishes gracefully.
-	// The child has its own timeout for self-protection.
-	childCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	// 3. Derive the child context from the session's work context, not from
+	// the parent turn's: an async child may continue after its parent turn
+	// ends, while /stop still reaches it. The child has its own timeout.
+	childCtx, cancel := context.WithTimeout(workCtx, timeout)
 	defer cancel()
+	if !cfg.Async {
+		// The caller waits for a sync child: when the caller stops, so does it.
+		stopWithCaller := context.AfterFunc(ctx, cancel)
+		defer stopWithCaller()
+	}
+	// A scheduled turn's children are scheduled work too: nobody wrote what
+	// they do (see turnSenderIsOwner).
+	if isScheduledTurn(ctx) {
+		childCtx = withScheduledTurn(childCtx)
+	}
 
 	childID := al.generateSubTurnID()
 
@@ -337,21 +339,32 @@ func spawnSubTurn(
 	var baseAgent *AgentInstance
 	if cfg.TargetAgentID != "" {
 		var ok bool
-		baseAgent, ok = al.registry.GetAgent(cfg.TargetAgentID)
+		baseAgent, ok = al.GetRegistry().GetAgent(cfg.TargetAgentID)
 		if !ok {
 			return nil, fmt.Errorf("target agent %q not found in registry", cfg.TargetAgentID)
 		}
 	} else {
 		baseAgent = parentTS.agent
 		if baseAgent == nil {
-			baseAgent = al.registry.GetDefaultAgent()
+			baseAgent = al.GetRegistry().GetDefaultAgent()
 		}
 	}
 	if baseAgent == nil {
 		return nil, errors.New("parent turnState has no agent instance")
 	}
 	ephemeralStore := newEphemeralSession(nil)
-	agent := *baseAgent // shallow copy
+	// The child runs on its agent's model as it is now, like any turn: for
+	// the parent's agent, the model the parent runs on. An async child that
+	// starts after its parent ended, past a /switch that closed that model,
+	// takes the agent's current model instead.
+	snapshot, releaseModel, current := baseAgent.turnSnapshot()
+	if !current {
+		if live, ok := al.GetRegistry().GetAgent(baseAgent.ID); ok && live != nil {
+			snapshot, releaseModel, _ = live.turnSnapshot()
+		}
+	}
+	defer releaseModel()
+	agent := *snapshot
 	agent.Sessions = ephemeralStore
 	// Clone the tool registry so child turn's tool registrations
 	// don't pollute the parent's registry.
@@ -419,20 +432,8 @@ func spawnSubTurn(
 	childTS.concurrencySem = make(chan struct{}, rtCfg.maxConcurrent)
 	childTS.al = al                  // back-ref for hard abort cascade
 	childTS.session = ephemeralStore // same store as agent.Sessions
-
-	// Token budget initialization/inheritance
-	// If InitialTokenBudget is explicitly provided (e.g., by team tool), use it.
-	// Otherwise, inherit from parent's tokenBudget (for nested SubTurns).
-	if cfg.InitialTokenBudget != nil {
-		childTS.tokenBudget = cfg.InitialTokenBudget
-	} else if parentTS.tokenBudget != nil {
-		childTS.tokenBudget = parentTS.tokenBudget
-	} else if rtCfg.defaultTokenBudget > 0 {
-		// Apply default token budget from config if no budget is set
-		budget := &atomic.Int64{}
-		budget.Store(int64(rtCfg.defaultTokenBudget))
-		childTS.tokenBudget = budget
-	}
+	// The approval policy decides a child's calls as its parent's.
+	childTS.origin = parentTS.origin
 
 	// IMPORTANT: Put childTS into childCtx so that code inside runTurn can retrieve it
 	childCtx = withTurnState(childCtx, childTS)

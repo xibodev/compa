@@ -23,20 +23,32 @@ import (
 )
 
 // listen is the inbound message loop. It blocks on wait_next_msgs and feeds
-// each new message into the Compa inbound pipeline.
+// each new message into the Compa inbound pipeline. When the RPC server goes
+// away, it restarts it.
 func (c *DeltaChatChannel) listen() {
 	logger.InfoCF("deltachat", "Listening for messages", map[string]any{
 		"account_id": c.accountID,
 		"email":      c.selfAddr,
 	})
-	for c.IsRunning() && c.ctx.Err() == nil {
-		raw, err := c.rpc.call(c.ctx, "wait_next_msgs", c.accountID)
+	for c.ctx.Err() == nil {
+		rpc := c.client()
+		raw, err := rpc.call(c.ctx, "wait_next_msgs", c.accountID)
 		if err != nil {
-			if c.ctx.Err() != nil || !c.IsRunning() {
+			if c.ctx.Err() != nil {
 				return
 			}
+			if rpc.isClosed() {
+				if !c.restartRPC(rpc) {
+					return
+				}
+				continue
+			}
 			logger.ErrorCF("deltachat", "wait_next_msgs failed", map[string]any{"error": err.Error()})
-			time.Sleep(time.Second)
+			select {
+			case <-c.ctx.Done():
+				return
+			case <-time.After(time.Second):
+			}
 			continue
 		}
 
@@ -58,6 +70,7 @@ func (c *DeltaChatChannel) listen() {
 
 // handleMessage fetches one message, applies inbound filtering, and publishes it.
 func (c *DeltaChatChannel) handleMessage(messageID int64) {
+	defer channels.RecoverPanic(c.Name(), "message")
 	msg, err := c.getMessage(messageID)
 	if err != nil {
 		logger.DebugCF("deltachat", "get_message failed", map[string]any{
@@ -121,6 +134,59 @@ func (c *DeltaChatChannel) handleMessage(messageID int64) {
 
 	content := strings.TrimSpace(msg.Text)
 
+	sender := bus.SenderInfo{
+		Platform:    config.ChannelDeltaChat,
+		PlatformID:  senderAddr,
+		CanonicalID: identity.BuildCanonicalID(config.ChannelDeltaChat, senderAddr),
+		Username:    senderAddr,
+		DisplayName: senderName,
+	}
+	chatType := "direct"
+	if isGroup {
+		chatType = "group"
+	}
+
+	// Decide on the message before copying its attachment. A direct message
+	// the policy rejects still goes to it, as text only, so that an unpaired
+	// sender is recorded for the owner to approve.
+	if !c.Admits(chatType, sender, chatID) {
+		logger.DebugCF("deltachat", "Drop: not admitted by the access policy", map[string]any{
+			"from": senderAddr,
+		})
+		if !isGroup {
+			text := content
+			if text == "" {
+				text = "[media]"
+			}
+			_ = c.HandleInboundContext(c.ctx, chatID, text, nil, bus.InboundContext{
+				Channel:   config.ChannelDeltaChat,
+				ChatID:    chatID,
+				ChatType:  chatType,
+				SenderID:  senderAddr,
+				MessageID: messageIDStr,
+			}, sender)
+		}
+		return
+	}
+
+	isMentioned := false
+	if isGroup {
+		botName := c.config.DisplayName
+		if botName == "" {
+			botName = c.selfAddr
+		}
+		isMentioned = mentionsBot(content, botName, c.selfAddr)
+		respond, cleaned := c.ShouldRespondInGroup(isMentioned, content)
+		if !respond {
+			logger.DebugCF("deltachat", "Drop: group trigger not satisfied", map[string]any{
+				"chat_id":   msg.ChatID,
+				"mentioned": isMentioned,
+			})
+			return
+		}
+		content = cleaned
+	}
+
 	// Register any attachment with the media store so the agent pipeline can
 	// view images and operate on files. The ref is scoped to the same key the
 	// BaseChannel derives for this message, so it is released with the turn.
@@ -151,39 +217,6 @@ func (c *DeltaChatChannel) handleMessage(messageID int64) {
 		} else {
 			content = "[media]"
 		}
-	}
-
-	sender := bus.SenderInfo{
-		Platform:    config.ChannelDeltaChat,
-		PlatformID:  senderAddr,
-		CanonicalID: identity.BuildCanonicalID(config.ChannelDeltaChat, senderAddr),
-		Username:    senderAddr,
-		DisplayName: senderName,
-	}
-
-	if !c.IsAllowedSender(sender) {
-		logger.DebugCF("deltachat", "Drop: sender not in allow_from", map[string]any{
-			"from": senderAddr,
-		})
-		return
-	}
-
-	isMentioned := false
-	if isGroup {
-		botName := c.config.DisplayName
-		if botName == "" {
-			botName = c.selfAddr
-		}
-		isMentioned = mentionsBot(content, botName, c.selfAddr)
-		respond, cleaned := c.ShouldRespondInGroup(isMentioned, content)
-		if !respond {
-			logger.DebugCF("deltachat", "Drop: group trigger not satisfied", map[string]any{
-				"chat_id":   msg.ChatID,
-				"mentioned": isMentioned,
-			})
-			return
-		}
-		content = cleaned
 	}
 
 	if strings.TrimSpace(content) == "" {
@@ -227,7 +260,7 @@ func (c *DeltaChatChannel) handleMessage(messageID int64) {
 		})
 		return
 	}
-	if _, err := c.rpc.call(c.ctx, "markseen_msgs", c.accountID, []int64{messageID}); err != nil {
+	if _, err := c.client().call(c.ctx, "markseen_msgs", c.accountID, []int64{messageID}); err != nil {
 		logger.WarnCF("deltachat", "Failed to mark message seen", map[string]any{
 			"message_id": messageID,
 			"chat_id":    chatID,
@@ -320,7 +353,7 @@ func copyToMediaTemp(srcPath, filename string) (string, error) {
 }
 
 func (c *DeltaChatChannel) getMessage(messageID int64) (*dcMessage, error) {
-	raw, err := c.rpc.call(c.ctx, "get_message", c.accountID, messageID)
+	raw, err := c.client().call(c.ctx, "get_message", c.accountID, messageID)
 	if err != nil {
 		return nil, err
 	}
@@ -332,7 +365,7 @@ func (c *DeltaChatChannel) getMessage(messageID int64) (*dcMessage, error) {
 }
 
 func (c *DeltaChatChannel) getFullChat(chatID int64) (*dcChat, error) {
-	raw, err := c.rpc.call(c.ctx, "get_full_chat_by_id", c.accountID, chatID)
+	raw, err := c.client().call(c.ctx, "get_full_chat_by_id", c.accountID, chatID)
 	if err != nil {
 		return nil, err
 	}

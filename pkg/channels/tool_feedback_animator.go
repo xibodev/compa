@@ -9,6 +9,11 @@ import (
 
 const toolFeedbackAnimationInterval = 3 * time.Second
 
+// toolFeedbackAnimationMaxLifetime ends an animation whose turn never cleared
+// it, so an orphaned progress message is not edited forever. The message
+// stays tracked; only the edits stop.
+var toolFeedbackAnimationMaxLifetime = 10 * time.Minute
+
 const initialToolFeedbackAnimationFrame = ""
 
 var toolFeedbackAnimationFrames = []string{"..", "."}
@@ -165,12 +170,16 @@ func (a *ToolFeedbackAnimator) run(chatID string, entry *toolFeedbackAnimationSt
 
 	ticker := time.NewTicker(toolFeedbackAnimationInterval)
 	defer ticker.Stop()
+	lifetime := time.NewTimer(toolFeedbackAnimationMaxLifetime)
+	defer lifetime.Stop()
 
 	frameIdx := 1
 
 	for {
 		select {
 		case <-entry.stop:
+			return
+		case <-lifetime.C:
 			return
 		case <-ticker.C:
 			if a.editFn == nil {

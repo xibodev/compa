@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 func TestFormatAnimatedToolFeedbackContent(t *testing.T) {
@@ -118,4 +119,26 @@ func TestToolFeedbackAnimator_UpdateFailureRestoresTracking(t *testing.T) {
 	if currentID, ok := animator.Current("chat-1"); !ok || currentID != "msg-1" {
 		t.Fatalf("Current() after failed Update = (%q, %v), want (msg-1, true)", currentID, ok)
 	}
+}
+
+func TestToolFeedbackAnimatorStopsAfterMaxLifetime(t *testing.T) {
+	old := toolFeedbackAnimationMaxLifetime
+	toolFeedbackAnimationMaxLifetime = 50 * time.Millisecond
+	t.Cleanup(func() { toolFeedbackAnimationMaxLifetime = old })
+
+	animator := NewToolFeedbackAnimator(func(context.Context, string, string, string) error { return nil })
+	animator.Record("chat", "msg-1", "running a tool")
+	animator.mu.Lock()
+	entry := animator.entries["chat"]
+	animator.mu.Unlock()
+
+	select {
+	case <-entry.done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the animation outlived its maximum lifetime")
+	}
+	if id, ok := animator.Current("chat"); !ok || id != "msg-1" {
+		t.Fatalf("Current() = %q, %v; the message should stay tracked", id, ok)
+	}
+	animator.Clear("chat")
 }

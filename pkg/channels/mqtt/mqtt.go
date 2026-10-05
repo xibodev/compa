@@ -16,6 +16,7 @@ import (
 	"github.com/xibodev/compa/pkg/bus"
 	"github.com/xibodev/compa/pkg/channels"
 	"github.com/xibodev/compa/pkg/config"
+	"github.com/xibodev/compa/pkg/identity"
 	"github.com/xibodev/compa/pkg/logger"
 )
 
@@ -80,7 +81,12 @@ func (c *MQTTChannel) Start(ctx context.Context) error {
 	opts.SetAutoReconnect(true)
 	opts.SetConnectRetry(true)
 	opts.SetConnectRetryInterval(5 * time.Second)
-	opts.SetTLSConfig(&tls.Config{InsecureSkipVerify: true}) //nolint:gosec
+	opts.SetTLSConfig(mqttTLSConfig(c.cfg.TLSInsecureSkipVerify))
+	if c.cfg.TLSInsecureSkipVerify && brokerUsesTLS(c.cfg.Broker) {
+		logger.WarnCF("mqtt", "Broker TLS certificate verification is off (tls_insecure_skip_verify)", map[string]any{
+			"broker": c.cfg.Broker,
+		})
+	}
 
 	if c.cfg.Username.String() != "" {
 		opts.SetUsername(c.cfg.Username.String())
@@ -126,6 +132,31 @@ func (c *MQTTChannel) Start(ctx context.Context) error {
 	return nil
 }
 
+// mqttTLSConfig is the TLS configuration for ssl://, tls://, mqtts:// and
+// wss:// brokers. The broker's certificate is verified unless the user turned
+// that off with tls_insecure_skip_verify.
+func mqttTLSConfig(insecureSkipVerify bool) *tls.Config {
+	return &tls.Config{
+		MinVersion:         tls.VersionTLS12,
+		InsecureSkipVerify: insecureSkipVerify, //nolint:gosec // explicit user opt-in
+	}
+}
+
+// brokerUsesTLS reports whether the broker URL's scheme is one paho dials
+// with TLS.
+func brokerUsesTLS(broker string) bool {
+	scheme, _, ok := strings.Cut(strings.TrimSpace(broker), "://")
+	if !ok {
+		return false
+	}
+	switch strings.ToLower(scheme) {
+	case "ssl", "tls", "mqtts", "mqtt+ssl", "tcps", "wss":
+		return true
+	default:
+		return false
+	}
+}
+
 // topicPrefix returns the configured topic prefix, normalizing slashes.
 // Trailing slashes are stripped; the result may or may not have a leading slash
 // depending on what the user configured.
@@ -159,6 +190,7 @@ func (c *MQTTChannel) clientIDFromTopic(topic string) (string, bool) {
 func (c *MQTTChannel) subscribe(client pahomqtt.Client) error {
 	topic := fmt.Sprintf("%s/%s/+/request", c.topicPrefix(), c.cfg.AgentID)
 	token := client.Subscribe(topic, c.qos, func(_ pahomqtt.Client, msg pahomqtt.Message) {
+		defer channels.RecoverPanic(c.Name(), "message")
 		c.handleInbound(msg)
 	})
 	token.Wait()
@@ -198,14 +230,24 @@ func (c *MQTTChannel) handleInbound(msg pahomqtt.Message) {
 		return
 	}
 
+	// The sender is the client_id segment of the topic, which whoever
+	// publishes chooses: allow_from compares that id, so it identifies a
+	// client only as far as the broker's ACLs stop others from publishing
+	// on that client's topic.
+	sender := bus.SenderInfo{
+		Platform:    "mqtt",
+		PlatformID:  clientID,
+		CanonicalID: identity.BuildCanonicalID("mqtt", clientID),
+	}
+
 	inboundCtx := bus.InboundContext{
-		Channel:  "mqtt",
+		Channel:  c.Name(),
 		ChatID:   chatID,
 		ChatType: "direct",
 		SenderID: clientID,
 	}
 
-	c.HandleInboundContext(context.Background(), chatID, payload.Text, nil, inboundCtx)
+	c.HandleInboundContext(context.Background(), chatID, payload.Text, nil, inboundCtx, sender)
 }
 
 // Stop disconnects from the MQTT broker.

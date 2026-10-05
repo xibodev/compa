@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/xibodev/compa/internal/module"
 	"github.com/xibodev/compa/pkg/logger"
@@ -53,106 +54,218 @@ func ModulesDir(home string) string { return module.ModulesDir(home) }
 // Installation is a file on disk plus a successful describe. There is no
 // registry file to drift out of sync with the executable: the binary is the
 // source of truth about what it can do.
+//
+// Modules are described a few at a time, and an unchanged binary is answered
+// from module.DescribeCached: this runs on every Modules or Tools page load and
+// every cockpit invocation, and describing each module in turn with a 10s
+// budget each made one slow module stall the page.
 func Discover(ctx context.Context, home string) []Installed {
-	root := ModulesDir(home)
+	candidates := candidateModules(ModulesDir(home))
+	found := make([]Installed, len(candidates))
 
-	var found []Installed
-	// A module may be installed as <modules>/<id>/<binary> or as a bare binary
-	// directly in <modules>/. Both are accepted so a hand-dropped binary works
-	// as well as one placed by `modules add`.
-	for _, path := range candidateBinaries(root) {
-		r := &module.Runner{Binary: path}
-		d, res, err := r.Describe(ctx)
-		if err != nil {
-			found = append(found, Installed{Runner: r, Err: err})
-			continue
-		}
-		// Bind identity now that the descriptor has named the module, so every
-		// later invocation is checked against the module it claims to be.
-		r.ModuleID = d.Module
-
-		in := Installed{Runner: r, Descriptor: d}
-		if dir, ok := ModuleDir(home, path); ok {
-			in.Disabled = Disabled(dir)
-		}
-		if res != nil && res.Envelope != nil {
-			in.Warnings = res.Envelope.Warnings
-
-			// THE CONTRACT GATE, run against the DESCRIPTOR bytes rather than
-			// raw stdout.
-			//
-			// contract_version lives inside envelope.result, so evaluating raw
-			// describe output returns v1 for EVERY module -- silently, because
-			// "no contract_version" is a legitimate answer meaning "v1 module".
-			// A sibling lane hit exactly that on their first probe and nearly
-			// reported "no problem, we interoperate" from a v1 result that was
-			// an artifact of their input.
-			//
-			// Note what this does NOT change: the wire format. A v2 module
-			// still declares protocol_versions ["xibodev.module/v1"] and still
-			// passes v1 descriptor validation above -- measured against the
-			// sibling's real binary, which ships both fields. Wire format and
-			// behavioural contract are different axes, which is the whole
-			// premise of the pin, so nothing about the v1 read path moves.
-			in.V2 = evaluateV2(res.Envelope.Result)
-		}
-		// The HOST's own findings about what is on disk, alongside whatever the
-		// module said about itself.
-		//
-		// Install checks declared digests too, but only at install time. A
-		// module whose content drifts afterwards -- edited in place, or
-		// rebuilt against different files -- installs cleanly and then simply
-		// stops contributing its overlay, with nothing anywhere saying why.
-		// Discovery runs every time the Modules page is opened, so this is
-		// where a person can still find out.
-		in.HostWarnings = append(in.HostWarnings, staleContentWarnings(filepath.Dir(path), d)...)
-		in.HostWarnings = append(in.HostWarnings, costClaimWarnings(d)...)
-		in.HostWarnings = append(in.HostWarnings, bundleRootWarnings(home, d)...)
-		// A refused contract, or a v2 module whose projection weakens its own
-		// Operations, is reported HERE rather than silently ignored. A module
-		// that fails conformance still describes itself fine and still lists
-		// capabilities, so without this the only symptom is a gate that never
-		// fires -- invisible until it matters.
-		in.HostWarnings = append(in.HostWarnings, v2Warnings(in.V2)...)
-		found = append(found, in)
+	sem := make(chan struct{}, discoverParallelism)
+	var wg sync.WaitGroup
+	for i, c := range candidates {
+		wg.Add(1)
+		go func(i int, c candidate) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			found[i] = describeCandidate(ctx, home, c)
+		}(i, c)
 	}
+	wg.Wait()
+	refuseDuplicateIDs(found)
 
-	sort.Slice(found, func(i, j int) bool {
+	sort.SliceStable(found, func(i, j int) bool {
 		return found[i].Runner.Binary < found[j].Runner.Binary
 	})
 	return found
 }
 
-func candidateBinaries(root string) []string {
+// discoverParallelism bounds how many modules are described at once.
+const discoverParallelism = 4
+
+// candidate is one binary discovery will run, and the module ID its location
+// requires ("" for a bare binary in the modules directory, which may claim any
+// ID no installed module uses).
+type candidate struct {
+	path string
+	id   string
+}
+
+func describeCandidate(ctx context.Context, home string, c candidate) Installed {
+	r := &module.Runner{Binary: c.path}
+	if c.id != "" {
+		installed, err := module.NewRunner(home, c.id)
+		if err != nil {
+			return Installed{Runner: r, Err: err}
+		}
+		r = installed
+	}
+	d, res, err := r.DescribeCached(ctx)
+	if err != nil {
+		return Installed{Runner: r, Err: err}
+	}
+	// A module installed in a directory is the module that directory names.
+	// Trusting the self-reported ID instead let a binary anywhere claim an
+	// installed module's ID and shadow its tools, roots and knowledge.
+	if c.id != "" && d.Module != c.id {
+		return Installed{Runner: r, Err: fmt.Errorf(
+			"%s describes itself as module %q but is installed as %q, so it is not used;"+
+				" install it again with modules-add", filepath.Base(c.path), d.Module, c.id)}
+	}
+	// Bind identity now that the descriptor has named the module, so every
+	// later invocation is checked against the module it claims to be.
+	r.ModuleID = d.Module
+
+	in := Installed{Runner: r, Descriptor: d}
+	if dir, ok := ModuleDir(home, c.path); ok {
+		in.Disabled = Disabled(dir)
+	}
+	if res != nil && res.Envelope != nil {
+		in.Warnings = boundTexts(res.Envelope.Warnings)
+
+		// THE CONTRACT GATE, run against the DESCRIPTOR bytes rather than
+		// raw stdout.
+		//
+		// contract_version lives inside envelope.result, so evaluating raw
+		// describe output returns v1 for EVERY module -- silently, because
+		// "no contract_version" is a legitimate answer meaning "v1 module".
+		// A sibling lane hit exactly that on their first probe and nearly
+		// reported "no problem, we interoperate" from a v1 result that was
+		// an artifact of their input.
+		//
+		// Note what this does NOT change: the wire format. A v2 module
+		// still declares protocol_versions ["xibodev.module/v1"] and still
+		// passes v1 descriptor validation above -- measured against the
+		// sibling's real binary, which ships both fields. Wire format and
+		// behavioural contract are different axes, which is the whole
+		// premise of the pin, so nothing about the v1 read path moves.
+		in.V2 = evaluateV2(res.Envelope.Result)
+
+		// A refused contract, or a v2 module whose projection weakens its
+		// own Operations, is not registered: it describes itself fine and
+		// lists capabilities, so running it would act on declarations the
+		// host has just rejected. It is reported in place of the module.
+		if refusal := v2Refusal(in.V2); refusal != "" {
+			return Installed{Runner: r, V2: in.V2, Disabled: in.Disabled,
+				Err: fmt.Errorf("module %q is refused: %s", d.Module, refusal)}
+		}
+	}
+	// The HOST's own findings about what is on disk, alongside whatever the
+	// module said about itself.
+	//
+	// Install checks declared digests too, but only at install time. A
+	// module whose content drifts afterwards -- edited in place, or
+	// rebuilt against different files -- installs cleanly and then simply
+	// stops contributing its overlay, with nothing anywhere saying why.
+	// Discovery runs every time the Modules page is opened, so this is
+	// where a person can still find out.
+	in.HostWarnings = append(in.HostWarnings, staleContentWarnings(filepath.Dir(c.path), d)...)
+	in.HostWarnings = append(in.HostWarnings, costClaimWarnings(d)...)
+	in.HostWarnings = append(in.HostWarnings, bundleRootWarnings(home, d)...)
+	in.HostWarnings = append(in.HostWarnings, rootNameWarnings(d)...)
+	return in
+}
+
+// refuseDuplicateIDs keeps the first module claiming each ID and marks the
+// others broken. Installed directories come first, so a bare binary can never
+// take an installed module's place. The cockpit used to invoke the first match
+// and the agent the last.
+func refuseDuplicateIDs(found []Installed) {
+	owner := map[string]string{}
+	for i := range found {
+		in := &found[i]
+		if in.Descriptor == nil {
+			continue
+		}
+		id := strings.ToLower(in.Descriptor.Module)
+		if first, taken := owner[id]; taken {
+			in.Err = fmt.Errorf("%s also describes itself as module %q, which %s already is; it is not used",
+				filepath.Base(in.Runner.Binary), in.Descriptor.Module, first)
+			in.Descriptor = nil
+			continue
+		}
+		owner[id] = filepath.Base(in.Runner.Binary)
+	}
+}
+
+// candidateModules lists what discovery runs, installed directories first.
+//
+// In a module's directory only the binary named after the directory runs:
+// everything else there -- the disabled marker, overlays, a .DS_Store, a
+// helper script -- is the module's content, and on Linux and macOS every
+// regular file used to be executed as a module, whose "broken module" card
+// then offered to remove the real module's directory. Dotfiles and dot
+// directories, which include the host's staging and lock directories, are
+// never run.
+//
+// A bare executable directly in the modules directory still runs, so a
+// hand-dropped binary works.
+func candidateModules(root string) []candidate {
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return nil
 	}
-
-	var out []string
-	add := func(p string) {
-		if runtime.GOOS == "windows" && !strings.HasSuffix(strings.ToLower(p), ".exe") {
-			return
-		}
-		if abs, err := filepath.Abs(p); err == nil {
-			out = append(out, abs)
-		}
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return nil
 	}
 
+	var dirs, bare []candidate
 	for _, e := range entries {
-		full := filepath.Join(root, e.Name())
-		if !e.IsDir() {
-			add(full)
+		name := e.Name()
+		if strings.HasPrefix(name, ".") {
 			continue
 		}
-		inner, err := os.ReadDir(full)
-		if err != nil {
-			continue
-		}
-		for _, f := range inner {
-			if !f.IsDir() {
-				add(filepath.Join(full, f.Name()))
+		full := filepath.Join(absRoot, name)
+		if e.IsDir() {
+			bin := filepath.Join(full, module.BinaryName(name))
+			if info, err := os.Stat(bin); err == nil && info.Mode().IsRegular() {
+				dirs = append(dirs, candidate{path: bin, id: name})
 			}
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || !info.Mode().IsRegular() || !looksExecutable(name, info) {
+			continue
+		}
+		bare = append(bare, candidate{path: full})
+	}
+	return append(dirs, bare...)
+}
+
+// looksExecutable reports whether a bare file in the modules directory is a
+// program rather than something left beside one.
+func looksExecutable(name string, info os.FileInfo) bool {
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(filepath.Ext(name), ".exe")
+	}
+	return info.Mode().Perm()&0o111 != 0
+}
+
+// boundTexts bounds module-supplied lines before they reach a page or a log.
+func boundTexts(lines []string) []string {
+	if lines == nil {
+		return nil
+	}
+	out := make([]string, len(lines))
+	for i, l := range lines {
+		out[i] = module.BoundText(l, module.MaxErrorText)
+	}
+	return out
+}
+
+// rootNameWarnings reports declared root names the host will not grant
+// because they could not name a single directory under its state.
+func rootNameWarnings(d *modproto.Descriptor) []string {
+	var out []string
+	for _, name := range d.Permissions.FilesystemWrite {
+		if name != "workspace" && !module.ValidRootName(name) {
+			out = append(out, fmt.Sprintf("declares writable root %q, which is not a usable root name"+
+				" (1 to 64 lowercase letters, digits, '.', '_' or '-'), so it is not granted",
+				module.BoundText(name, 80)))
 		}
 	}
 	return out
@@ -178,11 +291,14 @@ func RegisterTools(ctx context.Context, home, workspace string, register func(to
 
 	installed := Discover(ctx, home)
 	sources := agentSourceRoots(home, installed)
+	// Tool names are unique across modules. A name two capabilities map to is
+	// refused for the second rather than silently replacing the first.
+	taken := map[string]string{}
 	for _, in := range installed {
 		if in.Err != nil {
 			logger.WarnCF("modules", "installed module could not describe itself", map[string]any{
 				"binary": filepath.Base(in.Runner.Binary),
-				"error":  in.Err.Error(),
+				"error":  module.BoundText(in.Err.Error(), module.MaxErrorText),
 			})
 			continue
 		}
@@ -200,15 +316,28 @@ func RegisterTools(ctx context.Context, home, workspace string, register func(to
 				"warning": w,
 			})
 		}
+		offered := map[string]bool{}
 		for _, tool := range New(in.Runner, in.Descriptor, home, workspace, sources) {
+			ct := tool.(*CapabilityTool)
+			owner := in.Descriptor.Module + "/" + ct.capability.ID
+			if first, dup := taken[tool.Name()]; dup {
+				logger.WarnCF("modules", "module capability not offered: its tool name is already used", map[string]any{
+					"capability": owner,
+					"tool":       tool.Name(),
+					"used_by":    first,
+				})
+				continue
+			}
+			taken[tool.Name()] = owner
+			offered[ct.capability.ID] = true
 			register(tool)
 		}
 
-		summaries = append(summaries, summarize(in.Descriptor))
+		summaries = append(summaries, summarize(in.Descriptor, offered))
 		logger.InfoCF("modules", "module capabilities registered as agent tools", map[string]any{
 			"module":       in.Descriptor.Module,
 			"version":      in.Descriptor.Version,
-			"capabilities": len(in.Descriptor.Capabilities),
+			"capabilities": len(offered),
 		})
 	}
 	if len(summaries) > 0 {
@@ -252,23 +381,36 @@ func agentSourceRoots(home string, installed []Installed) map[string]string {
 // module should be proportional to what it offers, and eagerly loading every
 // module's full documentation is the failure the layered composition design
 // exists to prevent.
-func summarize(d *modproto.Descriptor) string {
+//
+// Each line names the TOOL the agent calls, which is not the capability ID,
+// and is bounded: a summary is the module's own text, and it is in every
+// prompt. offered, when not nil, limits the lines to the capabilities that
+// became tools.
+func summarize(d *modproto.Descriptor, offered map[string]bool) string {
 	var b strings.Builder
-	b.WriteString(d.Name)
+	b.WriteString(module.BoundText(d.Name, maxSummaryText))
 	b.WriteString(" (module ")
 	b.WriteString(d.Module)
 	b.WriteString("):")
 	for _, c := range d.Capabilities {
+		if offered != nil && !offered[c.ID] {
+			continue
+		}
 		b.WriteString("\n  - ")
+		b.WriteString(ToolName(d.Module, c.ID))
+		b.WriteString(" (")
 		b.WriteString(c.ID)
-		b.WriteString(": ")
-		b.WriteString(c.Summary)
+		b.WriteString("): ")
+		b.WriteString(module.BoundText(c.Summary, maxSummaryText))
 		if !c.Effects.CostKnown {
-			b.WriteString(" [cost unknown; needs approval]")
+			b.WriteString(" [cost unknown]")
 		}
 	}
 	return b.String()
 }
+
+// maxSummaryText bounds one module-supplied name or summary in the prompt.
+const maxSummaryText = 300
 
 // GrantRoots maps the logical root NAMES a module declared onto real absolute
 // paths, for one invocation.
@@ -284,12 +426,34 @@ func summarize(d *modproto.Descriptor) string {
 // that does not resolve is left out rather than replaced -- see
 // ResolveSourceRoot and SourceRootWarnings. A nil map grants none.
 func GrantRoots(d *modproto.Descriptor, home, workspace string, sources map[string]string) map[string]modproto.Root {
-	return grantRoots(d, home, workspace, moduleBundleDir(home, d), sources)
+	return grantRoots(d, home, workspace, moduleBundleDir(home, d), sources, true)
 }
 
-func grantRoots(d *modproto.Descriptor, home, workspace, bundleDir string, sources map[string]string) map[string]modproto.Root {
+// ArtifactRoots are the roots a module's artefacts are read back from: the
+// roots GrantRoots grants, without creating any directory, so a request that
+// only reads never changes the disk. Source roots are left out: they are
+// read-only, so no artefact is ever written into one.
+func ArtifactRoots(d *modproto.Descriptor, home, workspace string) map[string]modproto.Root {
+	return grantRoots(d, home, workspace, moduleBundleDir(home, d), nil, false)
+}
+
+// declaresRoot reports whether a module names root in either of its lists.
+func declaresRoot(d *modproto.Descriptor, root string) bool {
+	for _, list := range [][]string{d.Permissions.FilesystemRead, d.Permissions.FilesystemWrite} {
+		for _, name := range list {
+			if name == root {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func grantRoots(d *modproto.Descriptor, home, workspace, bundleDir string, sources map[string]string, create bool) map[string]modproto.Root {
 	roots := map[string]modproto.Root{}
-	if workspace != "" {
+	// The workspace is the user's own folder, granted read-write -- but only
+	// to a module that asks for it. It used to be granted to every module.
+	if workspace != "" && declaresRoot(d, "workspace") {
 		roots["workspace"] = modproto.Root{Path: workspace, Mode: "rw"}
 	}
 
@@ -352,12 +516,22 @@ func grantRoots(d *modproto.Descriptor, home, workspace, bundleDir string, sourc
 		if name == "workspace" {
 			continue
 		}
-		dir, err := filepath.Abs(filepath.Join(home, "state", d.Module, name))
+		// A root name becomes one directory under the module's state. One
+		// that is not a plain name -- "..", "a/b", an absolute path -- would
+		// name somewhere else, so it is not granted (rootNameWarnings says so).
+		// The module ID is held to the same rule, since it is the directory
+		// above.
+		if !module.ValidRootName(name) || !module.ValidID(d.Module) {
+			continue
+		}
+		dir, err := filepath.Abs(filepath.Join(module.StateDir(home, d.Module), name))
 		if err != nil {
 			continue
 		}
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			continue
+		if create {
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				continue
+			}
 		}
 		roots[name] = modproto.Root{Path: dir, Mode: "rw"}
 	}
@@ -390,7 +564,12 @@ func moduleBundleDir(home string, d *modproto.Descriptor) string {
 	if d == nil || d.Module == "" {
 		return ""
 	}
-	dir := filepath.Join(ModulesDir(home), d.Module)
+	// InstallDir holds the ID to the one grammar: a bare binary claiming ".."
+	// must not be handed the Compa home as its bundle.
+	dir, err := module.InstallDir(home, d.Module)
+	if err != nil {
+		return ""
+	}
 	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
 		return ""
 	}
@@ -510,8 +689,8 @@ func bundleRootWarnings(home string, d *modproto.Descriptor) []string {
 	return nil
 }
 
-// costClaimWarnings reports a capability the host will gate DESPITE its own
-// summary saying it never bills.
+// costClaimWarnings reports a capability the default approval policy asks
+// about DESPITE its own summary saying it never bills.
 //
 // This is NOT a contradiction in the module, and the warning used to say it
 // was. cost_known declares whether a numeric AMOUNT is known -- not whether
@@ -552,11 +731,11 @@ func costClaimWarnings(d *modproto.Descriptor) []string {
 		for _, claim := range freeClaims {
 			if strings.Contains(summary, claim) {
 				out = append(out, fmt.Sprintf(
-					"capability %q declares cost_known:false, so this host gates it"+
-						" for approval, but its own summary says %q. Both can be true:"+
+					"capability %q declares cost_known:false, so the default approval"+
+						" policy asks before it runs, but its own summary says %q. Both can be true:"+
 						" cost_known reports whether the AMOUNT is known, not whether"+
 						" money may be spent, and v1 has no way to declare"+
-						" chargeability separately. The gate is this host being"+
+						" chargeability separately. Asking is this host being"+
 						" pessimistic, not the module contradicting itself", c.ID, claim))
 				break
 			}

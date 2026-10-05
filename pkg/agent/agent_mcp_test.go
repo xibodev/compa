@@ -9,9 +9,17 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/xibodev/compa/pkg/approval"
 	"github.com/xibodev/compa/pkg/config"
 	"github.com/xibodev/compa/pkg/mcp"
 	agenttools "github.com/xibodev/compa/pkg/tools"
@@ -24,7 +32,9 @@ func TestMCPRuntimeResetClearsState(t *testing.T) {
 	manager := mcp.NewManager()
 	rt.setManager(manager)
 	rt.setInitErr(errors.New("stale init error"))
-	rt.initOnce.Do(func() {})
+	if _, _, run := rt.begin(); !run {
+		t.Fatal("expected the first begin to run the initialization")
+	}
 
 	got := rt.reset()
 	if got != manager {
@@ -36,11 +46,32 @@ func TestMCPRuntimeResetClearsState(t *testing.T) {
 	if err := rt.getInitErr(); err != nil {
 		t.Fatalf("getInitErr() = %v, want nil", err)
 	}
+	if _, _, run := rt.begin(); !run {
+		t.Fatal("expected a new initialization after reset")
+	}
+}
 
-	reran := false
-	rt.initOnce.Do(func() { reran = true })
-	if !reran {
-		t.Fatal("expected initOnce to be reset")
+func TestMCPRuntimeDiscardsInitializationOfReplacedConfig(t *testing.T) {
+	var rt mcpRuntime
+	gen, done, run := rt.begin()
+	if !run {
+		t.Fatal("expected the first begin to run the initialization")
+	}
+	if _, _, again := rt.begin(); again {
+		t.Fatal("a second caller must wait, not run the initialization again")
+	}
+
+	rt.reset() // a reload while the old config's servers connect
+	if kept := rt.finish(gen, done, nil, errors.New("old config failed")); kept {
+		t.Fatal("the replaced config's result must not be kept")
+	}
+	select {
+	case <-done:
+	default:
+		t.Fatal("finish must release whoever waits for the old initialization")
+	}
+	if err := rt.getInitErr(); err != nil {
+		t.Fatalf("getInitErr() = %v, want the new config's (none yet)", err)
 	}
 }
 
@@ -52,13 +83,17 @@ func TestReloadProviderAndConfig_ResetsMCPRuntime(t *testing.T) {
 	manager := mcp.NewManager()
 	al.mcp.setManager(manager)
 	al.mcp.setInitErr(errors.New("stale init error"))
-	al.mcp.initOnce.Do(func() {})
+	al.mcp.begin()
 
 	if !al.mcp.hasManager() {
 		t.Fatal("expected MCP manager to exist before reload")
 	}
 
-	if err := al.ReloadProviderAndConfig(context.Background(), &mockProvider{}, cfg); err != nil {
+	// As the gateway's, the reload's context ends as soon as it returns.
+	ctx, cancel := context.WithCancel(context.Background())
+	err := al.ReloadProviderAndConfig(ctx, &mockProvider{}, cfg)
+	cancel()
+	if err != nil {
 		t.Fatalf("ReloadProviderAndConfig() error = %v", err)
 	}
 
@@ -68,11 +103,8 @@ func TestReloadProviderAndConfig_ResetsMCPRuntime(t *testing.T) {
 	if err := al.mcp.getInitErr(); err != nil {
 		t.Fatalf("getInitErr() = %v, want nil", err)
 	}
-
-	reran := false
-	al.mcp.initOnce.Do(func() { reran = true })
-	if !reran {
-		t.Fatal("expected MCP initOnce to be reset after reload")
+	if _, _, run := al.mcp.begin(); !run {
+		t.Fatal("expected MCP initialization to be reset after reload")
 	}
 }
 
@@ -286,7 +318,13 @@ func TestEnsureMCPInitialized_LoadFailureSetsInitErr(t *testing.T) {
 		},
 	}
 
-	err := al.ensureMCPInitialized(context.Background())
+	// The caller's context bounds only its own wait: the servers connect on
+	// the loop's lifetime, so a caller whose context has ended still gets
+	// the load failure, not a cancellation.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := al.ensureMCPInitialized(ctx)
 	if err == nil {
 		t.Fatal("ensureMCPInitialized() error = nil, want load failure")
 	}
@@ -305,11 +343,146 @@ func TestEnsureMCPInitialized_LoadFailureSetsInitErr(t *testing.T) {
 		t.Fatal("expected MCP manager to remain nil after load failure")
 	}
 
-	err = al.ensureMCPInitialized(context.Background())
+	err = al.ensureMCPInitialized(ctx)
 	if err == nil {
 		t.Fatal("second ensureMCPInitialized() error = nil, want cached load failure")
 	}
 	if !strings.Contains(err.Error(), "failed to load MCP servers") {
 		t.Fatalf("second ensureMCPInitialized() error = %q, want wrapped load failure", err.Error())
+	}
+}
+
+// The MCP servers are told the agents' workspaces as roots, and of two tools
+// whose names collide the second gets the hashed name instead of replacing
+// the first.
+func TestMCPServersGetWorkspaceRootsAndCollidingNamesStayApart(t *testing.T) {
+	newServer := func(tool string) *httptest.Server {
+		server := sdkmcp.NewServer(&sdkmcp.Implementation{Name: "srv", Version: "1.0.0"}, nil)
+		sdkmcp.AddTool(server, &sdkmcp.Tool{Name: tool, Description: "lists roots"},
+			func(ctx context.Context, req *sdkmcp.CallToolRequest, _ map[string]any) (*sdkmcp.CallToolResult, any, error) {
+				res, err := req.Session.ListRoots(ctx, nil)
+				if err != nil {
+					return nil, nil, err
+				}
+				var uris []string
+				for _, root := range res.Roots {
+					uris = append(uris, root.URI)
+				}
+				return &sdkmcp.CallToolResult{Content: []sdkmcp.Content{
+					&sdkmcp.TextContent{Text: strings.Join(uris, "\n")},
+				}}, nil, nil
+			})
+		return httptest.NewServer(sdkmcp.NewStreamableHTTPHandler(
+			func(*http.Request) *sdkmcp.Server { return server }, nil))
+	}
+	first, second := newServer("b_c"), newServer("c")
+	defer first.Close()
+	defer second.Close()
+
+	al, cfg, _, _, cleanup := newTestAgentLoop(t)
+	defer cleanup()
+	defer al.Close()
+	cfg.Tools = config.ToolsConfig{
+		MCP: config.MCPConfig{
+			ToolConfig: config.ToolConfig{Enabled: true},
+			Servers: map[string]config.MCPServerConfig{
+				"a":   {Enabled: true, Type: "http", URL: first.URL, Trusted: true},
+				"a_b": {Enabled: true, Type: "http", URL: second.URL},
+			},
+		},
+	}
+	if err := al.ensureMCPInitialized(context.Background()); err != nil {
+		t.Fatalf("ensureMCPInitialized() error = %v", err)
+	}
+	agent := al.GetRegistry().GetDefaultAgent()
+
+	plain, ok := agent.Tools.Get("mcp_a_b_c")
+	if !ok {
+		t.Fatal("the first server's tool lost its plain name")
+	}
+	var hashed agenttools.Tool
+	for _, name := range agent.Tools.List() {
+		if strings.HasPrefix(name, "mcp_a_b_c_") {
+			hashed, _ = agent.Tools.Get(name)
+		}
+	}
+	if hashed == nil {
+		t.Fatalf("the colliding tool was not registered under its hashed name: %v", agent.Tools.List())
+	}
+	// Each tool tells the approval policy its server, and whether it is
+	// trusted.
+	if info := plain.(approval.Described).ApprovalInfo(); info.Source != "mcp:a" || !info.Trusted {
+		t.Fatalf("first server's tool ApprovalInfo() = %+v, want trusted mcp:a", info)
+	}
+	if info := hashed.(approval.Described).ApprovalInfo(); info.Source != "mcp:a_b" || info.Trusted {
+		t.Fatalf("second server's tool ApprovalInfo() = %+v, want untrusted mcp:a_b", info)
+	}
+
+	result := plain.Execute(context.Background(), nil)
+	if result.IsError {
+		t.Fatalf("roots tool failed: %s", result.ForLLM)
+	}
+	want := filepath.ToSlash(agent.Workspace)
+	if !strings.Contains(result.ForLLM, "file://") || !strings.Contains(result.ForLLM, want) {
+		t.Fatalf("roots = %q, want the workspace %q", result.ForLLM, want)
+	}
+}
+
+// TL-12: when a server announces its tool list changed, the agents get its
+// new tools and lose the ones it dropped.
+func TestMCPToolListChangeReregistersTheServerTools(t *testing.T) {
+	server := sdkmcp.NewServer(&sdkmcp.Implementation{Name: "dynamic", Version: "1.0.0"}, nil)
+	echo := func(context.Context, *sdkmcp.CallToolRequest, map[string]any) (*sdkmcp.CallToolResult, any, error) {
+		return &sdkmcp.CallToolResult{Content: []sdkmcp.Content{&sdkmcp.TextContent{Text: "ok"}}}, nil, nil
+	}
+	sdkmcp.AddTool(server, &sdkmcp.Tool{Name: "first", Description: "first tool"}, echo)
+	httpServer := httptest.NewServer(sdkmcp.NewStreamableHTTPHandler(
+		func(*http.Request) *sdkmcp.Server { return server }, nil))
+	defer httpServer.Close()
+
+	al, cfg, _, _, cleanup := newTestAgentLoop(t)
+	defer cleanup()
+	defer al.Close()
+	cfg.Tools = config.ToolsConfig{
+		MCP: config.MCPConfig{
+			ToolConfig: config.ToolConfig{Enabled: true},
+			Servers: map[string]config.MCPServerConfig{
+				// "sse" keeps the stream open that server notifications arrive on.
+				"dyn": {Enabled: true, Type: "sse", URL: httpServer.URL},
+			},
+		},
+	}
+	if err := al.ensureMCPInitialized(context.Background()); err != nil {
+		t.Fatalf("ensureMCPInitialized() error = %v", err)
+	}
+	agent := al.GetRegistry().GetDefaultAgent()
+	if !toolRegistryIncludes(agent.Tools, "mcp_dyn_first") {
+		t.Fatal("the server's tool was not registered at connect")
+	}
+
+	waitFor := func(what string, change func(), done func() bool) {
+		t.Helper()
+		deadline := time.Now().Add(15 * time.Second)
+		for !done() {
+			if time.Now().After(deadline) {
+				t.Fatalf("timed out waiting until %s", what)
+			}
+			change()
+			time.Sleep(200 * time.Millisecond)
+		}
+	}
+	// The notification stream opens after connecting: announce until heard.
+	added := 0
+	waitFor("the added tool is registered", func() {
+		added++
+		sdkmcp.AddTool(server, &sdkmcp.Tool{Name: fmt.Sprintf("added_%d", added), Description: "added"}, echo)
+	}, func() bool { return toolRegistryIncludes(agent.Tools, "mcp_dyn_added_1") })
+
+	server.RemoveTools("first")
+	waitFor("the removed tool is unregistered", func() {}, func() bool {
+		return !toolRegistryIncludes(agent.Tools, "mcp_dyn_first")
+	})
+	if !toolRegistryIncludes(agent.Tools, "mcp_dyn_added_1") {
+		t.Fatal("registering the changed tools again dropped a tool the server still has")
 	}
 }

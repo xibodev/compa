@@ -2,8 +2,9 @@
 #
 # Pushing a tag vMAJOR.MINOR.PATCH that points at the head of main runs
 # ci.yml, builds compa and compa-kernel for six platforms, packages one archive
-# per platform with SHA256SUMS and both installers, stages them on a draft
-# release, checks the digest of every uploaded asset, and publishes it. Then:
+# per platform with SHA256SUMS and both installers, attests their build
+# provenance, stages them on a draft release, checks the digest of every
+# uploaded asset, and publishes it. Then:
 #
 #   irm https://github.com/xibodev/compa/releases/latest/download/install.ps1 | iex
 #   curl -fsSL https://github.com/xibodev/compa/releases/latest/download/install.sh | sh
@@ -200,7 +201,12 @@ jobs:
               go build -trimpath -tags goolm,stdjson -ldflags "$ldflags" -o "$out/compa" ./web/backend
             launcher_cgo=1
           else
-            CGO_ENABLED=0 go build -trimpath -tags goolm,stdjson -ldflags "$ldflags" -o "$out/compa$ext" ./web/backend
+            # On Windows compa is a GUI program: it lives in the tray, so no
+            # console window opens when it starts at login; -console attaches
+            # to the terminal it was started from.
+            launcher_ldflags="$ldflags"
+            if [ "$GOOS" = windows ]; then launcher_ldflags="$ldflags -H windowsgui"; fi
+            CGO_ENABLED=0 go build -trimpath -tags goolm,stdjson -ldflags "$launcher_ldflags" -o "$out/compa$ext" ./web/backend
             launcher_cgo=0
           fi
           # Without cgo a darwin compa silently falls back to running with no
@@ -232,6 +238,11 @@ jobs:
     needs: [validate, build]
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
+      # Build provenance attestations.
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -291,6 +302,12 @@ jobs:
             fi
             grep -Fq "'$TAG'" "dist/$script"
           done
+          # The installers as published still parse.
+          sh -n dist/install.sh
+          # shellcheck disable=SC2016 # PowerShell code, expanded by pwsh
+          pwsh -NoProfile -Command '$errors = $null
+            [void][Management.Automation.Language.Parser]::ParseFile((Resolve-Path dist/install.ps1), [ref]$null, [ref]$errors)
+            if ($errors) { $errors | Out-String | Write-Error; exit 1 }'
           chmod 0644 dist/*
 
           cd dist
@@ -316,6 +333,18 @@ jobs:
           test "$(find . -maxdepth 1 -type f -name '*.tar.gz' | wc -l)" -eq 4
           test "$(find . -maxdepth 1 -type f | wc -l)" -eq 9
           cat SHA256SUMS
+
+      # Check one with: gh attestation verify <file> --repo xibodev/compa
+      - name: Attest build provenance
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/*.zip
+            dist/*.tar.gz
+            dist/install.ps1
+            dist/install.sh
+            dist/SHA256SUMS
 
       # Kept for dry runs too, so the would-be assets can be inspected.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

@@ -1,3 +1,5 @@
+import i18n from "@/i18n"
+
 export type JsonRecord = Record<string, unknown>
 
 export interface CoreConfigForm {
@@ -15,6 +17,8 @@ export interface CoreConfigForm {
   execTimeoutSeconds: string
   allowCommand: boolean
   cronExecTimeoutMinutes: string
+  approvalDefault: string
+  approvalRules: ApprovalRuleForm[]
   maxTokens: string
   contextWindow: string
   maxToolIterations: string
@@ -22,6 +26,7 @@ export interface CoreConfigForm {
   summarizeTokenPercent: string
   turnProfile: TurnProfileForm
   dmScope: string
+  commandsOwnerOnly: boolean
   heartbeatEnabled: boolean
   heartbeatInterval: string
   devicesEnabled: boolean
@@ -40,7 +45,49 @@ export interface CoreConfigForm {
   evolutionMinSuccessRatio: string
   evolutionColdPathTrigger: string
   evolutionColdPathTimesText: string
+  logRedactSecrets: boolean
+  logMaxSizeMB: string
+  logMaxFiles: string
 }
+
+/** The values tools.approval takes, in the order the form lists them. */
+export const APPROVAL_ACTIONS = ["allow", "ask", "deny", "hide"] as const
+export const APPROVAL_ORIGINS = ["web", "cli", "chat", "cron"] as const
+export const APPROVAL_HINTS = [
+  "read_only",
+  "destructive",
+  "idempotent",
+  "open_world",
+  "cost_unknown",
+  "network",
+  "external_writes",
+] as const
+
+/** One of tools.approval.rules; the first rule a call matches decides it. */
+export interface ApprovalRuleForm {
+  id: string
+  tool: string
+  source: string
+  origin: string[]
+  hints: string[]
+  action: string
+  /**
+   * A rule holding a value the form does not know, shown read-only and
+   * saved back as it came.
+   */
+  kept?: unknown
+}
+
+export type RemoteImages = "click" | "always"
+
+/**
+ * What the config API shows instead of a secret map value (MCP env and
+ * headers); sending it back keeps the stored value.
+ */
+export const SECRET_VALUE_PLACEHOLDER = "[NOT_HERE]"
+
+/** How the form shows a stored secret map value: set, but hidden. */
+export const MASKED_SECRET_VALUE = "********"
 
 export type MCPServerType = "http" | "sse" | "stdio"
 
@@ -73,11 +120,15 @@ export interface MCPServerForm {
 export interface LauncherForm {
   port: string
   publicAccess: boolean
+  allowLANWithoutPassword: boolean
   allowedCIDRsText: string
+  allowedHostsText: string
   allowLocalhostBypass: boolean
   trustedProxyCIDRsText: string
+  remoteImages: RemoteImages
   dashboardPassword: string
   dashboardPasswordConfirm: string
+  dashboardPasswordCurrent: string
 }
 
 export const DM_SCOPE_OPTIONS = [
@@ -126,6 +177,8 @@ export const EMPTY_FORM: CoreConfigForm = {
   execTimeoutSeconds: "0",
   allowCommand: true,
   cronExecTimeoutMinutes: "5",
+  approvalDefault: "allow",
+  approvalRules: [],
   maxTokens: "32768",
   contextWindow: "",
   maxToolIterations: "50",
@@ -141,6 +194,7 @@ export const EMPTY_FORM: CoreConfigForm = {
     toolsAllowText: "",
   },
   dmScope: "per-channel-peer",
+  commandsOwnerOnly: true,
   heartbeatEnabled: true,
   heartbeatInterval: "30",
   devicesEnabled: false,
@@ -159,16 +213,23 @@ export const EMPTY_FORM: CoreConfigForm = {
   evolutionMinSuccessRatio: "0.7",
   evolutionColdPathTrigger: "after_turn",
   evolutionColdPathTimesText: "",
+  logRedactSecrets: true,
+  logMaxSizeMB: "10",
+  logMaxFiles: "5",
 }
 
 export const EMPTY_LAUNCHER_FORM: LauncherForm = {
   port: "18800",
   publicAccess: false,
+  allowLANWithoutPassword: false,
   allowedCIDRsText: "",
+  allowedHostsText: "",
   allowLocalhostBypass: true,
   trustedProxyCIDRsText: "",
+  remoteImages: "click",
   dashboardPassword: "",
   dashboardPasswordConfirm: "",
+  dashboardPasswordCurrent: "",
 }
 
 function asRecord(value: unknown): JsonRecord {
@@ -215,6 +276,31 @@ function makeMCPServerID(name: string): string {
   return `mcp-${Math.random().toString(36).slice(2, 10)}`
 }
 
+/** Shows each stored secret value of an env or headers map as masked. */
+function maskSecretValues(map: JsonRecord): JsonRecord {
+  return Object.fromEntries(
+    Object.entries(map).map(([key, value]) => [
+      key,
+      value === SECRET_VALUE_PLACEHOLDER ? MASKED_SECRET_VALUE : value,
+    ]),
+  )
+}
+
+/**
+ * Turns the values left masked back into the placeholder, so that saving
+ * keeps the stored secrets; edited values are sent as typed.
+ */
+export function unmaskSecretValues(
+  map: Record<string, string>,
+): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(map).map(([key, value]) => [
+      key,
+      value === MASKED_SECRET_VALUE ? SECRET_VALUE_PLACEHOLDER : value,
+    ]),
+  )
+}
+
 function mapMCPServers(value: unknown): MCPServerForm[] {
   const servers = asRecord(value)
   return Object.entries(servers).map(([name, rawConfig]) => {
@@ -229,8 +315,8 @@ function mapMCPServers(value: unknown): MCPServerForm[] {
           ? "sse"
           : "stdio"
         : toMCPServerType(cfg.type)
-    const env = asRecord(cfg.env)
-    const headers = asRecord(cfg.headers)
+    const env = maskSecretValues(asRecord(cfg.env))
+    const headers = maskSecretValues(asRecord(cfg.headers))
 
     return {
       id: makeMCPServerID(name),
@@ -288,11 +374,72 @@ function mapTurnProfile(value: unknown): TurnProfileForm {
   }
 }
 
+function isOneOf(options: readonly string[], value: unknown): boolean {
+  return typeof value === "string" && options.includes(value)
+}
+
+/** Whether value is unset, or a list of these options only. */
+function isOptionalList(value: unknown, options: readonly string[]): boolean {
+  return (
+    value === undefined ||
+    (Array.isArray(value) && value.every((item) => isOneOf(options, item)))
+  )
+}
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : []
+}
+
+const APPROVAL_RULE_FIELDS = ["tool", "source", "origin", "hints", "action"]
+
+/** Whether the form can show, and so edit, a rule of tools.approval. */
+function isKnownApprovalRule(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false
+  }
+  const rule = value as JsonRecord
+  return (
+    Object.keys(rule).every((key) => APPROVAL_RULE_FIELDS.includes(key)) &&
+    (rule.tool === undefined || typeof rule.tool === "string") &&
+    (rule.source === undefined || typeof rule.source === "string") &&
+    isOptionalList(rule.origin, APPROVAL_ORIGINS) &&
+    isOptionalList(rule.hints, APPROVAL_HINTS) &&
+    isOneOf(APPROVAL_ACTIONS, rule.action)
+  )
+}
+
+/**
+ * The rules of tools.approval, in their order. A rule with a field or a
+ * value the form does not know is kept as it came, so saving cannot change
+ * what it does.
+ */
+function mapApprovalRules(value: unknown): ApprovalRuleForm[] {
+  if (!Array.isArray(value)) {
+    return []
+  }
+  return value.map((raw: unknown, index) => {
+    const rule = asRecord(raw)
+    const form: ApprovalRuleForm = {
+      id: `approval-rule-${index}`,
+      tool: asString(rule.tool),
+      source: asString(rule.source),
+      origin: stringList(rule.origin),
+      hints: stringList(rule.hints),
+      action: asString(rule.action),
+    }
+    return isKnownApprovalRule(raw) ? form : { ...form, kept: raw }
+  })
+}
+
 export function buildFormFromConfig(config: unknown): CoreConfigForm {
   const root = asRecord(config)
   const agents = asRecord(root.agents)
   const defaults = asRecord(agents.defaults)
   const session = asRecord(root.session)
+  const commands = asRecord(root.commands)
+  const logging = asRecord(root.logging)
   const heartbeat = asRecord(root.heartbeat)
   const devices = asRecord(root.devices)
   const evolution = asRecord(root.evolution)
@@ -301,6 +448,7 @@ export function buildFormFromConfig(config: unknown): CoreConfigForm {
   const mcpDiscovery = asRecord(mcp.discovery)
   const cron = asRecord(tools.cron)
   const exec = asRecord(tools.exec)
+  const approval = asRecord(tools.approval)
   const toolFeedback = asRecord(defaults.tool_feedback)
 
   return {
@@ -359,6 +507,9 @@ export function buildFormFromConfig(config: unknown): CoreConfigForm {
       cron.exec_timeout_minutes,
       EMPTY_FORM.cronExecTimeoutMinutes,
     ),
+    // An unset default allows.
+    approvalDefault: asString(approval.default) || EMPTY_FORM.approvalDefault,
+    approvalRules: mapApprovalRules(approval.rules),
     maxTokens: asNumberString(defaults.max_tokens, EMPTY_FORM.maxTokens),
     contextWindow: asNumberString(
       defaults.context_window,
@@ -378,6 +529,10 @@ export function buildFormFromConfig(config: unknown): CoreConfigForm {
     ),
     turnProfile: mapTurnProfile(defaults.turn_profile),
     dmScope: asString(session.dm_scope) || EMPTY_FORM.dmScope,
+    commandsOwnerOnly:
+      commands.owner_only === undefined
+        ? EMPTY_FORM.commandsOwnerOnly
+        : asBool(commands.owner_only),
     heartbeatEnabled:
       heartbeat.enabled === undefined
         ? EMPTY_FORM.heartbeatEnabled
@@ -440,6 +595,40 @@ export function buildFormFromConfig(config: unknown): CoreConfigForm {
           .filter((value): value is string => typeof value === "string")
           .join("\n")
       : EMPTY_FORM.evolutionColdPathTimesText,
+    logRedactSecrets:
+      logging.redact_secrets === undefined
+        ? EMPTY_FORM.logRedactSecrets
+        : asBool(logging.redact_secrets),
+    // 0 means the default, which the form shows as the number it is.
+    logMaxSizeMB: positiveNumberString(
+      logging.max_size_mb,
+      EMPTY_FORM.logMaxSizeMB,
+    ),
+    logMaxFiles: positiveNumberString(
+      logging.max_files,
+      EMPTY_FORM.logMaxFiles,
+    ),
+  }
+}
+
+function positiveNumberString(value: unknown, fallback: string): string {
+  return typeof value === "number" && value > 0 ? String(value) : fallback
+}
+
+function checkRange(
+  value: number,
+  label: string,
+  options: { min?: number; max?: number },
+) {
+  if (options.min !== undefined && value < options.min) {
+    throw new Error(
+      i18n.t("pages.config.errors.min", { label, min: options.min }),
+    )
+  }
+  if (options.max !== undefined && value > options.max) {
+    throw new Error(
+      i18n.t("pages.config.errors.max", { label, max: options.max }),
+    )
   }
 }
 
@@ -450,14 +639,9 @@ export function parseIntField(
 ): number {
   const value = Number(rawValue)
   if (!Number.isInteger(value)) {
-    throw new Error(`${label} must be an integer.`)
+    throw new Error(i18n.t("pages.config.errors.integer", { label }))
   }
-  if (options.min !== undefined && value < options.min) {
-    throw new Error(`${label} must be >= ${options.min}.`)
-  }
-  if (options.max !== undefined && value > options.max) {
-    throw new Error(`${label} must be <= ${options.max}.`)
-  }
+  checkRange(value, label, options)
   return value
 }
 
@@ -469,14 +653,9 @@ export function parseFloatField(
   // A decimal comma is how many locales write 0.7, so it is read as a point.
   const value = Number(rawValue.trim().replace(",", "."))
   if (!Number.isFinite(value)) {
-    throw new Error(`${label} must be a number.`)
+    throw new Error(i18n.t("pages.config.errors.number", { label }))
   }
-  if (options.min !== undefined && value < options.min) {
-    throw new Error(`${label} must be >= ${options.min}.`)
-  }
-  if (options.max !== undefined && value > options.max) {
-    throw new Error(`${label} must be <= ${options.max}.`)
-  }
+  checkRange(value, label, options)
   return value
 }
 
@@ -513,18 +692,18 @@ export function parseJSONObjectField(
   try {
     parsed = JSON.parse(trimmed)
   } catch {
-    throw new Error(`${label} must be valid JSON.`)
+    throw new Error(i18n.t("pages.config.errors.json", { label }))
   }
 
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error(`${label} must be a JSON object.`)
+    throw new Error(i18n.t("pages.config.errors.json_object", { label }))
   }
 
   const entries = Object.entries(parsed as Record<string, unknown>)
   const result: Record<string, string> = {}
   for (const [key, value] of entries) {
     if (typeof value !== "string") {
-      throw new Error(`${label}.${key} must be a string.`)
+      throw new Error(i18n.t("pages.config.errors.json_string", { label, key }))
     }
     result[key] = value
   }

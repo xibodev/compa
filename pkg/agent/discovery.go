@@ -163,27 +163,25 @@ func (r *AgentRegistry) workspaceForAgentIDLocked(agentID string) string {
 	return agent.Workspace
 }
 
+// defaultAgentIDLocked returns the default agent as routing defines it (see
+// routing.ResolveDefaultAgentID), so the agent that receives unrouted
+// messages and the one background work runs on are the same.
 func (r *AgentRegistry) defaultAgentIDLocked() string {
-	if _, ok := r.agents[routing.DefaultAgentID]; ok {
-		return routing.DefaultAgentID
-	}
-	if r.cfg != nil && len(r.cfg.Agents.List) > 0 {
-		for _, agentCfg := range r.cfg.Agents.List {
-			if !agentCfg.Default {
-				continue
-			}
-			id := routing.NormalizeAgentID(agentCfg.ID)
-			if _, ok := r.agents[id]; ok {
-				return id
-			}
-		}
-		id := routing.NormalizeAgentID(r.cfg.Agents.List[0].ID)
+	if id := routing.ResolveDefaultAgentID(r.cfg); id != "" {
 		if _, ok := r.agents[id]; ok {
 			return id
 		}
 	}
+	if _, ok := r.agents[routing.DefaultAgentID]; ok {
+		return routing.DefaultAgentID
+	}
+	ids := make([]string, 0, len(r.agents))
 	for id := range r.agents {
-		return id
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	if len(ids) > 0 {
+		return ids[0]
 	}
 	return ""
 }

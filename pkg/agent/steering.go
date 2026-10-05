@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -12,7 +13,6 @@ import (
 	"github.com/xibodev/compa/pkg/logger"
 	"github.com/xibodev/compa/pkg/providers"
 	"github.com/xibodev/compa/pkg/session"
-	"github.com/xibodev/compa/pkg/tools"
 )
 
 // SteeringMode controls how queued steering messages are dequeued.
@@ -26,6 +26,10 @@ const (
 	// MaxQueueSize number of possible messages in the Steering Queue
 	MaxQueueSize = 10
 )
+
+// errSteeringQueueFull is returned when a session already has MaxQueueSize
+// messages waiting for its running turn.
+var errSteeringQueueFull = errors.New("steering queue is full")
 
 // parseSteeringMode normalizes a config string into a SteeringMode.
 func parseSteeringMode(s string) SteeringMode {
@@ -65,7 +69,7 @@ func (sq *steeringQueue) pushScope(scope string, msg providers.Message) error {
 
 	queue := sq.queues[scope]
 	if len(queue) >= MaxQueueSize {
-		return fmt.Errorf("steering queue is full")
+		return errSteeringQueueFull
 	}
 	sq.queues[scope] = append(queue, msg)
 	return nil
@@ -195,26 +199,34 @@ func (al *AgentLoop) clearSteeringMessagesForScope(scope string) int {
 func (al *AgentLoop) continueWithSteeringMessages(
 	ctx context.Context,
 	agent *AgentInstance,
-	sessionKey, channel, chatID string,
+	target *continuationTarget,
 	scope *session.SessionScope,
 	steeringMsgs []providers.Message,
 ) (string, error) {
 	dispatch := DispatchRequest{
-		SessionKey:   sessionKey,
+		SessionKey:   target.SessionKey,
 		SessionScope: session.CloneScope(scope),
 	}
-	if channel != "" || chatID != "" {
+	switch {
+	case target.Inbound != nil:
+		// The continuation answers the same chat as the turn before it.
+		dispatch.InboundContext = cloneInboundContext(target.Inbound)
+	case target.Channel != "" || target.ChatID != "":
 		dispatch.InboundContext = &bus.InboundContext{
-			Channel:  channel,
-			ChatID:   chatID,
+			Channel:  target.Channel,
+			ChatID:   target.ChatID,
 			ChatType: inferChatTypeFromSessionScope(scope),
 		}
 	}
+	// The caller publishes the reply, as for a message's own turn
+	// (messageTurnOptions); interim output, such as an answer that more
+	// steering overtakes, goes out as it comes.
 	opts := processOptions{
 		Dispatch:                dispatch,
 		DefaultResponse:         defaultResponse,
 		EnableSummary:           true,
 		SendResponse:            false,
+		AllowInterimWebPublish:  true,
 		InitialSteeringMessages: steeringMsgs,
 		SkipInitialSteeringPoll: true,
 	}
@@ -267,6 +279,10 @@ func (al *AgentLoop) agentForSession(sessionKey string) *AgentInstance {
 	return registry.GetDefaultAgent()
 }
 
+// errSessionBusy is returned by Continue when a turn of the session runs: it
+// takes the queued messages itself.
+var errSessionBusy = errors.New("a turn of the session is running")
+
 // Continue resumes an idle agent by dequeuing any pending steering messages
 // and running them through the agent loop. This is used when the agent's last
 // message was from the assistant (i.e., it has stopped processing) and the
@@ -274,6 +290,11 @@ func (al *AgentLoop) agentForSession(sessionKey string) *AgentInstance {
 //
 // If no steering messages are pending, it returns an empty string.
 func (al *AgentLoop) Continue(ctx context.Context, sessionKey, channel, chatID string) (string, error) {
+	return al.continueTarget(ctx, &continuationTarget{SessionKey: sessionKey, Channel: channel, ChatID: chatID})
+}
+
+func (al *AgentLoop) continueTarget(ctx context.Context, target *continuationTarget) (string, error) {
+	sessionKey := target.SessionKey
 	// Claim the session with a unique placeholder to prevent a TOCTOU race where two
 	// concurrent Continue calls for the same session both pass the active-turn
 	// check and create parallel turns. The placeholder is replaced by the real
@@ -282,32 +303,32 @@ func (al *AgentLoop) Continue(ctx context.Context, sessionKey, channel, chatID s
 		turnID: "pending-continue-" + sessionKey + "-" + fmt.Sprintf("%d", al.turnSeq.Add(1)),
 		phase:  TurnPhaseSetup,
 	}
+	placeholder.opts.Dispatch.InboundContext = cloneInboundContext(target.Inbound)
 	if _, loaded := al.activeTurnStates.LoadOrStore(sessionKey, placeholder); loaded {
 		if active := al.GetActiveTurnBySession(sessionKey); active != nil {
-			return "", fmt.Errorf("turn %s is still active for session %q", active.TurnID, sessionKey)
+			return "", fmt.Errorf("turn %s is still active for session %q: %w", active.TurnID, sessionKey, errSessionBusy)
 		}
 		// Another Continue just claimed the slot; let it handle the steering.
 		return "", nil
 	}
+	// The real turn replaces the placeholder; anything else releases it.
+	defer al.releaseSessionTurnState(sessionKey, placeholder)
 
-	if err := al.ensureHooksInitialized(ctx); err != nil {
-		al.activeTurnStates.Delete(sessionKey)
-		return "", err
-	}
-	if err := al.ensureMCPInitialized(ctx); err != nil {
-		al.activeTurnStates.Delete(sessionKey)
-		return "", err
-	}
+	al.prepareExtensions(ctx)
 
 	steeringMsgs := al.dequeueSteeringMessagesForScope(sessionKey)
 	if len(steeringMsgs) == 0 {
-		al.activeTurnStates.Delete(sessionKey)
 		return "", nil
 	}
 
-	agent := al.agentForSession(sessionKey)
+	var agent *AgentInstance
+	if target.AgentID != "" {
+		agent, _ = al.GetRegistry().GetAgent(target.AgentID)
+	}
 	if agent == nil {
-		al.activeTurnStates.Delete(sessionKey)
+		agent = al.agentForSession(sessionKey)
+	}
+	if agent == nil {
 		return "", fmt.Errorf("no agent available for session %q", sessionKey)
 	}
 
@@ -322,38 +343,7 @@ func (al *AgentLoop) Continue(ctx context.Context, sessionKey, channel, chatID s
 		scope = metaStore.GetSessionScope(sessionKey)
 	}
 
-	return al.continueWithSteeringMessages(ctx, agent, sessionKey, channel, chatID, scope, steeringMsgs)
-}
-
-// ====================== SubTurn Result Polling ======================
-
-// dequeuePendingSubTurnResults polls the SubTurn result channel for the given
-// session and returns all available results without blocking.
-// Returns nil if no active turn state exists for this session.
-func (al *AgentLoop) dequeuePendingSubTurnResults(sessionKey string) []*tools.ToolResult {
-	tsInterface, ok := al.activeTurnStates.Load(sessionKey)
-	if !ok {
-		return nil
-	}
-	ts, ok := tsInterface.(*turnState)
-	if !ok {
-		return nil
-	}
-
-	var results []*tools.ToolResult
-	for {
-		select {
-		case result, ok := <-ts.pendingResults:
-			if !ok {
-				return results
-			}
-			if result != nil {
-				results = append(results, result)
-			}
-		default:
-			return results
-		}
-	}
+	return al.continueWithSteeringMessages(ctx, agent, target, scope, steeringMsgs)
 }
 
 // ====================== Hard Abort ======================

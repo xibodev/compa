@@ -17,6 +17,7 @@ import (
 
 	"github.com/xibodev/compa/pkg/auth"
 	"github.com/xibodev/compa/pkg/config"
+	"github.com/xibodev/compa/pkg/netbind"
 	"github.com/xibodev/compa/pkg/providers/coretransport"
 )
 
@@ -143,30 +144,38 @@ func RegistryAdapter(entry coreproviders.RegistryEntry) (string, bool) {
 // translation.Adapter. Its HTTP client carries the instance's headers and
 // honours its proxy and request timeout.
 func NewCoreProvider(instance *config.ProviderInstanceConfig) (core.Provider, error) {
+	provider, _, err := newCoreProvider(instance)
+	return provider, err
+}
+
+// newCoreProvider is NewCoreProvider, also returning the HTTP client the
+// provider sends its requests with.
+func newCoreProvider(instance *config.ProviderInstanceConfig) (core.Provider, *http.Client, error) {
 	if instance == nil {
-		return nil, fmt.Errorf("provider instance is required")
+		return nil, nil, fmt.Errorf("provider instance is required")
 	}
 	if err := config.SupportedProviderInstanceAdapter(instance); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	runtimeType, ok := InstanceRuntimeType(instance)
 	if !ok {
-		return nil, fmt.Errorf("provider instance %q: Compa runs no provider for kind %q with adapter %q", instance.ID, instance.ProviderKind, instance.Adapter)
+		return nil, nil, fmt.Errorf("provider instance %q: Compa runs no provider for kind %q with adapter %q", instance.ID, instance.ProviderKind, instance.Adapter)
 	}
 	var (
 		provider core.Provider
+		client   *http.Client
 		err      error
 	)
 	if runtimeType == "extension" {
-		provider, err = newExtensionCoreProvider(instance)
+		provider, client, err = newExtensionCoreProvider(instance)
 	} else {
 		registryID := ""
 		if entry, ok := coreproviders.RegistryProvider(strings.TrimSpace(instance.ProviderKind)); ok {
 			registryID = entry.ID
 		}
-		client, clientErr := instanceHTTPClient(instance, false)
-		if clientErr != nil {
-			return nil, clientErr
+		client, err = instanceHTTPClient(instance, false)
+		if err != nil {
+			return nil, nil, err
 		}
 		provider, err = coreRuntimes[runtimeType](coreBuild{
 			instance: instance, registryID: registryID,
@@ -174,9 +183,9 @@ func NewCoreProvider(instance *config.ProviderInstanceConfig) (core.Provider, er
 		})
 	}
 	if err != nil {
-		return nil, fmt.Errorf("provider instance %q: %w", instance.ID, err)
+		return nil, nil, fmt.Errorf("provider instance %q: %w", instance.ID, err)
 	}
-	return servingChat(provider), nil
+	return servingChat(provider), client, nil
 }
 
 // servingChat returns provider able to serve Chat Completions: as is when it
@@ -193,21 +202,27 @@ func servingChat(provider core.Provider) core.Provider {
 // instance sets no request_timeout.
 const defaultRequestTimeout = 5 * time.Minute
 
+// instanceRequestTimeout is the instance's request_timeout, or the default:
+// how long it may take to start answering.
+func instanceRequestTimeout(instance *config.ProviderInstanceConfig) time.Duration {
+	if runtime := instance.Runtime; runtime != nil && runtime.RequestTimeout > 0 {
+		return time.Duration(runtime.RequestTimeout) * time.Second
+	}
+	return defaultRequestTimeout
+}
+
 // instanceHTTPClient returns the client a core provider of instance sends
 // its requests with. The request timeout bounds the wait for response
 // headers rather than the whole exchange, so it never cuts off a stream.
 // direct skips the proxy, for a daemon on the loopback interface.
 func instanceHTTPClient(instance *config.ProviderInstanceConfig, direct bool) (*http.Client, error) {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.ResponseHeaderTimeout = defaultRequestTimeout
+	transport.ResponseHeaderTimeout = instanceRequestTimeout(instance)
 	transport.Proxy = http.ProxyFromEnvironment
 	if direct {
 		transport.Proxy = nil
 	}
 	if runtime := instance.Runtime; runtime != nil {
-		if runtime.RequestTimeout > 0 {
-			transport.ResponseHeaderTimeout = time.Duration(runtime.RequestTimeout) * time.Second
-		}
 		if proxy := strings.TrimSpace(runtime.Proxy); proxy != "" && !direct {
 			parsed, err := url.Parse(proxy)
 			if err != nil || parsed.Host == "" {
@@ -243,27 +258,34 @@ func (t *headerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return t.base.RoundTrip(out)
 }
 
+// CloseIdleConnections closes the base transport's idle connections, so
+// http.Client.CloseIdleConnections reaches them through the headers.
+func (t *headerTransport) CloseIdleConnections() {
+	if closer, ok := t.base.(interface{ CloseIdleConnections() }); ok {
+		closer.CloseIdleConnections()
+	}
+}
+
 // newExtensionCoreProvider returns the extension.Provider of an extension
 // instance: the daemon's provider, serving every surface the daemon lists for
 // it (config.ProviderInstanceConfig.ExtensionSurfaces), chat or not, so voice
 // and chat build it through NewCoreProvider alike.
-func newExtensionCoreProvider(instance *config.ProviderInstanceConfig) (core.Provider, error) {
+func newExtensionCoreProvider(instance *config.ProviderInstanceConfig) (core.Provider, *http.Client, error) {
 	endpoint := strings.TrimSpace(instance.Endpoint)
-	base, err := url.Parse(endpoint)
-	if err != nil || (base.Scheme != "http" && base.Scheme != "https") || base.Host == "" {
-		return nil, fmt.Errorf("needs the extension daemon's http(s) URL as its endpoint")
-	}
 	secret, err := ExtensionDaemonSecret()
 	if err != nil {
-		return nil, fmt.Errorf("extension daemon secret: %w", err)
+		return nil, nil, fmt.Errorf("extension daemon secret: %w", err)
+	}
+	if err := CheckExtensionEndpoint(endpoint, secret); err != nil {
+		return nil, nil, err
 	}
 	httpClient, err := instanceHTTPClient(instance, true)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	client, err := extension.NewClient(extension.Config{BaseURL: endpoint, Secret: secret, HTTPClient: httpClient})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	listed := instance.ExtensionSurfaces()
 	surfaces := make([]core.ModelSurface, 0, len(listed))
@@ -272,7 +294,29 @@ func newExtensionCoreProvider(instance *config.ProviderInstanceConfig) (core.Pro
 	}
 	return extension.NewProvider(client, extension.ProviderInfo{
 		ID: instance.ExtensionProvider(), Surfaces: surfaces,
-	}), nil
+	}), httpClient, nil
+}
+
+// CheckExtensionEndpoint reports an extension daemon endpoint Compa must not
+// send the daemon's shared secret to: anything but an http(s) URL, plain
+// http to a host other than this machine's loopback interface, where the
+// secret would cross the network in clear text, and a daemon on another
+// machine without a secret, which would serve any caller.
+func CheckExtensionEndpoint(endpoint, secret string) error {
+	base, err := url.Parse(strings.TrimSpace(endpoint))
+	if err != nil || (base.Scheme != "http" && base.Scheme != "https") || base.Host == "" {
+		return fmt.Errorf("needs the extension daemon's http(s) URL as its endpoint")
+	}
+	if netbind.IsLoopbackHost(base.Hostname()) {
+		return nil
+	}
+	if base.Scheme != "https" {
+		return fmt.Errorf("the extension daemon on %s needs an https URL; plain http is only for this machine", base.Hostname())
+	}
+	if strings.TrimSpace(secret) == "" {
+		return fmt.Errorf("the extension daemon on %s needs a shared secret", base.Hostname())
+	}
+	return nil
 }
 
 // InstanceCredential returns the source of the credential each request of
@@ -343,15 +387,7 @@ func ExtensionControlClient() *http.Client {
 // daemon when due. Every process shares the auth store's leases, so a refresh
 // token is spent once. Tests replace it.
 var ExtensionSignedInCredential = func(ctx context.Context, endpoint, provider, key string) (*core.Credential, error) {
-	secret, err := ExtensionDaemonSecret()
-	if err != nil {
-		return nil, fmt.Errorf("extension daemon secret: %w", err)
-	}
-	client, err := extension.NewClient(extension.Config{BaseURL: endpoint, Secret: secret, HTTPClient: ExtensionControlClient()})
-	if err != nil {
-		return nil, err
-	}
-	coordinator, err := tokenstore.NewCoordinator(auth.DefaultTokenStore(), client.RefreshFunc(provider))
+	coordinator, err := extensionCoordinator(endpoint, provider)
 	if err != nil {
 		return nil, err
 	}
@@ -363,6 +399,69 @@ var ExtensionSignedInCredential = func(ctx context.Context, endpoint, provider, 
 		return nil, err
 	}
 	return core.CredentialFromRecord(key, record), nil
+}
+
+// ExtensionRejectedCredential returns the credential to use instead of
+// rejected, which the upstream refused with 401 although it had not expired:
+// one another request has refreshed meanwhile, or else a refreshed one. As
+// with ExtensionSignedInCredential, a refresh token is spent once. Tests
+// replace it.
+var ExtensionRejectedCredential = func(ctx context.Context, endpoint, provider, key string, rejected *core.Credential) (*core.Credential, error) {
+	coordinator, err := extensionCoordinator(endpoint, provider)
+	if err != nil {
+		return nil, err
+	}
+	current, err := auth.DefaultTokenStore().Load(ctx, key)
+	if errors.Is(err, tokenstore.ErrNotFound) {
+		return nil, ErrExtensionSignInRequired
+	}
+	if err != nil {
+		return nil, err
+	}
+	if rejected != nil && current.AccessToken != "" && current.AccessToken != rejected.Token {
+		return core.CredentialFromRecord(key, current), nil
+	}
+	record, err := coordinator.Rejected(ctx, key, current)
+	if err != nil {
+		return nil, err
+	}
+	return core.CredentialFromRecord(key, record), nil
+}
+
+// extensionCoordinator returns the token coordinator of a daemon provider's
+// stored credentials, refreshing them through the daemon.
+func extensionCoordinator(endpoint, provider string) (*tokenstore.Coordinator, error) {
+	secret, err := ExtensionDaemonSecret()
+	if err != nil {
+		return nil, fmt.Errorf("extension daemon secret: %w", err)
+	}
+	if err := CheckExtensionEndpoint(endpoint, secret); err != nil {
+		return nil, err
+	}
+	client, err := extension.NewClient(extension.Config{BaseURL: endpoint, Secret: secret, HTTPClient: ExtensionControlClient()})
+	if err != nil {
+		return nil, err
+	}
+	return tokenstore.NewCoordinator(auth.DefaultTokenStore(), client.RefreshFunc(provider))
+}
+
+// InstanceCredentialRefresher returns how a credential of instance that the
+// upstream rejected with 401 is replaced, or nil when it cannot be: only a
+// signed-in extension provider's OAuth credential is refreshed.
+func InstanceCredentialRefresher(instance *config.ProviderInstanceConfig) coretransport.CredentialRefresher {
+	if instance == nil || instance.ExtensionProvider() == "" {
+		return nil
+	}
+	credentialKind, _ := instance.Settings[config.ExtensionCredentialSetting].(string)
+	key, _ := instance.Settings[config.ExtensionCredentialKeySetting].(string)
+	key = strings.TrimSpace(key)
+	if !strings.EqualFold(strings.TrimSpace(credentialKind), "oauth") || key == "" {
+		return nil
+	}
+	endpoint, provider := strings.TrimSpace(instance.Endpoint), instance.ExtensionProvider()
+	return func(ctx context.Context, rejected *core.Credential) (*core.Credential, error) {
+		return ExtensionRejectedCredential(ctx, endpoint, provider, key, rejected)
+	}
 }
 
 // ErrExtensionSignInRequired reports a provider whose credential comes from a

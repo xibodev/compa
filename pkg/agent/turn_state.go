@@ -11,7 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/xibodev/compa/pkg/bus"
+	"github.com/xibodev/compa/pkg/approval"
 	"github.com/xibodev/compa/pkg/config"
 	"github.com/xibodev/compa/pkg/logger"
 	"github.com/xibodev/compa/pkg/providers"
@@ -59,24 +59,6 @@ const (
 	ToolControlContinue ToolControl = iota
 	// ToolControlBreak tells the tool loop to exit and return to the coordinator.
 	ToolControlBreak
-	// ToolControlFinalize tells the coordinator that all tool responses were
-	// handled and the turn should finalize without another LLM call.
-	ToolControlFinalize
-)
-
-// LLMPhase indicates which phase the turn is executing in.
-type LLMPhase int
-
-const (
-	LLMPhaseSetup LLMPhase = iota
-	LLMPhasePreLLM
-	LLMPhaseLLMCall
-	LLMPhaseProcessing
-	LLMPhaseToolLoop
-	LLMPhaseTools
-	LLMPhaseFinalizing
-	LLMPhaseCompleted
-	LLMPhaseAborted
 )
 
 // =============================================================================
@@ -90,7 +72,6 @@ type turnResult struct {
 	servedTarget       string
 	servedIdentity     string
 	status             TurnEndStatus
-	followUps          []bus.InboundMessage
 }
 
 // =============================================================================
@@ -172,9 +153,6 @@ type turnExecution struct {
 	hookSelection string
 	// lastServed is the target that answered the turn's last model call.
 	lastServed string
-
-	// Phase tracking
-	phase LLMPhase
 
 	// Abort signaling for coordinator (set by Pipeline methods)
 	abortedByHardAbort bool // true when hard abort triggered during LLM/tools
@@ -321,7 +299,6 @@ func newTurnExecution(
 		pendingMessages:  append([]providers.Message(nil), opts.InitialSteeringMessages...),
 		currentTurnStart: len(messages),
 		iteration:        0,
-		phase:            LLMPhaseSetup,
 	}
 }
 
@@ -352,13 +329,14 @@ type turnState struct {
 	workspace   string
 	userMessage string
 	media       []string
+	// origin is where the turn came from, for the approval policy: set when
+	// the turn starts (runTurn); a sub-turn takes its parent's.
+	origin approval.Origin
 
 	phase        TurnPhase
 	iteration    int
 	startedAt    time.Time
 	finalContent string
-
-	followUps []bus.InboundMessage
 
 	hardAbort      bool
 	providerCancel context.CancelFunc
@@ -368,7 +346,7 @@ type turnState struct {
 	restorePointSummary string
 	persistedMessages   []providers.Message
 
-	// SubTurn support (from HEAD)
+	// SubTurn support
 	depth                int                    // SubTurn depth (0 for root turn)
 	parentTurnID         string                 // Parent turn ID (empty for root turn)
 	childTurnIDs         []string               // Child turn IDs
@@ -387,12 +365,10 @@ type turnState struct {
 	closeOnce       sync.Once          // Ensures pendingResults channel is closed once
 	finishedChan    chan struct{}      // Closed when turn finishes
 
-	// Token budget tracking
-	tokenBudget      *atomic.Int64        // Shared token budget counter
-	lastFinishReason string               // Last LLM finish_reason
-	lastUsage        *providers.UsageInfo // Last LLM usage info
+	lastUsage *providers.UsageInfo // Last LLM usage info
 
-	// Back-reference to the owning AgentLoop (set for SubTurns only, used for hard abort cascade)
+	// Back-reference to the owning AgentLoop, set for root turns and SubTurns
+	// alike: the hard abort cascade and the tools offered to the turn use it.
 	al *AgentLoop
 }
 
@@ -770,10 +746,10 @@ func (ts *turnState) refreshRestorePointFromSession(agent *AgentInstance) {
 // ingestMessage calls the ContextManager's Ingest method for a persisted message.
 // Errors are logged but never block the turn.
 func (ts *turnState) ingestMessage(ctx context.Context, al *AgentLoop, msg providers.Message) {
-	if al.contextManager == nil {
+	if al.currentContextManager() == nil {
 		return
 	}
-	if err := al.contextManager.Ingest(ctx, &IngestRequest{
+	if err := al.currentContextManager().Ingest(ctx, &IngestRequest{
 		SessionKey: ts.sessionKey,
 		Message:    msg,
 	}); err != nil {
@@ -938,20 +914,6 @@ func (ts *turnState) IsParentEnded() bool {
 		return false
 	}
 	return ts.parentTurnState.parentEnded.Load()
-}
-
-// GetLastFinishReason returns the last LLM finish_reason
-func (ts *turnState) GetLastFinishReason() string {
-	ts.mu.RLock()
-	defer ts.mu.RUnlock()
-	return ts.lastFinishReason
-}
-
-// SetLastFinishReason sets the last LLM finish_reason
-func (ts *turnState) SetLastFinishReason(reason string) {
-	ts.mu.Lock()
-	defer ts.mu.Unlock()
-	ts.lastFinishReason = reason
 }
 
 // GetLastUsage returns the last LLM usage info

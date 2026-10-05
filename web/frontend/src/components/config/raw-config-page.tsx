@@ -1,7 +1,7 @@
 import { IconAdjustments } from "@tabler/icons-react"
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { Link } from "@tanstack/react-router"
-import { useEffect, useState } from "react"
+import { useState } from "react"
 import { useTranslation } from "react-i18next"
 import { toast } from "sonner"
 
@@ -21,6 +21,7 @@ import {
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import { Textarea } from "@/components/ui/textarea"
+import { UnsavedChangesGuard } from "@/components/unsaved-changes-guard"
 import { showSaveSuccessOrRestartToast } from "@/lib/restart-required"
 import { refreshGatewayState } from "@/store/gateway"
 
@@ -73,7 +74,9 @@ export function RawConfigPage() {
     },
   })
 
-  const [editorValue, setEditorValue] = useState("")
+  // Null until the user edits: the editor then shows the loaded config. An
+  // emptied editor stays empty, so a whole config can be pasted in.
+  const [editorValue, setEditorValue] = useState<string | null>(null)
   const [isDirty, setIsDirty] = useState(false)
   const [lastSavedConfig, setLastSavedConfig] = useState<Record<
     string,
@@ -81,7 +84,7 @@ export function RawConfigPage() {
   > | null>(null)
 
   const effectiveEditorValue =
-    editorValue || (config ? JSON.stringify(config, null, 2) : "")
+    editorValue ?? (config ? JSON.stringify(config, null, 2) : "")
 
   const handleSave = () => {
     try {
@@ -118,22 +121,10 @@ export function RawConfigPage() {
 
   const [showResetDialog, setShowResetDialog] = useState(false)
 
-  useEffect(() => {
-    if (!isDirty) return
-    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
-      event.preventDefault()
-      event.returnValue = ""
-    }
-    window.addEventListener("beforeunload", warnBeforeUnload)
-    return () => window.removeEventListener("beforeunload", warnBeforeUnload)
-  }, [isDirty])
-
   const confirmReset = () => {
-    if (lastSavedConfig) {
-      setEditorValue(JSON.stringify(lastSavedConfig, null, 2))
-    } else if (config) {
-      setEditorValue(JSON.stringify(config, null, 2))
-    }
+    setEditorValue(
+      lastSavedConfig ? JSON.stringify(lastSavedConfig, null, 2) : null,
+    )
     setIsDirty(false)
     toast.info(t("pages.config.reset_success"))
     setShowResetDialog(false)
@@ -141,6 +132,7 @@ export function RawConfigPage() {
 
   return (
     <div className="flex h-full flex-col">
+      <UnsavedChangesGuard when={isDirty} />
       <PageHeader title={t("pages.config.raw_json_title")}>
         <Button variant="outline" asChild>
           <Link to="/config">

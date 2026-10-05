@@ -23,6 +23,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
+import { safeExternalURL } from "@/lib/safe-url"
 
 export function MarketSkillCard({
   result,
@@ -51,6 +52,7 @@ export function MarketSkillCard({
     return t("pages.agent.skills.marketplace_install_action")
   })()
   const installDisabled = !canInstall || result.installed || installPending
+  const resultURL = safeExternalURL(result.url)
 
   return (
     <Card
@@ -88,12 +90,12 @@ export function MarketSkillCard({
             <CardDescription className="mt-2 line-clamp-2 text-sm leading-relaxed">
               {result.summary}
             </CardDescription>
-            {result.url ? (
+            {resultURL ? (
               <div className="pt-1">
                 <a
-                  href={result.url}
+                  href={resultURL}
                   target="_blank"
-                  rel="noreferrer"
+                  rel="noopener noreferrer"
                   className="text-primary/80 hover:text-primary inline-flex text-xs transition-colors hover:underline hover:underline-offset-4"
                 >
                   {result.url}

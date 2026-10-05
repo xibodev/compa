@@ -127,3 +127,39 @@ export function mergeHistoryMessages(
       comparableTimestamp(right.timestamp),
   )
 }
+
+// Live and saved copies of one message differ in id and timestamp, so after
+// a reconnect they are matched by what they say.
+function contentSignature(message: ChatMessage): string {
+  const kind = message.role === "assistant" ? (message.kind ?? "normal") : ""
+  return `${message.role}\u0000${kind}\u0000${message.content.trim()}`
+}
+
+/**
+ * Merges the saved history, reloaded after a reconnect, with what the page
+ * shows. The history is the record of what happened while the socket was
+ * down, so it comes first; live messages it does not hold yet (a reply that
+ * is still streaming, a message not saved yet) stay after it.
+ */
+export function mergeReconnectedHistory(
+  historyMessages: ChatMessage[],
+  currentMessages: ChatMessage[],
+): ChatMessage[] {
+  const saved = new Map<string, number>()
+  for (const message of historyMessages) {
+    const signature = contentSignature(message)
+    saved.set(signature, (saved.get(signature) ?? 0) + 1)
+  }
+
+  const unsaved = currentMessages.filter((message) => {
+    const signature = contentSignature(message)
+    const count = saved.get(signature) ?? 0
+    if (count === 0) {
+      return true
+    }
+    saved.set(signature, count - 1)
+    return false
+  })
+
+  return [...historyMessages, ...unsaved]
+}

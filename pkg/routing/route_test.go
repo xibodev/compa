@@ -231,3 +231,29 @@ func TestResolveRoute_NoDefaultUsesFirst(t *testing.T) {
 		t.Errorf("AgentID = %q, want 'alpha' (first in list)", route.AgentID)
 	}
 }
+
+func TestResolveDefaultAgentID(t *testing.T) {
+	tests := []struct {
+		name   string
+		agents []config.AgentConfig
+		want   string
+	}{
+		{name: "implicit main", want: DefaultAgentID},
+		{name: "default flag wins over a main entry", agents: []config.AgentConfig{
+			{ID: "main"}, {ID: "Sales", Default: true},
+		}, want: "sales"},
+		{name: "first entry without a default", agents: []config.AgentConfig{
+			{ID: "alpha"}, {ID: "main"},
+		}, want: "alpha"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ResolveDefaultAgentID(testConfig(tt.agents)); got != tt.want {
+				t.Fatalf("ResolveDefaultAgentID() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+	if got := ResolveDefaultAgentID(nil); got != DefaultAgentID {
+		t.Fatalf("ResolveDefaultAgentID(nil) = %q, want %q", got, DefaultAgentID)
+	}
+}

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 	runtimeevents "github.com/xibodev/compa/pkg/events"
 	"github.com/xibodev/compa/pkg/logger"
 	"github.com/xibodev/compa/pkg/providers"
+	"github.com/xibodev/compa/pkg/session"
 )
 
 // CallLLM performs an LLM call with fallback support, hook invocation, and retry logic.
@@ -36,12 +38,14 @@ func (p *Pipeline) CallLLM(
 		exec.messages = resolveMediaRefs(exec.messages, p.MediaStore, maxMediaSize, exec.currentTurnStart)
 	}
 
-	exec.providerToolDefs = ts.agent.Tools.ToProviderDefs()
-	exec.providerToolDefs = filterToolsByTurnProfile(exec.providerToolDefs, ts.profile)
+	exec.providerToolDefs = al.offeredToolDefs(ts)
 
-	// Native web search support
-	webSearchEnabled := al.cfg.Tools.IsToolEnabled("web") && turnProfileToolAllowed(ts.profile, "web_search")
-	exec.useNativeSearch = webSearchEnabled && al.cfg.Tools.Web.PreferNative &&
+	// Native web search support. It searches inside the provider, where no
+	// call can be asked about or refused: only a web_search the approval
+	// policy allows is replaced by it.
+	webSearchEnabled := p.Cfg.Tools.IsToolEnabled("web") && turnProfileToolAllowed(ts.profile, "web_search") &&
+		al.toolAllowed(ts, "web_search")
+	exec.useNativeSearch = webSearchEnabled && p.Cfg.Tools.Web.PreferNative &&
 		func() bool {
 			if ns, ok := exec.activeProvider.(providers.NativeSearchCapable); ok {
 				return ns.SupportsNativeSearch()
@@ -112,7 +116,7 @@ func (p *Pipeline) CallLLM(
 			return ControlBreak, nil
 		}
 	}
-	exec.useNativeSearch = webSearchEnabled && al.cfg.Tools.Web.PreferNative &&
+	exec.useNativeSearch = webSearchEnabled && p.Cfg.Tools.Web.PreferNative &&
 		func() bool {
 			if ns, ok := exec.activeProvider.(providers.NativeSearchCapable); ok {
 				return ns.SupportsNativeSearch()
@@ -122,7 +126,7 @@ func (p *Pipeline) CallLLM(
 	if nativeSearchBeforeHook && !exec.useNativeSearch {
 		exec.providerToolDefs = restoreToolDefinition(
 			exec.providerToolDefs,
-			filterToolsByTurnProfile(ts.agent.Tools.ToProviderDefs(), ts.profile),
+			al.offeredToolDefs(ts),
 			"web_search",
 		)
 	}
@@ -217,7 +221,7 @@ func (p *Pipeline) CallLLM(
 			callOpts := shallowCloneLLMOptions(exec.llmOpts)
 			delete(callOpts, "thinking_level")
 			candidateTools := toolDefsForCall
-			candidateNativeSearch := webSearchEnabled && al.cfg.Tools.Web.PreferNative &&
+			candidateNativeSearch := webSearchEnabled && p.Cfg.Tools.Web.PreferNative &&
 				func() bool {
 					if ns, ok := candidateProvider.(providers.NativeSearchCapable); ok {
 						return ns.SupportsNativeSearch()
@@ -232,7 +236,7 @@ func (p *Pipeline) CallLLM(
 				if exec.useNativeSearch {
 					candidateTools = restoreToolDefinition(
 						candidateTools,
-						filterToolsByTurnProfile(ts.agent.Tools.ToProviderDefs(), ts.profile),
+						al.offeredToolDefs(ts),
 						"web_search",
 					)
 				}
@@ -285,6 +289,10 @@ func (p *Pipeline) CallLLM(
 	if backoffSecs <= 0 {
 		backoffSecs = 2
 	}
+	// beforeCompaction holds the session as it was before a context retry
+	// compacted it; when the retry fails anyway the history comes back, so a
+	// failed call does not cost the conversation half its history.
+	var beforeCompaction *sessionSnapshot
 	for retry := 0; retry <= maxRetries; retry++ {
 		exec.response, err = callLLM(exec.callMessages, exec.providerToolDefs)
 		if err == nil {
@@ -307,8 +315,7 @@ func (p *Pipeline) CallLLM(
 			)
 		}
 
-		errMsg := strings.ToLower(err.Error())
-		if len(exec.providerToolDefs) > 0 && isToolUnsupportedError(errMsg) {
+		if len(exec.providerToolDefs) > 0 && isToolUnsupportedError(strings.ToLower(err.Error())) {
 			logger.WarnCF("agent", "Model does not support tools, retrying without tools in conversational mode", map[string]any{
 				"model": exec.llmModelName,
 				"error": err.Error(),
@@ -318,7 +325,6 @@ func (p *Pipeline) CallLLM(
 			if err == nil {
 				break
 			}
-			errMsg = strings.ToLower(err.Error())
 		}
 
 		backoff, isTransientError := providers.RetryDelay(
@@ -327,16 +333,7 @@ func (p *Pipeline) CallLLM(
 			maxLLMRetryAfterWait,
 		)
 		retryReason := llmRetryReason(err)
-		isContextError := !isTransientError && (strings.Contains(errMsg, "context_length_exceeded") ||
-			strings.Contains(errMsg, "context window") ||
-			strings.Contains(errMsg, "context_window") ||
-			strings.Contains(errMsg, "maximum context length") ||
-			strings.Contains(errMsg, "token limit") ||
-			strings.Contains(errMsg, "too many tokens") ||
-			strings.Contains(errMsg, "max_tokens") ||
-			strings.Contains(errMsg, "invalidparameter") ||
-			strings.Contains(errMsg, "prompt is too long") ||
-			strings.Contains(errMsg, "request too large"))
+		isContextError := !isTransientError && isContextOverflowError(err)
 
 		if isTransientError && retry < maxRetries {
 			al.emitEvent(
@@ -394,10 +391,14 @@ func (p *Pipeline) CallLLM(
 				))
 			}
 
+			if beforeCompaction == nil {
+				beforeCompaction = takeSessionSnapshot(ts.agent.Sessions, ts.sessionKey)
+			}
 			if compactErr := p.ContextManager.Compact(ctx, &CompactRequest{
 				SessionKey: ts.sessionKey,
 				Reason:     ContextCompressReasonRetry,
 				Budget:     ts.agent.ContextWindow,
+				AgentID:    ts.agent.ID,
 			}); compactErr != nil {
 				logger.WarnCF("agent", "Context overflow compact failed", map[string]any{
 					"session_key": ts.sessionKey,
@@ -409,6 +410,7 @@ func (p *Pipeline) CallLLM(
 				SessionKey: ts.sessionKey,
 				Budget:     ts.agent.ContextWindow,
 				MaxTokens:  ts.agent.MaxTokens,
+				AgentID:    ts.agent.ID,
 			}); asmErr == nil && asmResp != nil {
 				exec.history = asmResp.History
 				exec.summary = asmResp.Summary
@@ -480,6 +482,10 @@ func (p *Pipeline) CallLLM(
 	}
 
 	if err != nil {
+		if beforeCompaction != nil && !ts.opts.NoHistory {
+			beforeCompaction.restore(ts.agent.Sessions)
+			ts.refreshRestorePointFromSession(ts.agent)
+		}
 		al.emitEvent(
 			runtimeevents.KindAgentError,
 			ts.eventMeta("runTurn", "turn.error"),
@@ -523,17 +529,11 @@ func (p *Pipeline) CallLLM(
 		}
 	}
 
-	// Save finishReason and usage on the turn state. Use ts directly (the
-	// authoritative turn state for this call) rather than a context lookup:
-	// the raw ctx passed to CallLLM is not seeded with turnState (only turnCtx
-	// is), so turnStateFromContext(ctx) returns nil here and silently dropped
-	// both the finish reason and the per-turn token usage. ts is also exactly
-	// what the streaming publisher reads via GetLastUsage at finalize.
-	if ts != nil {
-		ts.SetLastFinishReason(exec.response.FinishReason)
-		if exec.response.Usage != nil {
-			ts.SetLastUsage(exec.response.Usage)
-		}
+	// Save the usage on the turn state, which the streaming publisher reads
+	// via GetLastUsage at finalize. Use ts directly: the raw ctx passed to
+	// CallLLM is not seeded with turnState (only turnCtx is).
+	if ts != nil && exec.response.Usage != nil {
+		ts.SetLastUsage(exec.response.Usage)
 	}
 
 	if exec.suppressReasoning {
@@ -602,13 +602,13 @@ func (p *Pipeline) CallLLM(
 			responseContent = exec.response.ReasoningContent
 		}
 		if steerMsgs := al.dequeueSteeringMessagesForScope(ts.sessionKey); len(steerMsgs) > 0 {
-			cancelConfiguredStreamingLLM(turnCtx, exec)
 			logger.InfoCF("agent", "Steering arrived after direct LLM response; continuing turn",
 				map[string]any{
 					"agent_id":       ts.agent.ID,
 					"iteration":      iteration,
 					"steering_count": len(steerMsgs),
 				})
+			p.keepAnswerBeforeSteering(turnCtx, ts, exec, responseContent, reasoningContent)
 			exec.pendingMessages = append(exec.pendingMessages, steerMsgs...)
 			return ControlContinue, nil
 		}
@@ -703,6 +703,55 @@ func (p *Pipeline) CallLLM(
 	return ControlToolLoop, nil
 }
 
+// keepAnswerBeforeSteering keeps a final answer that a steering message
+// overtook. The model sees it and the session stores it ahead of the steering
+// message, and the user gets it: through the stream that showed it, else as a
+// message of its own (the turn's reply will be the answer to the steering).
+func (p *Pipeline) keepAnswerBeforeSteering(
+	ctx context.Context,
+	ts *turnState,
+	exec *turnExecution,
+	content, reasoning string,
+) {
+	if strings.TrimSpace(content) == "" {
+		cancelConfiguredStreamingLLM(ctx, exec)
+		return
+	}
+	answer := providers.Message{
+		Role:               "assistant",
+		Content:            content,
+		ModelName:          exec.llmModelName,
+		RequestedSelection: exec.requestedSelection,
+		ServedTarget:       exec.servedTarget,
+		ServedIdentity:     exec.servedIdentity,
+		ReasoningContent:   reasoning,
+	}
+	exec.messages = append(exec.messages, answer)
+	if !ts.opts.NoHistory {
+		ts.agent.Sessions.AddFullMessage(ts.sessionKey, answer)
+		ts.recordPersistedMessage(answer)
+		ts.ingestMessage(ctx, p.al, answer)
+	}
+
+	if exec.streamingPublisher != nil {
+		if err := finalizeConfiguredStreamingLLM(ctx, ts, exec, content, nil); err != nil {
+			logger.WarnCF("agent", "Failed to finish the stream of an answer overtaken by steering",
+				map[string]any{"agent_id": ts.agent.ID, "channel": ts.channel, "error": err.Error()})
+		}
+		return
+	}
+	if p.al.bus == nil || ts.channel == "" || ts.chatID == "" ||
+		(!ts.opts.SendResponse && !ts.opts.AllowInterimWebPublish) {
+		return
+	}
+	if err := p.al.bus.PublishOutbound(ctx, outboundMessageForTurnWithOptions(ts, content, outboundTurnMessageOptions{
+		modelName: exec.llmModelName,
+	})); err != nil {
+		logger.WarnCF("agent", "Failed to deliver an answer overtaken by steering",
+			map[string]any{"agent_id": ts.agent.ID, "channel": ts.channel, "error": err.Error()})
+	}
+}
+
 func restoreToolDefinition(
 	current,
 	available []providers.ToolDefinition,
@@ -791,6 +840,92 @@ func llmRetryReason(err error) string {
 		return "server_error"
 	}
 	return "transient"
+}
+
+// contextOverflowPhrases are how providers word a request whose prompt does
+// not fit the model's context window.
+var contextOverflowPhrases = []string{
+	"context_length_exceeded",
+	"context_window_exceeded",
+	"context length",
+	"context window",
+	"context_window",
+	"maximum context",
+	"prompt is too long",
+	"prompt too long",
+	"input is too long",
+	"too many tokens",
+	"request too large",
+	"max message tokens",
+	"input token count",
+	"range of input length",
+	"token limit",
+}
+
+// isContextOverflowError reports whether err says the prompt exceeded the
+// model's context window. Only a request the provider rejected as such
+// counts: core's classification rules out authentication, permission, rate
+// limit, transport and configuration failures, and statuses other than
+// 400, 413 and 422, whatever their message mentions.
+func isContextOverflowError(err error) bool {
+	if err == nil {
+		return false
+	}
+	failure := providers.DescribeFailure(err)
+	if failure.Disposition == core.DispositionRetryable || failure.AfterOutput || failure.Unavailable || failure.Timeout {
+		return false
+	}
+	switch failure.Class {
+	case core.ProviderErrorAuth, core.ProviderErrorForbidden, core.ProviderErrorRateLimited,
+		core.ProviderErrorTransport, core.ProviderErrorConfiguration, core.ProviderErrorUnsupported:
+		return false
+	}
+	switch failure.StatusCode {
+	case 0, http.StatusBadRequest, http.StatusRequestEntityTooLarge, http.StatusUnprocessableEntity:
+	default:
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, phrase := range contextOverflowPhrases {
+		if strings.Contains(msg, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+// sessionSnapshot is a session's stored history and summary at one moment.
+type sessionSnapshot struct {
+	key     string
+	history []providers.Message
+	summary string
+}
+
+func takeSessionSnapshot(store session.SessionStore, key string) *sessionSnapshot {
+	if store == nil {
+		return nil
+	}
+	return &sessionSnapshot{
+		key:     key,
+		history: append([]providers.Message(nil), store.GetHistory(key)...),
+		summary: store.GetSummary(key),
+	}
+}
+
+// restore puts the snapshot back. The turn stores nothing while it retries a
+// call, so the snapshot is still the whole session.
+func (s *sessionSnapshot) restore(store session.SessionStore) {
+	if s == nil || store == nil {
+		return
+	}
+	store.SetHistory(s.key, append([]providers.Message(nil), s.history...))
+	store.SetSummary(s.key, s.summary)
+	if err := store.Save(s.key); err != nil {
+		logger.WarnCF("agent", "Failed to restore the session after a failed context retry", map[string]any{
+			"session_key": s.key,
+			"error":       err.Error(),
+		})
+	}
 }
 func isToolUnsupportedError(errMsg string) bool {
 	return strings.Contains(errMsg, "no endpoints found that support tool use") ||

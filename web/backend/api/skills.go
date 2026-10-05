@@ -89,7 +89,11 @@ type installedSkillOriginMeta struct {
 	Slug             string `json:"slug,omitempty"`
 	RegistryURL      string `json:"registry_url,omitempty"`
 	InstalledVersion string `json:"installed_version,omitempty"`
-	InstalledAt      int64  `json:"installed_at"`
+	// Commit is the commit a GitHub install was pinned to; Unpinned marks a
+	// GitHub install made from the ref because it couldn't be resolved.
+	Commit      string `json:"commit,omitempty"`
+	Unpinned    bool   `json:"unpinned,omitempty"`
+	InstalledAt int64  `json:"installed_at"`
 }
 
 var (
@@ -389,6 +393,8 @@ func (h *Handler) handleInstallSkill(w http.ResponseWriter, r *http.Request) {
 		Slug:             normalizedSlug,
 		RegistryURL:      registryURL,
 		InstalledVersion: result.Version,
+		Commit:           result.Commit,
+		Unpinned:         result.Unpinned,
 		InstalledAt:      installedAt,
 	}); err != nil {
 		http.Error(w, fmt.Sprintf("Failed to persist skill metadata: %v", err), http.StatusInternalServerError)

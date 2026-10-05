@@ -1,4 +1,4 @@
-import { launcherFetch } from "@/api/http"
+import { HttpError, launcherFetch } from "@/api/http"
 
 export interface AutoStartStatus {
   enabled: boolean
@@ -13,6 +13,12 @@ export interface LauncherConfig {
   allowed_cidrs: string[]
   allow_localhost_bypass: boolean
   trusted_proxy_cidrs: string[]
+  /** Extra Host names the dashboard answers, e.g. a reverse proxy's. */
+  allowed_hosts?: string[]
+  /** Lets LAN access start before a dashboard password is set. */
+  allow_lan_without_password?: boolean
+  /** Whether chat markdown loads images from other sites on click or always. */
+  remote_images?: "click" | "always"
 }
 
 export interface SystemVersionInfo {
@@ -39,7 +45,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     } catch {
       // Keep fallback error message when response body is not JSON.
     }
-    throw new Error(message)
+    throw new HttpError(message, res.status)
   }
   return res.json() as Promise<T>
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"sync/atomic"
@@ -1043,7 +1044,7 @@ func (s *Store) ReplaceContextRangeWithSummary(
 
 	if conflict {
 		// Gap exhausted, need resequence (spec lines 1204-1209)
-		err = s.resequenceContextItemsTx(ctx, tx, convID, summaryID)
+		err = s.resequenceContextItemsTx(ctx, tx, convID, summaryID, midpoint)
 		if err != nil {
 			return fmt.Errorf("resequence: %w", err)
 		}
@@ -1114,6 +1115,11 @@ func (s *Store) ReplaceContextItemsWithSummary(
 	if len(ordinals) == 0 {
 		return nil
 	}
+	if len(ordinals) != len(summaryIDs) {
+		// Another compaction or a reset replaced some of the summaries while
+		// this one was being written.
+		return ErrContextChanged
+	}
 
 	midpoint := (ordinals[0] + ordinals[len(ordinals)-1]) / 2
 
@@ -1140,7 +1146,7 @@ func (s *Store) ReplaceContextItemsWithSummary(
 
 	if conflict {
 		// Gap exhausted, need resequence
-		err = s.resequenceContextItemsTx(ctx, tx, convID, newSummaryID)
+		err = s.resequenceContextItemsTx(ctx, tx, convID, newSummaryID, midpoint)
 		if err != nil {
 			return fmt.Errorf("resequence: %w", err)
 		}
@@ -1159,13 +1165,17 @@ func (s *Store) ReplaceContextItemsWithSummary(
 	return tx.Commit()
 }
 
-// resequenceContextItemsTx renumbers context_items with fresh OrdinalStep gaps.
+// resequenceContextItemsTx renumbers context_items with fresh OrdinalStep gaps
+// and inserts the new summary before the first item at or after position, so
+// it stays where the items it replaced were instead of after newer messages.
 // Uses temp negative ordinals to avoid PRIMARY KEY constraint violations (spec lines 1240-1247).
-func (s *Store) resequenceContextItemsTx(ctx context.Context, tx *sql.Tx, convID int64, newSummaryID string) error {
+func (s *Store) resequenceContextItemsTx(
+	ctx context.Context, tx *sql.Tx, convID int64, newSummaryID string, position int,
+) error {
 	// Get all remaining items sorted by current ordinal
 	rows, err := tx.QueryContext(
 		ctx,
-		"SELECT ordinal, item_type, summary_id, message_id, token_count FROM context_items WHERE conversation_id = ? ORDER BY ordinal",
+		"SELECT ordinal FROM context_items WHERE conversation_id = ? ORDER BY ordinal",
 		convID,
 	)
 	if err != nil {
@@ -1173,76 +1183,171 @@ func (s *Store) resequenceContextItemsTx(ctx context.Context, tx *sql.Tx, convID
 	}
 	defer rows.Close()
 
-	type item struct {
-		ordinal    int
-		itemType   string
-		summaryID  string
-		messageID  int64
-		tokenCount int
-	}
-	var items []item
+	var ordinals []int
 	for rows.Next() {
-		var i item
-		var sid sql.NullString
-		var mid sql.NullInt64
-		var scanErr error
-		if scanErr = rows.Scan(&i.ordinal, &i.itemType, &sid, &mid, &i.tokenCount); scanErr != nil {
+		var ord int
+		if scanErr := rows.Scan(&ord); scanErr != nil {
 			return scanErr
 		}
-		if sid.Valid {
-			i.summaryID = sid.String
-		}
-		if mid.Valid {
-			i.messageID = mid.Int64
-		}
-		items = append(items, i)
+		ordinals = append(ordinals, ord)
 	}
 	if rowsErr := rows.Err(); rowsErr != nil {
 		return rowsErr
 	}
 
 	// Step 1: Move all items to temp negative ordinals
-	tempOrd := -1
-	for _, i := range items {
+	for i, ord := range ordinals {
 		_, execErr := tx.ExecContext(ctx,
 			"UPDATE context_items SET ordinal = ? WHERE conversation_id = ? AND ordinal = ?",
-			tempOrd, convID, i.ordinal,
+			-(i + 1), convID, ord,
 		)
 		if execErr != nil {
 			return execErr
 		}
-		tempOrd--
 	}
 
-	// Step 2: Insert new summary at the end with positive ordinal
-	// Include token_count from summaries table
-	newOrd := (len(items) + 1) * OrdinalStep
-	_, err = tx.ExecContext(ctx,
-		`INSERT INTO context_items (conversation_id, ordinal, item_type, summary_id, token_count)
-		 SELECT ?, ?, 'summary', ?, token_count FROM summaries WHERE summary_id = ?`,
-		convID, newOrd, newSummaryID, newSummaryID,
-	)
-	if err != nil {
-		return err
-	}
-
-	// Step 3: Update each temp item to its final positive ordinal
-	// Use specific temp ordinal matching (not ordinal < 0) to avoid updating all items
+	// Step 2: Give each item its final positive ordinal, leaving a slot for
+	// the summary before the first item at or after position.
+	summaryOrd := 0
 	finalOrd := OrdinalStep
-	tempOrd = -1 // Reset to first temp ordinal (already declared in Step 1)
-	for range items {
+	for i, ord := range ordinals {
+		if summaryOrd == 0 && ord >= position {
+			summaryOrd = finalOrd
+			finalOrd += OrdinalStep
+		}
 		_, execErr := tx.ExecContext(ctx,
 			"UPDATE context_items SET ordinal = ? WHERE conversation_id = ? AND ordinal = ?",
-			finalOrd, convID, tempOrd,
+			finalOrd, convID, -(i + 1),
 		)
 		if execErr != nil {
 			return execErr
 		}
 		finalOrd += OrdinalStep
-		tempOrd--
+	}
+	if summaryOrd == 0 {
+		summaryOrd = finalOrd
 	}
 
-	return nil
+	// Step 3: Insert the new summary with token_count from summaries table
+	_, err = tx.ExecContext(ctx,
+		`INSERT INTO context_items (conversation_id, ordinal, item_type, summary_id, token_count)
+		 SELECT ?, ?, 'summary', ?, token_count FROM summaries WHERE summary_id = ?`,
+		convID, summaryOrd, newSummaryID, newSummaryID,
+	)
+	return err
+}
+
+// ErrContextChanged reports that the context items a summary was built from
+// changed (by another compaction, a reset or a bootstrap repair) while the
+// summary was generated, so the summary was not put in the context.
+var ErrContextChanged = errors.New("seahorse: context changed during compaction")
+
+// ReplaceContextChunkWithSummary replaces the context items in expected, a
+// contiguous run read before the summary was generated, with the summary.
+// It returns ErrContextChanged and changes nothing when the items between the
+// first and last ordinal of expected are no longer exactly those items.
+func (s *Store) ReplaceContextChunkWithSummary(
+	ctx context.Context,
+	convID int64,
+	expected []ContextItem,
+	summaryID string,
+) error {
+	if len(expected) == 0 {
+		return nil
+	}
+	startOrd := expected[0].Ordinal
+	endOrd := expected[len(expected)-1].Ordinal
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.QueryContext(ctx,
+		`SELECT ordinal, item_type, summary_id, message_id FROM context_items
+		 WHERE conversation_id = ? AND ordinal >= ? AND ordinal <= ? ORDER BY ordinal`,
+		convID, startOrd, endOrd,
+	)
+	if err != nil {
+		return err
+	}
+	var current []ContextItem
+	for rows.Next() {
+		var it ContextItem
+		var sid sql.NullString
+		var mid sql.NullInt64
+		if scanErr := rows.Scan(&it.Ordinal, &it.ItemType, &sid, &mid); scanErr != nil {
+			rows.Close()
+			return scanErr
+		}
+		it.SummaryID = sid.String
+		it.MessageID = mid.Int64
+		current = append(current, it)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(current) != len(expected) {
+		return ErrContextChanged
+	}
+	for i, it := range current {
+		want := expected[i]
+		if it.Ordinal != want.Ordinal || it.ItemType != want.ItemType ||
+			it.SummaryID != want.SummaryID || it.MessageID != want.MessageID {
+			return ErrContextChanged
+		}
+	}
+
+	if _, err := tx.ExecContext(ctx,
+		"DELETE FROM context_items WHERE conversation_id = ? AND ordinal >= ? AND ordinal <= ?",
+		convID, startOrd, endOrd,
+	); err != nil {
+		return err
+	}
+	// The whole range was deleted, so its midpoint is free.
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO context_items (conversation_id, ordinal, item_type, summary_id, token_count)
+		 SELECT ?, ?, 'summary', ?, token_count FROM summaries WHERE summary_id = ?`,
+		convID, (startOrd+endOrd)/2, summaryID, summaryID,
+	); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// DeleteSummary removes a summary that never made it into the context, with
+// its links. Summaries that are referenced by context items or by other
+// summaries are kept.
+func (s *Store) DeleteSummary(ctx context.Context, summaryID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var refs int
+	if err := tx.QueryRowContext(ctx,
+		`SELECT (SELECT COUNT(*) FROM context_items WHERE summary_id = ?) +
+		        (SELECT COUNT(*) FROM summary_parents WHERE parent_summary_id = ?)`,
+		summaryID, summaryID,
+	).Scan(&refs); err != nil {
+		return err
+	}
+	if refs > 0 {
+		return nil
+	}
+	for _, q := range []string{
+		"DELETE FROM summary_messages WHERE summary_id = ?",
+		"DELETE FROM summary_parents WHERE summary_id = ?",
+		"DELETE FROM summaries WHERE summary_id = ?",
+	} {
+		if _, err := tx.ExecContext(ctx, q, summaryID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // GetContextTokenCount returns total token count for all items in context.
@@ -1386,11 +1491,11 @@ func (s *Store) searchSummariesFTS(ctx context.Context, input SearchInput) ([]Se
 
 	if input.Since != nil {
 		whereClauses = append(whereClauses, "s.created_at >= ?")
-		args = append(args, input.Since.Format("2006-01-02 15:04:05"))
+		args = append(args, searchTimeArg(*input.Since))
 	}
 	if input.Before != nil {
 		whereClauses = append(whereClauses, "s.created_at < ?")
-		args = append(args, input.Before.Format("2006-01-02 15:04:05"))
+		args = append(args, searchTimeArg(*input.Before))
 	}
 
 	whereStr := strings.Join(whereClauses, " AND ")
@@ -1444,11 +1549,11 @@ func buildLikeQuery(query string, args []any, input SearchInput) (string, []any)
 	}
 	if input.Since != nil {
 		query += " AND created_at >= ?"
-		args = append(args, input.Since.Format("2006-01-02 15:04:05"))
+		args = append(args, searchTimeArg(*input.Since))
 	}
 	if input.Before != nil {
 		query += " AND created_at < ?"
-		args = append(args, input.Before.Format("2006-01-02 15:04:05"))
+		args = append(args, searchTimeArg(*input.Before))
 	}
 	// Order by newest first for LIKE mode
 	query += " ORDER BY created_at DESC"
@@ -1470,8 +1575,8 @@ func buildMessagesLikeQuery(query string, args []any, input SearchInput) (string
 
 func (s *Store) searchSummariesLike(ctx context.Context, input SearchInput) ([]SearchResult, error) {
 	query := `SELECT summary_id, conversation_id, kind, content, created_at, COUNT(*) OVER() as total_count
-		FROM summaries WHERE content LIKE ?`
-	args := []any{"%" + input.Pattern + "%"}
+		FROM summaries WHERE content LIKE ? ESCAPE '\'`
+	args := []any{likeContainsPattern(input.Pattern)}
 	query, args = buildLikeQuery(query, args, input)
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -1544,11 +1649,11 @@ func (s *Store) searchMessagesFTS(ctx context.Context, input SearchInput) ([]Sea
 
 	if input.Since != nil {
 		whereClauses = append(whereClauses, "m.created_at >= ?")
-		args = append(args, input.Since.Format("2006-01-02 15:04:05"))
+		args = append(args, searchTimeArg(*input.Since))
 	}
 	if input.Before != nil {
 		whereClauses = append(whereClauses, "m.created_at < ?")
-		args = append(args, input.Before.Format("2006-01-02 15:04:05"))
+		args = append(args, searchTimeArg(*input.Before))
 	}
 
 	whereStr := strings.Join(whereClauses, " AND ")
@@ -1594,8 +1699,8 @@ func (s *Store) searchMessagesFTS(ctx context.Context, input SearchInput) ([]Sea
 
 func (s *Store) searchMessagesLike(ctx context.Context, input SearchInput) ([]SearchResult, error) {
 	query := `SELECT message_id, conversation_id, role, content, created_at, COUNT(*) OVER() as total_count
-		FROM messages WHERE content LIKE ?`
-	args := []any{"%" + input.Pattern + "%"}
+		FROM messages WHERE content LIKE ? ESCAPE '\'`
+	args := []any{likeContainsPattern(input.Pattern)}
 	query, args = buildMessagesLikeQuery(query, args, input)
 
 	rows, err := s.db.QueryContext(ctx, query, args...)
@@ -1735,6 +1840,21 @@ func normalizeMessageCreatedAt(createdAt time.Time) time.Time {
 		return time.Time{}
 	}
 	return createdAt.UTC().Truncate(time.Second)
+}
+
+// searchTimeArg formats a search bound like the stored timestamps, which are
+// UTC; a bound in another zone would otherwise shift by its offset.
+func searchTimeArg(t time.Time) string {
+	return t.UTC().Format(sqliteTimeLayout)
+}
+
+// likeContainsPattern builds a "contains" LIKE pattern (used with ESCAPE '\')
+// from a search pattern. % stays a wildcard, as the short_grep tool documents;
+// _ and \ match literally.
+func likeContainsPattern(p string) string {
+	p = strings.ReplaceAll(p, `\`, `\\`)
+	p = strings.ReplaceAll(p, "_", `\_`)
+	return "%" + p + "%"
 }
 
 func formatSQLiteTime(t time.Time) string {

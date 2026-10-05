@@ -6,32 +6,6 @@ import (
 	"testing"
 )
 
-func TestSubagentManager_SetLLMOptionsFlowIntoSpawnedSubTurns(t *testing.T) {
-	manager := NewSubagentManager()
-	manager.SetLLMOptions(2048, 0.6)
-
-	if manager.maxTokens != 2048 {
-		t.Errorf("manager.maxTokens = %d, want 2048", manager.maxTokens)
-	}
-	if manager.temperature != 0.6 {
-		t.Errorf("manager.temperature = %f, want 0.6", manager.temperature)
-	}
-
-	spawner := &mockSpawner{}
-	tool := NewSubagentTool(manager)
-	tool.SetSpawner(spawner)
-	result := tool.Execute(context.Background(), map[string]any{"task": "check options"})
-	if result.IsError {
-		t.Fatalf("Execute() error: %s", result.ForLLM)
-	}
-	// A sub-turn carries no model: the child runs on its agent's model, or
-	// inherits its parent's.
-	if spawner.lastConfig.MaxTokens != 2048 ||
-		spawner.lastConfig.Temperature != 0.6 {
-		t.Fatalf("SubTurnConfig = %+v, want the manager's LLM options", spawner.lastConfig)
-	}
-}
-
 // TestSubagentTool_Name verifies tool name
 func TestSubagentTool_Name(t *testing.T) {
 	manager := NewSubagentManager()

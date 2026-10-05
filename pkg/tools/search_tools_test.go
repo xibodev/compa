@@ -337,3 +337,39 @@ func TestPromoteTools_ConcurrentWithTickTTL(t *testing.T) {
 	}
 	<-done
 }
+
+func TestSearchToolsLeaveOutTheToolsTheTurnIsNotOffered(t *testing.T) {
+	found := func(text string) []string {
+		var names []string
+		for _, name := range []string{"mcp_fetch_net", "mcp_list_dir", "mcp_read_file"} {
+			if strings.Contains(text, name) {
+				names = append(names, name)
+			}
+		}
+		return names
+	}
+	for _, search := range []struct {
+		name string
+		tool Tool
+		args map[string]any
+	}{
+		{"regex", NewRegexSearchTool(setupPopulatedRegistry(), 5, 1), map[string]any{"pattern": "system"}},
+		{"bm25", NewBM25SearchTool(setupPopulatedRegistry(), 5, 1), map[string]any{"query": "system files"}},
+	} {
+		t.Run(search.name, func(t *testing.T) {
+			// One result at most: the first match, hidden, must not take
+			// the place of the next.
+			first := found(search.tool.Execute(context.Background(), search.args).ForLLM)
+			if len(first) != 1 {
+				t.Fatalf("unfiltered search found %v, want one tool", first)
+			}
+			ctx := WithHiddenTools(context.Background(), func(name string, tool Tool) bool {
+				return tool != nil && name == first[0]
+			})
+			res := search.tool.Execute(ctx, search.args)
+			if got := found(res.ForLLM); res.IsError || len(got) != 1 || got[0] == first[0] {
+				t.Fatalf("results = %q, want another tool than the hidden %s", res.ForLLM, first[0])
+			}
+		})
+	}
+}

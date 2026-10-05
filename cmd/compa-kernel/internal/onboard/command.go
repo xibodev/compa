@@ -9,24 +9,23 @@ import (
 var embeddedFiles = compa.OnboardWorkspace
 
 func NewOnboardCommand() *cobra.Command {
-	var encrypt bool
+	var force bool
 
 	cmd := &cobra.Command{
 		Use:     "onboard",
 		Aliases: []string{"o"},
 		Short:   "Initialize Compa configuration and workspace",
-		// Run without subcommands → original onboard flow
-		Run: func(cmd *cobra.Command, args []string) {
-			if len(args) == 0 {
-				onboard(encrypt)
-			} else {
-				_ = cmd.Help()
+		// Run without subcommands: the original onboard flow.
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) != 0 {
+				return cmd.Help()
 			}
+			return onboard(force)
 		},
 	}
 
-	cmd.Flags().BoolVar(&encrypt, "enc", false,
-		"Enable credential encryption (generates SSH key and prompts for passphrase)")
+	cmd.Flags().BoolVar(&force, "force", false,
+		"Replace workspace files you changed with the defaults (each is backed up first)")
 
 	return cmd
 }

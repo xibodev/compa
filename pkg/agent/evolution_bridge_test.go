@@ -125,6 +125,7 @@ func TestEvolutionBridge_TurnEndBypassesHookObserverBackpressure(t *testing.T) {
 		TurnID:     "turn-backpressure",
 		SessionKey: "session-backpressure",
 	}, TurnEndPayload{
+		FromOwner:    true,
 		Status:       TurnEndStatusCompleted,
 		Workspace:    tmpDir,
 		UserMessage:  "hello",
@@ -157,6 +158,7 @@ func TestEvolutionBridge_RuntimeBusTurnEndWritesCaseRecord(t *testing.T) {
 			SessionKey: "session-runtime-bus",
 		},
 		Payload: TurnEndPayload{
+			FromOwner:    true,
 			Status:       TurnEndStatusCompleted,
 			Workspace:    tmpDir,
 			UserMessage:  "runtime bus task",
@@ -221,6 +223,7 @@ func TestEvolutionBridge_RuntimeBusOnlyCurrentBridgeConsumesTurnEnd(t *testing.T
 			SessionKey: "session-current-bridge",
 		},
 		Payload: TurnEndPayload{
+			FromOwner:    true,
 			Status:       TurnEndStatusCompleted,
 			Workspace:    tmpDir,
 			UserMessage:  "current bridge task",
@@ -268,6 +271,7 @@ func TestEvolutionBridge_DirectDeliveryFailureFallsBackToCurrentRuntimeBridge(t 
 			TurnID:     "turn-direct-fallback",
 			SessionKey: "session-direct-fallback",
 		}, TurnEndPayload{
+			FromOwner:    true,
 			Status:       TurnEndStatusCompleted,
 			Workspace:    tmpDir,
 			UserMessage:  "direct fallback task",
@@ -310,6 +314,7 @@ func TestEvolutionBridge_CloseCancelsPendingTurnEndRecord(t *testing.T) {
 		TurnID:     "turn-close-flush",
 		SessionKey: "session-close-flush",
 	}, TurnEndPayload{
+		FromOwner:    true,
 		Status:       TurnEndStatusCompleted,
 		Workspace:    tmpDir,
 		UserMessage:  "close flush task",
@@ -722,7 +727,9 @@ func TestEvolutionBridge_DraftModeKeepsCandidateDraft(t *testing.T) {
 	assertProfileNotExists(t, tmpDir, "weather")
 }
 
-func TestEvolutionBridge_ApplyModeAutomaticallyRunsColdPathAndAppliesMergeDraft(t *testing.T) {
+// In apply mode a draft the cold path produces still waits for a human to
+// accept it (evolution.AcceptDraft): nothing writes it to the skill on its own.
+func TestEvolutionBridge_ApplyModeLeavesTheMergeDraftForReview(t *testing.T) {
 	tmpDir := t.TempDir()
 	seedReadyRule(t, tmpDir)
 
@@ -756,27 +763,15 @@ func TestEvolutionBridge_ApplyModeAutomaticallyRunsColdPathAndAppliesMergeDraft(
 
 	waitForEvolutionRecord(t, filepath.Join(tmpDir, "state", "evolution", "task-records.jsonl"))
 	drafts := waitForDrafts(t, filepath.Join(tmpDir, "state", "evolution", "skill-drafts.json"), 1)
-	if drafts[0].Status != evolution.DraftStatusAccepted {
-		t.Fatalf("draft status = %q, want %q", drafts[0].Status, evolution.DraftStatusAccepted)
+	if drafts[0].Status != evolution.DraftStatusCandidate {
+		t.Fatalf("draft status = %q, want %q", drafts[0].Status, evolution.DraftStatusCandidate)
 	}
-
-	merged := waitForSkillBody(t, skillPath)
-	if !strings.Contains(merged, "Use city names.") {
-		t.Fatalf("merged skill lost original content:\n%s", merged)
+	got, err := os.ReadFile(skillPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
 	}
-	if !strings.Contains(merged, "## Merged Knowledge") {
-		t.Fatalf("merged skill missing merged section:\n%s", merged)
-	}
-	if !strings.Contains(merged, "Prefer native-name query first.") {
-		t.Fatalf("merged skill missing learned knowledge:\n%s", merged)
-	}
-
-	profile := waitForProfile(t, tmpDir, "weather")
-	if profile.Status != evolution.SkillStatusActive {
-		t.Fatalf("profile status = %q, want %q", profile.Status, evolution.SkillStatusActive)
-	}
-	if profile.CurrentVersion == "" {
-		t.Fatal("expected applied profile current version")
+	if string(got) != original {
+		t.Fatalf("skill changed before anyone accepted the draft:\n%s", got)
 	}
 }
 
@@ -830,6 +825,7 @@ func TestEvolutionBridge_TurnEndUsesPayloadWorkspace(t *testing.T) {
 			SessionKey: "session-1",
 		},
 		Payload: TurnEndPayload{
+			FromOwner:    true,
 			Status:       TurnEndStatusCompleted,
 			Workspace:    workspace,
 			ActiveSkills: []string{"observe-skill"},
@@ -868,6 +864,7 @@ func TestEvolutionBridge_TurnEndUsesExplicitAttemptTrail(t *testing.T) {
 			SessionKey: "session-1",
 		},
 		Payload: TurnEndPayload{
+			FromOwner:           true,
 			Status:              TurnEndStatusCompleted,
 			Workspace:           workspace,
 			ActiveSkills:        []string{"weather"},
@@ -953,6 +950,7 @@ func TestEvolutionBridge_CloseRejectsLateTurnEndEvents(t *testing.T) {
 			AgentID:    "agent-after-close",
 		},
 		Payload: TurnEndPayload{
+			FromOwner: true,
 			Status:    TurnEndStatusCompleted,
 			Workspace: workspace,
 		},
@@ -1116,10 +1114,11 @@ func seedReadyRule(t *testing.T, workspace string) {
 
 	store := evolution.NewStore(evolution.NewPaths(workspace, ""))
 	rule := evolution.LearningRecord{
-		ID:            "rule-1",
-		Kind:          evolution.RecordKindPattern,
-		WorkspaceID:   workspace,
-		CreatedAt:     time.Unix(1700000000, 0).UTC(),
+		ID:          "rule-1",
+		Kind:        evolution.RecordKindPattern,
+		WorkspaceID: workspace,
+		// Recent: the runtime drops records older than 30 days.
+		CreatedAt:     time.Now().UTC(),
 		Label:         "weather-native-name-path",
 		Summary:       "weather native-name path",
 		Status:        evolution.RecordStatus("ready"),
@@ -1224,39 +1223,6 @@ func waitForDrafts(t *testing.T, path string, want int) []evolution.SkillDraft {
 
 	t.Fatalf("timed out waiting for %d drafts at %s", want, path)
 	return nil
-}
-
-func waitForSkillBody(t *testing.T, path string) string {
-	t.Helper()
-
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		data, err := os.ReadFile(path)
-		if err == nil {
-			return string(data)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	t.Fatalf("timed out waiting for skill file at %s", path)
-	return ""
-}
-
-func waitForProfile(t *testing.T, workspace, skillName string) evolution.SkillProfile {
-	t.Helper()
-
-	store := evolution.NewStore(evolution.NewPaths(workspace, ""))
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		profile, err := store.LoadProfile(skillName)
-		if err == nil {
-			return profile
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	t.Fatalf("timed out waiting for profile %q in %s", skillName, workspace)
-	return evolution.SkillProfile{}
 }
 
 func assertProfileNotExists(t *testing.T, workspace, skillName string) {

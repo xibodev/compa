@@ -24,11 +24,13 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -36,6 +38,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/xibodev/compa/pkg/config"
+	"github.com/xibodev/compa/pkg/netbind"
 	"github.com/xibodev/compa/pkg/utils"
 )
 
@@ -81,6 +84,15 @@ type Options struct {
 	// should set them.
 	APIBaseURL string
 	HTTPClient *http.Client
+
+	// SelfTest replaces the check that the new compa-kernel runs (with
+	// "version", it must exit successfully). Tests whose programs are not
+	// real ones set it; nothing else should.
+	SelfTest func(ctx context.Context, path string) error
+
+	// AllowDowngrade installs a release older than the running version,
+	// which is refused otherwise.
+	AllowDowngrade bool
 }
 
 // Result describes an installed release.
@@ -179,6 +191,10 @@ func TagFromURL(raw string) (string, error) {
 	return "", foreign
 }
 
+// errDowngrade refuses a release older than the running version unless
+// Options.AllowDowngrade is set.
+var errDowngrade = errors.New("installing it needs an explicit downgrade")
+
 func update(ctx context.Context, opts Options, goos, goarch string) (*Result, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -214,6 +230,9 @@ func update(ctx context.Context, opts Options, goos, goarch string) (*Result, er
 	rel, err := fetchRelease(ctx, client, base, tag)
 	if err != nil {
 		return nil, err
+	}
+	if current := config.GetVersion(); !opts.AllowDowngrade && CompareVersions(rel.TagName, current) < 0 {
+		return nil, fmt.Errorf("release %s is older than the running version %s; %w", rel.TagName, current, errDowngrade)
 	}
 
 	version := strings.TrimPrefix(rel.TagName, "v")
@@ -256,14 +275,121 @@ func update(ctx context.Context, opts Options, goos, goarch string) (*Result, er
 	if err := prepare(archivePath, name, progs); err != nil {
 		return nil, err
 	}
-	if err := commit(progs); err != nil {
+	done, err := commit(progs)
+	if err != nil {
 		return nil, err
 	}
+	// The new kernel must start before the update stands: one that does not
+	// run on this machine is put back, with the launcher, at once.
+	test := selfTest
+	if opts.SelfTest != nil {
+		test = opts.SelfTest
+	}
+	if err := test(ctx, progs[0].target); err != nil {
+		testErr := fmt.Errorf("the new %s does not run (%v), so the previous version was put back", filepath.Base(progs[0].target), err)
+		if rerr := rollback(done); rerr != nil {
+			return nil, fmt.Errorf("%w; putting it back also failed, so reinstall Compa: %v", testErr, rerr)
+		}
+		return nil, testErr
+	}
+	removeBackups(done)
 	for _, p := range progs {
 		opts.logf("Updated %s.", p.target)
 	}
 
 	return &Result{Tag: rel.TagName, Version: version, Dir: dir, Archive: name}, nil
+}
+
+// selfTestTimeout bounds the self-test of a new program.
+const selfTestTimeout = 30 * time.Second
+
+// selfTest runs the program at path, newly installed, with "version": it
+// must exit successfully. Tests replace it (Options.SelfTest), since their
+// programs are not real ones.
+var selfTest = func(ctx context.Context, path string) error {
+	ctx, cancel := context.WithTimeout(ctx, selfTestTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, path, "version").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// CompareVersions compares two versions such as "v1.2.3" or "1.2.3-rc.1"
+// as semantic versions: -1, 0 or +1. A version that is not one, such as a
+// development build's, compares as equal to anything, so it never blocks.
+func CompareVersions(a, b string) int {
+	pa, okA := parseVersion(a)
+	pb, okB := parseVersion(b)
+	if !okA || !okB {
+		return 0
+	}
+	for i := range 3 {
+		if c := cmpInt(pa.core[i], pb.core[i]); c != 0 {
+			return c
+		}
+	}
+	switch {
+	case pa.pre == "" && pb.pre == "":
+		return 0
+	case pa.pre == "":
+		return 1 // a release follows its prereleases
+	case pb.pre == "":
+		return -1
+	}
+	ia, ib := strings.Split(pa.pre, "."), strings.Split(pb.pre, ".")
+	for i := 0; i < len(ia) && i < len(ib); i++ {
+		na, errA := strconv.Atoi(ia[i])
+		nb, errB := strconv.Atoi(ib[i])
+		var c int
+		switch {
+		case errA == nil && errB == nil:
+			c = cmpInt(na, nb)
+		case errA == nil:
+			c = -1 // numeric identifiers sort first
+		case errB == nil:
+			c = 1
+		default:
+			c = strings.Compare(ia[i], ib[i])
+		}
+		if c != 0 {
+			return c
+		}
+	}
+	return cmpInt(len(ia), len(ib))
+}
+
+type parsedVersion struct {
+	core [3]int
+	pre  string
+}
+
+func parseVersion(v string) (parsedVersion, bool) {
+	m := tagPattern.FindStringSubmatch(strings.TrimSpace(v))
+	if m == nil {
+		return parsedVersion{}, false
+	}
+	var p parsedVersion
+	for i := range 3 {
+		n, err := strconv.Atoi(m[i+1])
+		if err != nil {
+			return parsedVersion{}, false
+		}
+		p.core[i] = n
+	}
+	p.pre = strings.TrimPrefix(m[4], "-")
+	return p, true
+}
+
+func cmpInt(a, b int) int {
+	switch {
+	case a < b:
+		return -1
+	case a > b:
+		return 1
+	}
+	return 0
 }
 
 func (o Options) logf(format string, args ...any) {
@@ -395,8 +521,10 @@ func (e *statusError) Error() string {
 
 func get(ctx context.Context, c *http.Client, rawURL, accept string) (*http.Response, error) {
 	u, err := url.Parse(rawURL)
-	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
-		return nil, fmt.Errorf("refusing to download from %q", rawURL)
+	if err != nil || u.Host == "" || (u.Scheme != "https" && (u.Scheme != "http" || !netbind.IsLoopbackHost(u.Hostname()))) {
+		// Plain http only reaches this machine, as a test's fake release
+		// does: anything on the network could alter it.
+		return nil, fmt.Errorf("refusing to download from %q: updates come over https", rawURL)
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
@@ -672,21 +800,26 @@ var commitBinary = selfupdate.CommitBinary
 
 // commit moves the prepared programs into place in order. When one fails,
 // the ones already replaced are put back, so both programs stay on the same
-// version.
-func commit(progs []program) error {
+// version. It returns what it replaced, whose backups removeBackups removes
+// once the update stands.
+func commit(progs []program) ([]committed, error) {
 	var done []committed
 	for i, p := range progs {
 		c, err := commitOne(p)
 		if err != nil {
 			discardPrepared(progs[i:])
 			if rerr := rollback(done); rerr != nil {
-				return fmt.Errorf("%w; putting back the programs already replaced also failed, so reinstall Compa: %v",
+				return nil, fmt.Errorf("%w; putting back the programs already replaced also failed, so reinstall Compa: %v",
 					err, rerr)
 			}
-			return err
+			return nil, err
 		}
 		done = append(done, c)
 	}
+	return done, nil
+}
+
+func removeBackups(done []committed) {
 	for _, c := range done {
 		if c.backup != "" {
 			// A program that is still running cannot be deleted on Windows;
@@ -694,7 +827,6 @@ func commit(progs []program) error {
 			_ = os.Remove(c.backup)
 		}
 	}
-	return nil
 }
 
 func commitOne(p program) (committed, error) {
@@ -777,11 +909,16 @@ func humanBytes(n int64) string {
 
 // --- The CLI command ---------------------------------------------------------
 
+// runUpdate is Update; a variable so tests of the command can point it at a
+// fake release.
+var runUpdate = Update
+
 // NewUpdateCommand returns the "update" command. It installs a release into
 // the directory of the running program -- both compa-kernel and compa, from
 // the same archive -- whichever of the two binaryName is.
 func NewUpdateCommand(binaryName string) *cobra.Command {
 	var version, releaseURL string
+	var allowDowngrade bool
 	cmd := &cobra.Command{
 		Use:   "update",
 		Short: "Update compa and compa-kernel from the latest GitHub release",
@@ -815,7 +952,10 @@ release's SHA256SUMS. Restart Compa afterwards to use the new version.`, Owner, 
 
 			out := cmd.OutOrStdout()
 			fmt.Fprintf(out, "Current version: %s\n", config.FormatVersion())
-			res, err := Update(ctx, Options{Tag: tag, Log: out})
+			res, err := runUpdate(ctx, Options{Tag: tag, Log: out, AllowDowngrade: allowDowngrade})
+			if errors.Is(err, errDowngrade) {
+				return fmt.Errorf("%w (--allow-downgrade)", err)
+			}
 			if err != nil {
 				return err
 			}
@@ -826,5 +966,7 @@ release's SHA256SUMS. Restart Compa afterwards to use the new version.`, Owner, 
 	cmd.Flags().StringVar(&version, "version", "", "Release to install, such as v1.2.3 (default: the latest release)")
 	cmd.Flags().StringVarP(&releaseURL, "url", "u", "",
 		"Release page to install, such as https://github.com/xibodev/compa/releases/tag/v1.2.3")
+	cmd.Flags().BoolVar(&allowDowngrade, "allow-downgrade", false,
+		"Install the release even when it is older than the running version")
 	return cmd
 }

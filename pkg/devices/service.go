@@ -2,7 +2,6 @@ package devices
 
 import (
 	"context"
-	"strings"
 	"sync"
 	"time"
 
@@ -110,45 +109,39 @@ func (s *Service) sendNotification(ev *events.DeviceEvent) {
 	msgBus := s.bus
 	s.mu.RUnlock()
 
-	if msgBus == nil {
+	if msgBus == nil || s.state == nil {
 		return
 	}
 
-	lastChannel := s.state.GetLastChannel()
-	if lastChannel == "" {
-		logger.DebugCF("devices", "No last channel, skipping notification", map[string]any{
-			"event": ev.FormatMessage(),
+	// Device notices are for the owner: they go to the chat the owner last
+	// wrote from, never to whoever wrote last.
+	platform, chatID := s.state.GetOwnerChat()
+	if platform == "" || chatID == "" || constants.IsInternalChannel(platform) {
+		logger.DebugCF("devices", "No owner chat known, skipping notification", map[string]any{
+			"kind":   ev.Kind,
+			"action": ev.Action,
 		})
-		return
-	}
-
-	platform, userID := parseLastChannel(lastChannel)
-	if platform == "" || userID == "" || constants.IsInternalChannel(platform) {
 		return
 	}
 
 	msg := ev.FormatMessage()
 	pubCtx, pubCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer pubCancel()
-	msgBus.PublishOutbound(pubCtx, bus.OutboundMessage{
-		Context: bus.NewOutboundContext(platform, userID, ""),
+	if err := msgBus.PublishOutbound(pubCtx, bus.OutboundMessage{
+		Context: bus.NewOutboundContext(platform, chatID, ""),
 		Content: msg,
-	})
+	}); err != nil {
+		logger.WarnCF("devices", "Failed to send device notification", map[string]any{
+			"kind":  ev.Kind,
+			"to":    platform,
+			"error": err.Error(),
+		})
+		return
+	}
 
 	logger.InfoCF("devices", "Device notification sent", map[string]any{
 		"kind":   ev.Kind,
 		"action": ev.Action,
 		"to":     platform,
 	})
-}
-
-func parseLastChannel(lastChannel string) (platform, userID string) {
-	if lastChannel == "" {
-		return "", ""
-	}
-	parts := strings.SplitN(lastChannel, ":", 2)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return "", ""
-	}
-	return parts[0], parts[1]
 }

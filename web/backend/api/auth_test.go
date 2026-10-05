@@ -5,9 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,19 +17,38 @@ import (
 )
 
 type fakePasswordStore struct {
+	mu          sync.Mutex
 	initialized bool
 	password    string
 	err         error
 }
 
 func (s *fakePasswordStore) IsInitialized(context.Context) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.err != nil {
 		return false, s.err
 	}
 	return s.initialized, nil
 }
 
+func (s *fakePasswordStore) InitializePassword(_ context.Context, plain string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.err != nil {
+		return false, s.err
+	}
+	if s.initialized {
+		return false, nil
+	}
+	s.password = plain
+	s.initialized = true
+	return true, nil
+}
+
 func (s *fakePasswordStore) SetPassword(_ context.Context, plain string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.err != nil {
 		return s.err
 	}
@@ -37,11 +58,16 @@ func (s *fakePasswordStore) SetPassword(_ context.Context, plain string) error {
 }
 
 func (s *fakePasswordStore) VerifyPassword(_ context.Context, plain string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.err != nil {
 		return false, s.err
 	}
 	return s.initialized && plain == s.password, nil
 }
+
+// testSetupToken is the setup token the auth tests start with.
+const testSetupToken = "setup-token-for-tests"
 
 func TestLauncherAuthLoginAndStatus(t *testing.T) {
 	const password = "dashboard-test-password"
@@ -110,6 +136,7 @@ func TestLauncherAuthUninitializedStoreRequiresSetup(t *testing.T) {
 	RegisterLauncherAuthRoutes(mux, LauncherAuthRouteOpts{
 		SessionCookie: sess,
 		PasswordStore: store,
+		SetupToken:    testSetupToken,
 	})
 
 	rec := httptest.NewRecorder()
@@ -144,7 +171,7 @@ func TestLauncherAuthUninitializedStoreRequiresSetup(t *testing.T) {
 	req = httptest.NewRequest(
 		http.MethodPost,
 		"/api/auth/setup",
-		strings.NewReader(`{"password":"12345678","confirm":"12345678"}`),
+		strings.NewReader(`{"password":"12345678","confirm":"12345678","setup_token":"`+testSetupToken+`"}`),
 	)
 	req.Header.Set("Content-Type", "application/json")
 	mux.ServeHTTP(rec, req)
@@ -168,18 +195,30 @@ func TestLauncherAuthSetupRequiresSessionWhenInitialized(t *testing.T) {
 	RegisterLauncherAuthRoutes(mux, LauncherAuthRouteOpts{
 		SessionCookie: sess,
 		PasswordStore: store,
+		SetupToken:    testSetupToken,
 	})
 
-	body := strings.NewReader(`{"password":"new-password","confirm":"new-password"}`)
+	// The setup token does not replace a session once a password exists:
+	// the setup is told the password is set.
+	body := strings.NewReader(`{"password":"new-password","confirm":"new-password","setup_token":"` + testSetupToken + `"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/auth/setup", body)
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
-	if rec.Code != http.StatusUnauthorized {
-		t.Fatalf("setup without session code = %d body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusConflict || store.password != "old-password" {
+		t.Fatalf("setup with the token once set: code = %d body=%s password=%q", rec.Code, rec.Body.String(), store.password)
 	}
 
-	body = strings.NewReader(`{"password":"new-password","confirm":"new-password"}`)
+	body = strings.NewReader(`{"password":"new-password","confirm":"new-password","current_password":"old-password"}`)
+	req = httptest.NewRequest(http.MethodPost, "/api/auth/setup", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("change without session code = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	body = strings.NewReader(`{"password":"new-password","confirm":"new-password","current_password":"old-password"}`)
 	req = httptest.NewRequest(http.MethodPost, "/api/auth/setup", body)
 	req.Header.Set("Content-Type", "application/json")
 	req.AddCookie(&http.Cookie{Name: middleware.LauncherDashboardCookieName, Value: sess})
@@ -193,24 +232,203 @@ func TestLauncherAuthSetupRequiresSessionWhenInitialized(t *testing.T) {
 	}
 }
 
-func TestLauncherAuthInitialSetupAllowsDirectSetup(t *testing.T) {
+func TestLauncherAuthPasswordChangeNeedsTheCurrentPasswordAndRotatesTheSession(t *testing.T) {
+	session, err := middleware.NewLauncherDashboardSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldToken := session.Token()
+	store := &fakePasswordStore{initialized: true, password: "old-password"}
+	mux := http.NewServeMux()
+	RegisterLauncherAuthRoutes(mux, LauncherAuthRouteOpts{Session: session, PasswordStore: store})
+
+	change := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/auth/setup", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.RemoteAddr = "127.0.0.1:4000"
+		req.AddCookie(&http.Cookie{Name: middleware.LauncherDashboardCookieName, Value: oldToken})
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		return rec
+	}
+
+	if rec := change(`{"password":"new-password","confirm":"new-password"}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("change without the current password = %d %s, want 400", rec.Code, rec.Body.String())
+	}
+	if rec := change(`{"password":"new-password","confirm":"new-password","current_password":"wrong-password"}`); rec.Code != http.StatusForbidden {
+		t.Fatalf("change with a wrong current password = %d %s, want 403", rec.Code, rec.Body.String())
+	}
+	if store.password != "old-password" {
+		t.Fatalf("a refused change saved the password %q", store.password)
+	}
+
+	rec := change(`{"password":"new-password","confirm":"new-password","current_password":"old-password"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("change = %d %s", rec.Code, rec.Body.String())
+	}
+	if session.Valid(oldToken) {
+		t.Fatal("the session was not rotated: other browsers stay signed in")
+	}
+	cookies := rec.Result().Cookies()
+	if len(cookies) != 1 || !session.Valid(cookies[0].Value) {
+		t.Fatalf("the browser that changed the password did not get the new session: %#v", cookies)
+	}
+}
+
+func TestLauncherAuthInitialSetupNeedsTheSetupToken(t *testing.T) {
 	store := &fakePasswordStore{}
 	mux := http.NewServeMux()
 	RegisterLauncherAuthRoutes(mux, LauncherAuthRouteOpts{
 		SessionCookie: "session-cookie-value",
 		PasswordStore: store,
+		SetupToken:    testSetupToken,
 	})
 
+	setup := func(token string) int {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(
+			http.MethodPost,
+			"/api/auth/setup",
+			strings.NewReader(`{"password":"12345678","confirm":"12345678","setup_token":"`+token+`"}`),
+		)
+		req.Header.Set("Content-Type", "application/json")
+		mux.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if code := setup(""); code != http.StatusForbidden {
+		t.Fatalf("setup without the token = %d, want 403", code)
+	}
+	if code := setup("guessed-token"); code != http.StatusForbidden {
+		t.Fatalf("setup with a wrong token = %d, want 403", code)
+	}
+	if store.initialized {
+		t.Fatal("a setup without the token stored a password")
+	}
+	if code := setup(testSetupToken); code != http.StatusOK {
+		t.Fatalf("setup with the token = %d, want 200", code)
+	}
+}
+
+func TestLauncherAuthInitialSetupFailsClosedWithoutAToken(t *testing.T) {
+	store := &fakePasswordStore{}
+	mux := http.NewServeMux()
+	RegisterLauncherAuthRoutes(mux, LauncherAuthRouteOpts{SessionCookie: "s", PasswordStore: store})
+
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(
-		http.MethodPost,
-		"/api/auth/setup",
-		strings.NewReader(`{"password":"12345678","confirm":"12345678"}`),
-	)
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/setup",
+		strings.NewReader(`{"password":"12345678","confirm":"12345678","setup_token":""}`))
 	req.Header.Set("Content-Type", "application/json")
 	mux.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("setup without grant code = %d body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusForbidden || store.initialized {
+		t.Fatalf("setup with no token configured = %d, initialized %t; want 403 and nothing stored", rec.Code, store.initialized)
+	}
+}
+
+// Two first-run setups racing: exactly one sets the password, the other is
+// told it is set already.
+func TestLauncherAuthInitialSetupRaceHasOneWinner(t *testing.T) {
+	store := &fakePasswordStore{}
+	mux := http.NewServeMux()
+	RegisterLauncherAuthRoutes(mux, LauncherAuthRouteOpts{
+		SessionCookie: "session-cookie-value",
+		PasswordStore: store,
+		SetupToken:    testSetupToken,
+	})
+
+	const racers = 8
+	codes := make(chan int, racers)
+	var wg sync.WaitGroup
+	for i := range racers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			password := fmt.Sprintf("racer-password-%d", i)
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodPost, "/api/auth/setup", strings.NewReader(
+				`{"password":"`+password+`","confirm":"`+password+`","setup_token":"`+testSetupToken+`"}`))
+			req.Header.Set("Content-Type", "application/json")
+			mux.ServeHTTP(rec, req)
+			codes <- rec.Code
+		}()
+	}
+	wg.Wait()
+	close(codes)
+	counts := map[int]int{}
+	for code := range codes {
+		counts[code]++
+	}
+	if counts[http.StatusOK] != 1 || counts[http.StatusConflict] != racers-1 {
+		t.Fatalf("setup answers = %v, want one 200 and %d 409", counts, racers-1)
+	}
+}
+
+func TestLauncherAuthRejectsPasswordsBcryptCannotHash(t *testing.T) {
+	store := &fakePasswordStore{}
+	mux := http.NewServeMux()
+	RegisterLauncherAuthRoutes(mux, LauncherAuthRouteOpts{SessionCookie: "s", PasswordStore: store, SetupToken: testSetupToken})
+
+	long := strings.Repeat("é", 37) // 74 bytes, 37 characters
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/auth/setup", strings.NewReader(
+		`{"password":"`+long+`","confirm":"`+long+`","setup_token":"`+testSetupToken+`"}`))
+	req.Header.Set("Content-Type", "application/json")
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("setup with a 74-byte password = %d %s, want 400", rec.Code, rec.Body.String())
+	}
+}
+
+func TestLauncherAuthLogoutAllSignsEveryBrowserOut(t *testing.T) {
+	session, err := middleware.NewLauncherDashboardSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := session.Token()
+	store := &fakePasswordStore{initialized: true, password: "a-password"}
+	mux := http.NewServeMux()
+	RegisterLauncherAuthRoutes(mux, LauncherAuthRouteOpts{Session: session, PasswordStore: store})
+
+	logoutAll := func(cookie string) int {
+		req := httptest.NewRequest(http.MethodPost, "/api/auth/logout-all", strings.NewReader(`{}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.AddCookie(&http.Cookie{Name: middleware.LauncherDashboardCookieName, Value: cookie})
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if code := logoutAll("not-the-session"); code != http.StatusUnauthorized {
+		t.Fatalf("logout-all without a session = %d, want 401", code)
+	}
+	if code := logoutAll(token); code != http.StatusOK {
+		t.Fatalf("logout-all = %d, want 200", code)
+	}
+	if session.Valid(token) {
+		t.Fatal("logout-all left the old session valid")
+	}
+
+	// A browser still holding the old cookie is signed out.
+	req := httptest.NewRequest(http.MethodGet, "/api/auth/status", nil)
+	req.AddCookie(&http.Cookie{Name: middleware.LauncherDashboardCookieName, Value: token})
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if !strings.Contains(rec.Body.String(), `"authenticated":false`) {
+		t.Fatalf("status after logout-all = %s", rec.Body.String())
+	}
+}
+
+func TestLauncherAuthStoreErrorsDoNotRevealPaths(t *testing.T) {
+	mux := http.NewServeMux()
+	RegisterLauncherAuthRoutes(mux, LauncherAuthRouteOpts{
+		SessionCookie: "s",
+		StoreError:    errors.New(`open "C:\Users\someone\.compa\launcher-auth.db": disk I/O error`),
+	})
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/auth/status", nil))
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), "launcher-auth.db") || strings.Contains(rec.Body.String(), "someone") {
+		t.Fatalf("unauthenticated answer reveals the store path: %s", rec.Body.String())
 	}
 }
 

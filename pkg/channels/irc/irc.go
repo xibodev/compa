@@ -4,10 +4,14 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"slices"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/ergochat/irc-go/ircevent"
 	"github.com/ergochat/irc-go/ircmsg"
+	"golang.org/x/time/rate"
 
 	"github.com/xibodev/compa/pkg/bus"
 	"github.com/xibodev/compa/pkg/channels"
@@ -15,14 +19,25 @@ import (
 	"github.com/xibodev/compa/pkg/logger"
 )
 
+// Servers disconnect clients that send lines in fast bursts ("Excess Flood"),
+// so lines go out at sendInterval after a burst of sendBurst.
+const (
+	sendInterval = 700 * time.Millisecond
+	sendBurst    = 4
+)
+
 // IRCChannel implements the Channel interface for IRC servers.
 type IRCChannel struct {
 	*channels.BaseChannel
-	bc     *config.Channel
-	config *config.IRCSettings
-	conn   *ircevent.Connection
-	ctx    context.Context
-	cancel context.CancelFunc
+	bc      *config.Channel
+	config  *config.IRCSettings
+	conn    *ircevent.Connection
+	ctx     context.Context
+	cancel  context.CancelFunc
+	limiter *rate.Limiter
+	// dmNicks maps a direct chat, named after the sender's account when
+	// they are logged in, to the nick replies go to.
+	dmNicks sync.Map
 }
 
 // NewIRCChannel creates a new IRC channel.
@@ -34,7 +49,7 @@ func NewIRCChannel(bc *config.Channel, cfg *config.IRCSettings, messageBus *bus.
 		return nil, fmt.Errorf("irc nick is required")
 	}
 
-	base := channels.NewBaseChannel("irc", cfg, messageBus, bc.AllowFrom,
+	base := channels.NewBaseChannel("irc", cfg, messageBus, foldAllowList(bc.AllowFrom),
 		channels.WithMaxMessageLength(400),
 		channels.WithGroupTrigger(bc.GroupTrigger),
 		channels.WithReasoningChannelID(bc.ReasoningChannelID),
@@ -44,6 +59,7 @@ func NewIRCChannel(bc *config.Channel, cfg *config.IRCSettings, messageBus *bus.
 		BaseChannel: base,
 		bc:          bc,
 		config:      cfg,
+		limiter:     rate.NewLimiter(rate.Every(sendInterval), sendBurst),
 	}, nil
 }
 
@@ -63,6 +79,11 @@ func (c *IRCChannel) Start(ctx context.Context) error {
 	caps := []string(c.config.RequestCaps)
 	if len(caps) == 0 {
 		caps = []string{"server-time", "message-tags"}
+	}
+	// account-tag tells who is logged in to which account; senders are
+	// identified by it when the server offers it.
+	if !slices.Contains(caps, "account-tag") {
+		caps = append(slices.Clone(caps), "account-tag")
 	}
 
 	conn := &ircevent.Connection{
@@ -92,9 +113,11 @@ func (c *IRCChannel) Start(ctx context.Context) error {
 
 	// Register event handlers
 	conn.AddConnectCallback(func(e ircmsg.Message) {
+		defer channels.RecoverPanic(c.Name(), "connect")
 		c.onConnect(conn)
 	})
 	conn.AddCallback("PRIVMSG", func(e ircmsg.Message) {
+		defer channels.RecoverPanic(c.Name(), "privmsg")
 		c.onPrivmsg(conn, e)
 	})
 
@@ -131,7 +154,8 @@ func (c *IRCChannel) Stop(ctx context.Context) error {
 	return nil
 }
 
-// Send sends a message to an IRC channel or user.
+// Send sends a message to an IRC channel or user, one PRIVMSG per line, each
+// within the protocol's 512-byte line limit, at a pace servers accept.
 func (c *IRCChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]string, error) {
 	if !c.IsRunning() {
 		return nil, channels.ErrNotRunning
@@ -141,19 +165,30 @@ func (c *IRCChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]strin
 	if target == "" {
 		return nil, fmt.Errorf("chat ID is empty: %w", channels.ErrSendFailed)
 	}
+	if nick, ok := c.dmNicks.Load(target); ok {
+		target = nick.(string)
+	}
 
 	if strings.TrimSpace(msg.Content) == "" {
 		return nil, nil
 	}
 
-	// Send each line separately (IRC is line-oriented)
-	lines := strings.Split(msg.Content, "\n")
+	user := c.config.User
+	if user == "" {
+		user = c.config.Nick
+	}
+	nick := c.conn.CurrentNick()
+	if nick == "" {
+		nick = c.config.Nick
+	}
+	lines := privmsgLines(msg.Content, privmsgTextBudget(nick, user, target))
 	for _, line := range lines {
-		line = strings.TrimRight(line, "\r")
-		if line == "" {
-			continue
+		if err := c.limiter.Wait(ctx); err != nil {
+			return nil, err
 		}
-		c.conn.Privmsg(target, line)
+		if err := c.conn.Privmsg(target, line); err != nil {
+			return nil, fmt.Errorf("irc send: %v: %w", err, channels.ErrTemporary)
+		}
 	}
 
 	logger.DebugCF("irc", "Message sent", map[string]any{

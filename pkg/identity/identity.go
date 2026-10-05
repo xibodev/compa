@@ -31,49 +31,115 @@ func ParseCanonicalID(canonical string) (platform, id string, ok bool) {
 	return canonical[:idx], canonical[idx+1:], true
 }
 
+// knownPlatforms are the channel types whose senders carry canonical IDs. Only
+// these names make an allow-list entry a "platform:id" entry: other text
+// before a colon belongs to the ID itself, as in the Matrix user ID
+// "@alice:matrix.org".
+var knownPlatforms = map[string]struct{}{
+	"web": {}, "web_client": {}, "telegram": {}, "discord": {}, "feishu": {},
+	"weixin": {}, "wecom": {}, "dingtalk": {}, "slack": {}, "matrix": {},
+	"deltachat": {}, "line": {}, "onebot": {}, "qq": {}, "irc": {}, "vk": {},
+	"maixcam": {}, "whatsapp": {}, "whatsapp_native": {}, "teams_webhook": {},
+	"mqtt": {}, "slack_webhook": {},
+}
+
+// caseInsensitiveUsernames are the platforms whose usernames ignore case.
+var caseInsensitiveUsernames = map[string]struct{}{
+	"telegram": {}, "discord": {},
+}
+
 // MatchAllowed checks whether the given sender matches a single allow-list entry:
 //
 //   - "123456"              → matches sender.PlatformID
-//   - "@alice"              → matches sender.Username
+//   - "@alice"              → matches sender.Username (any case on Telegram and Discord)
 //   - "telegram:123456"     → exact match on sender.CanonicalID
+//   - "telegram:@alice"     → matches sender.Username on that platform
+//   - "@alice:matrix.org"   → matches the Matrix user ID
+//
+// Only a known platform name (or the sender's own platform) before the first
+// colon makes an entry canonical. On DeltaChat, whose senders are email
+// addresses, "@name" matches only a full address, so "@alice" never admits
+// alice@ at some other domain.
 func MatchAllowed(sender bus.SenderInfo, allowed string) bool {
 	allowed = strings.TrimSpace(allowed)
 	if allowed == "" {
 		return false
 	}
 
-	// Try canonical match first: "platform:id" format
-	if platform, id, ok := ParseCanonicalID(allowed); ok {
-		// Only treat as canonical if the platform portion looks like a known platform name
-		// (not a pure-numeric string, which could be an ID that contains a colon)
-		if !isNumeric(platform) {
-			candidate := BuildCanonicalID(platform, id)
-			if candidate != "" && sender.CanonicalID != "" {
-				return strings.EqualFold(sender.CanonicalID, candidate)
-			}
-			// If sender has no canonical ID, try matching platform + platformID
-			return strings.EqualFold(platform, sender.Platform) &&
-				sender.PlatformID == id
+	// Canonical match: "platform:id" format
+	if platform, id, ok := ParseCanonicalID(allowed); ok && isPlatform(platform, sender.Platform) {
+		candidate := BuildCanonicalID(platform, id)
+		if candidate != "" && sender.CanonicalID != "" && strings.EqualFold(sender.CanonicalID, candidate) {
+			return true
 		}
+		if !strings.EqualFold(platform, sender.Platform) {
+			return false
+		}
+		if name, isUsername := strings.CutPrefix(id, "@"); isUsername && name != "" && usernameMatches(sender, name) {
+			return true
+		}
+		// If sender has no canonical ID, try matching platform + platformID
+		return sender.CanonicalID == "" && platformIDMatches(sender, id)
 	}
 
 	// Keep track of explicit username format
-	isAtUsername := strings.HasPrefix(allowed, "@")
+	name, isAtUsername := strings.CutPrefix(allowed, "@")
 
-	// Strip leading "@" for username matching
-	trimmed := strings.TrimPrefix(allowed, "@")
-
-	// Match against PlatformID
-	if sender.PlatformID != "" && sender.PlatformID == trimmed {
+	// Match against PlatformID: the entry as written (a Matrix user ID keeps
+	// its "@"), or without its "@".
+	if sender.PlatformID != "" && (platformIDMatches(sender, allowed) || platformIDMatches(sender, name)) {
 		return true
 	}
 
 	// Match against Username only when explicitly requested via "@username"
-	if isAtUsername && sender.Username != "" && sender.Username == trimmed {
+	return isAtUsername && name != "" && usernameMatches(sender, name)
+}
+
+// isPlatform reports whether prefix names a platform: a known channel type,
+// or the sender's own platform.
+func isPlatform(prefix, senderPlatform string) bool {
+	p := strings.ToLower(strings.TrimSpace(prefix))
+	if p == "" || isNumeric(p) {
+		return false
+	}
+	if _, ok := knownPlatforms[p]; ok {
 		return true
 	}
+	return senderPlatform != "" && strings.EqualFold(p, strings.TrimSpace(senderPlatform))
+}
 
-	return false
+// platformIDMatches compares id with the sender's platform ID. DeltaChat
+// addresses ignore case.
+func platformIDMatches(sender bus.SenderInfo, id string) bool {
+	if sender.PlatformID == "" || id == "" {
+		return false
+	}
+	if isPlatformNamed(sender.Platform, "deltachat") {
+		return strings.EqualFold(sender.PlatformID, id)
+	}
+	return sender.PlatformID == id
+}
+
+// usernameMatches compares an "@name" entry, without its "@", with the
+// sender's username.
+func usernameMatches(sender bus.SenderInfo, name string) bool {
+	if isPlatformNamed(sender.Platform, "deltachat") {
+		// The username of a DeltaChat sender may be only the local part of
+		// the address; only the full address identifies the sender.
+		return strings.Contains(name, "@") && platformIDMatches(sender, name)
+	}
+	username := strings.TrimPrefix(sender.Username, "@")
+	if username == "" {
+		return false
+	}
+	if _, ok := caseInsensitiveUsernames[strings.ToLower(strings.TrimSpace(sender.Platform))]; ok {
+		return strings.EqualFold(username, name)
+	}
+	return username == name
+}
+
+func isPlatformNamed(platform, name string) bool {
+	return strings.EqualFold(strings.TrimSpace(platform), name)
 }
 
 // isNumeric returns true if s consists entirely of digits, allowing for an optional leading minus sign

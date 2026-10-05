@@ -1,66 +1,102 @@
 package cron
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/xibodev/compa/pkg/cron"
 )
 
-func cronListCmd(storePath string) {
-	cs := cron.NewCronService(storePath, nil)
+func cronListCmd(out io.Writer, open openStore) error {
+	cs, err := open()
+	if err != nil {
+		return err
+	}
 	jobs := cs.ListJobs(true) // Show all jobs, including disabled
 
 	if len(jobs) == 0 {
-		fmt.Println("No scheduled jobs.")
-		return
+		fmt.Fprintln(out, "No scheduled jobs.")
+		return nil
 	}
 
-	fmt.Println("\nScheduled Jobs:")
-	fmt.Println("----------------")
+	fmt.Fprintln(out, "\nScheduled Jobs:")
+	fmt.Fprintln(out, "----------------")
 	for _, job := range jobs {
 		var schedule string
-		if job.Schedule.Kind == "every" && job.Schedule.EveryMS != nil {
+		switch {
+		case job.Schedule.Kind == "every" && job.Schedule.EveryMS != nil:
 			schedule = fmt.Sprintf("every %ds", *job.Schedule.EveryMS/1000)
-		} else if job.Schedule.Kind == "cron" {
+		case job.Schedule.Kind == "cron":
 			schedule = job.Schedule.Expr
-		} else {
+			if job.Schedule.TZ != "" {
+				schedule += " (" + job.Schedule.TZ + ")"
+			}
+		default:
 			schedule = "one-time"
 		}
 
-		nextRun := "scheduled"
-		if job.State.NextRunAtMS != nil {
-			nextTime := time.UnixMilli(*job.State.NextRunAtMS)
-			nextRun = nextTime.Format("2006-01-02 15:04")
+		nextRun := "-"
+		switch {
+		case job.State.NextRunAtMS != nil:
+			nextRun = time.UnixMilli(*job.State.NextRunAtMS).Format("2006-01-02 15:04")
+		case job.Enabled && job.Schedule.Kind == "at" && job.Schedule.AtMS != nil:
+			// A one-off that came due while the gateway was down runs when
+			// it starts.
+			nextRun = time.UnixMilli(*job.Schedule.AtMS).Format("2006-01-02 15:04") + " (overdue)"
 		}
 
 		status := "enabled"
 		if !job.Enabled {
 			status = "disabled"
 		}
+		if job.State.LastStatus == "missed" {
+			status += " (missed)"
+		}
 
-		fmt.Printf("  %s (%s)\n", job.Name, job.ID)
-		fmt.Printf("    Schedule: %s\n", schedule)
-		fmt.Printf("    Status: %s\n", status)
-		fmt.Printf("    Next run: %s\n", nextRun)
+		fmt.Fprintf(out, "  %s (%s)\n", job.Name, job.ID)
+		fmt.Fprintf(out, "    Schedule: %s\n", schedule)
+		fmt.Fprintf(out, "    Status: %s\n", status)
+		fmt.Fprintf(out, "    Next run: %s\n", nextRun)
+		if job.State.LastError != "" {
+			fmt.Fprintf(out, "    Last error: %s\n", job.State.LastError)
+		}
 	}
+	return nil
 }
 
-func cronRemoveCmd(storePath, jobID string) {
-	cs := cron.NewCronService(storePath, nil)
-	if cs.RemoveJob(jobID) {
-		fmt.Printf("✓ Removed job %s\n", jobID)
-	} else {
-		fmt.Printf("✗ Job %s not found\n", jobID)
+func cronRemoveCmd(out io.Writer, open openStore, jobID string) error {
+	cs, err := open()
+	if err != nil {
+		return err
 	}
+	if _, err := cs.DeleteJob(jobID); err != nil {
+		if errors.Is(err, cron.ErrJobNotFound) {
+			return fmt.Errorf("job %s not found", jobID)
+		}
+		return fmt.Errorf("error removing job %s: %w", jobID, err)
+	}
+	fmt.Fprintf(out, "✓ Removed job %s\n", jobID)
+	return nil
 }
 
-func cronSetJobEnabled(storePath, jobID string, enabled bool) {
-	cs := cron.NewCronService(storePath, nil)
-	job := cs.EnableJob(jobID, enabled)
-	if job != nil {
-		fmt.Printf("✓ Job '%s' enabled\n", job.Name)
-	} else {
-		fmt.Printf("✗ Job %s not found\n", jobID)
+func cronSetJobEnabled(out io.Writer, open openStore, jobID string, enabled bool) error {
+	cs, err := open()
+	if err != nil {
+		return err
 	}
+	job, err := cs.SetJobEnabled(jobID, enabled)
+	if err != nil {
+		if errors.Is(err, cron.ErrJobNotFound) {
+			return fmt.Errorf("job %s not found", jobID)
+		}
+		return fmt.Errorf("error updating job %s: %w", jobID, err)
+	}
+	state := "enabled"
+	if !enabled {
+		state = "disabled"
+	}
+	fmt.Fprintf(out, "✓ Job '%s' %s\n", job.Name, state)
+	return nil
 }

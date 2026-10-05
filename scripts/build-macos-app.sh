@@ -4,6 +4,9 @@
 # Packages the output of `make product`: the shell the user launches (compa)
 # and the kernel it supervises (compa-kernel). The shell locates the kernel
 # beside its own executable, so both go into Contents/MacOS.
+#
+# `make build-macos-app` runs it with VERSION set to the version it stamped
+# into the programs; the bundle reports that version's numeric part.
 
 set -e
 
@@ -16,6 +19,15 @@ APP_CONTENTS="${APP_PATH}/Contents"
 APP_MACOS="${APP_CONTENTS}/MacOS"
 APP_RESOURCES="${APP_CONTENTS}/Resources"
 ICON_SOURCE="./scripts/icon.icns"
+# The same identifier as the launch-at-login LaunchAgent, and the macOS
+# version release.yml builds for.
+BUNDLE_ID="io.compa.launcher"
+MINIMUM_MACOS="12.0"
+
+# CFBundleShortVersionString takes up to three numbers, so 1.2.3-4-gabc is 1.2.3.
+VERSION="${VERSION:-$(git describe --tags --always 2>/dev/null || true)}"
+BUNDLE_VERSION=$(printf '%s' "$VERSION" | sed -n 's/^v\{0,1\}\([0-9]\{1,\}\.[0-9]\{1,\}\.[0-9]\{1,\}\)\([-+].*\)\{0,1\}$/\1/p')
+BUNDLE_VERSION="${BUNDLE_VERSION:-0.0.0}"
 
 # Clean up existing .app
 if [ -d "$APP_PATH" ]; then
@@ -41,8 +53,8 @@ done
 chmod +x "${APP_MACOS}/"*
 
 # Create Info.plist
-echo "Creating Info.plist..."
-cat > "${APP_CONTENTS}/Info.plist" << 'EOF'
+echo "Creating Info.plist (version ${BUNDLE_VERSION})..."
+cat > "${APP_CONTENTS}/Info.plist" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -50,7 +62,7 @@ cat > "${APP_CONTENTS}/Info.plist" << 'EOF'
     <key>CFBundleExecutable</key>
     <string>compa</string>
     <key>CFBundleIdentifier</key>
-    <string>com.compa.launcher</string>
+    <string>${BUNDLE_ID}</string>
     <key>CFBundleName</key>
     <string>Compa</string>
     <key>CFBundleDisplayName</key>
@@ -60,9 +72,9 @@ cat > "${APP_CONTENTS}/Info.plist" << 'EOF'
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0</string>
+    <string>${BUNDLE_VERSION}</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>${BUNDLE_VERSION}</string>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSSupportsAutomaticGraphicsSwitching</key>
@@ -70,19 +82,12 @@ cat > "${APP_CONTENTS}/Info.plist" << 'EOF'
     <key>LSUIElement</key>
     <true/>
     <key>LSMinimumSystemVersion</key>
-    <string>10.11</string>
+    <string>${MINIMUM_MACOS}</string>
 </dict>
 </plist>
 EOF
 
-#sips -z 128 128 "$ICON_SOURCE" --out "${ICONSET_PATH}/icon_128x128.png" > /dev/null 2>&1
-#
-## Create icns file
-#iconutil -c icns "$ICONSET_PATH" -o "$ICON_OUTPUT" 2>/dev/null || {
-#    echo "Warning: iconutil failed"
-#}
-
-cp $ICON_SOURCE "${APP_RESOURCES}/icon.icns"
+cp "$ICON_SOURCE" "${APP_RESOURCES}/icon.icns"
 
 echo ""
 echo "=========================================="

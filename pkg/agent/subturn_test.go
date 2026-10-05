@@ -82,29 +82,23 @@ func TestSpawnSubTurn(t *testing.T) {
 		{
 			name:        "Basic success path - Single layer sub-turn",
 			parentDepth: 0,
-			config: SubTurnConfig{
-				Tools: []tools.Tool{}, // At least one tool
-			},
-			wantErr:   nil,
-			wantSpawn: true,
-			wantEnd:   true,
+			config:      SubTurnConfig{},
+			wantErr:     nil,
+			wantSpawn:   true,
+			wantEnd:     true,
 		},
 		{
 			name:        "Nested 2 layers - Normal",
 			parentDepth: 1,
-			config: SubTurnConfig{
-				Tools: []tools.Tool{},
-			},
-			wantErr:   nil,
-			wantSpawn: true,
-			wantEnd:   true,
+			config:      SubTurnConfig{},
+			wantErr:     nil,
+			wantSpawn:   true,
+			wantEnd:     true,
 		},
 		{
-			name:        "Depth limit triggered - 4th layer fails",
-			parentDepth: 3,
-			config: SubTurnConfig{
-				Tools: []tools.Tool{},
-			},
+			name:          "Depth limit triggered - 4th layer fails",
+			parentDepth:   3,
+			config:        SubTurnConfig{},
 			wantErr:       ErrDepthLimitExceeded,
 			wantSpawn:     false,
 			wantEnd:       false,
@@ -196,7 +190,7 @@ func TestSpawnSubTurn_EphemeralSessionIsolation(t *testing.T) {
 		session:        parentSession,
 	}
 
-	cfg := SubTurnConfig{Tools: []tools.Tool{}}
+	cfg := SubTurnConfig{}
 
 	originalParentLen := len(parentSession.GetHistory(""))
 
@@ -236,7 +230,7 @@ func TestSpawnSubTurn_ResultDelivery(t *testing.T) {
 	}
 
 	// Set Async=true to test async result delivery via pendingResults channel
-	cfg := SubTurnConfig{Tools: []tools.Tool{}, Async: true}
+	cfg := SubTurnConfig{Async: true}
 
 	_, _ = spawnSubTurn(context.Background(), al, parent, cfg)
 
@@ -266,7 +260,7 @@ func TestSpawnSubTurn_ResultDeliverySync(t *testing.T) {
 	}
 
 	// Sync call (Async=false, the default) - result should be returned directly
-	cfg := SubTurnConfig{Tools: []tools.Tool{}, Async: false}
+	cfg := SubTurnConfig{Async: false}
 
 	result, err := spawnSubTurn(context.Background(), al, parent, cfg)
 	if err != nil {
@@ -324,79 +318,6 @@ func TestSpawnSubTurn_OrphanResultRouting(t *testing.T) {
 	}
 }
 
-// ====================== Extra Independent Test: Result Channel Registration ======================
-func TestSubTurnResultChannelRegistration(t *testing.T) {
-	al, _, _, provider, cleanup := newTestAgentLoop(t)
-	_ = provider
-	defer cleanup()
-
-	parent := &turnState{
-		ctx:            context.Background(),
-		turnID:         "parent-reg-1",
-		depth:          0,
-		pendingResults: make(chan *tools.ToolResult, 4),
-		session:        &ephemeralSessionStore{},
-	}
-
-	cfg := SubTurnConfig{Tools: []tools.Tool{}}
-
-	// Before spawn: channel should not be registered
-	if results := al.dequeuePendingSubTurnResults(parent.turnID); results != nil {
-		t.Error("expected no channel before spawnSubTurn")
-	}
-
-	_, _ = spawnSubTurn(context.Background(), al, parent, cfg)
-}
-
-// ====================== Extra Independent Test: Dequeue Pending SubTurn Results ======================
-func TestDequeuePendingSubTurnResults(t *testing.T) {
-	al, _, _, provider, cleanup := newTestAgentLoop(t)
-	_ = provider
-	defer cleanup()
-
-	sessionKey := "test-session-dequeue"
-
-	// Empty (no turnState registered) returns nil
-	if results := al.dequeuePendingSubTurnResults(sessionKey); len(results) != 0 {
-		t.Errorf("expected empty results, got %d", len(results))
-	}
-
-	// Register a turnState so dequeuePendingSubTurnResults can find it
-	ts := &turnState{
-		ctx:            context.Background(),
-		turnID:         sessionKey,
-		depth:          0,
-		session:        &ephemeralSessionStore{},
-		pendingResults: make(chan *tools.ToolResult, 4),
-	}
-	al.activeTurnStates.Store(sessionKey, ts)
-	defer al.activeTurnStates.Delete(sessionKey)
-
-	// Put 3 results in
-	ts.pendingResults <- &tools.ToolResult{ForLLM: "result-1"}
-	ts.pendingResults <- &tools.ToolResult{ForLLM: "result-2"}
-	ts.pendingResults <- &tools.ToolResult{ForLLM: "result-3"}
-
-	results := al.dequeuePendingSubTurnResults(sessionKey)
-	if len(results) != 3 {
-		t.Errorf("expected 3 results, got %d", len(results))
-	}
-	if results[0].ForLLM != "result-1" || results[2].ForLLM != "result-3" {
-		t.Error("results order or content mismatch")
-	}
-
-	// Channel should be drained now
-	if results := al.dequeuePendingSubTurnResults(sessionKey); len(results) != 0 {
-		t.Errorf("expected empty after drain, got %d", len(results))
-	}
-
-	// After removing from activeTurnStates, returns nil
-	al.activeTurnStates.Delete(sessionKey)
-	if results := al.dequeuePendingSubTurnResults(sessionKey); results != nil {
-		t.Error("expected nil for unregistered session")
-	}
-}
-
 // ====================== Extra Independent Test: Concurrency Semaphore ======================
 func TestSubTurnConcurrencySemaphore(t *testing.T) {
 	al, _, _, provider, cleanup := newTestAgentLoop(t)
@@ -412,7 +333,7 @@ func TestSubTurnConcurrencySemaphore(t *testing.T) {
 		concurrencySem: make(chan struct{}, 2), // Only allow 2 concurrent children
 	}
 
-	cfg := SubTurnConfig{Tools: []tools.Tool{}}
+	cfg := SubTurnConfig{}
 
 	// Spawn 2 children — should succeed immediately
 	done := make(chan bool, 3)
@@ -799,44 +720,6 @@ func TestFinishedChannelClosedState(t *testing.T) {
 	deliverSubTurnResult(nil, ts, "child-1", result) // Will emit orphan due to <-ts.Finished() case
 }
 
-// TestFinalPollCapturesLateResults verifies that the final poll before Finish()
-// captures results that arrive after the last iteration poll.
-func TestFinalPollCapturesLateResults(t *testing.T) {
-	al, _, _, provider, cleanup := newTestAgentLoop(t)
-	_ = provider
-	defer cleanup()
-
-	sessionKey := "test-session-final-poll"
-
-	// Register a turnState
-	ts := &turnState{
-		ctx:            context.Background(),
-		turnID:         sessionKey,
-		depth:          0,
-		session:        &ephemeralSessionStore{},
-		pendingResults: make(chan *tools.ToolResult, 4),
-	}
-	al.activeTurnStates.Store(sessionKey, ts)
-	defer al.activeTurnStates.Delete(sessionKey)
-
-	// Simulate results arriving after last iteration poll
-	ts.pendingResults <- &tools.ToolResult{ForLLM: "result 1"}
-	ts.pendingResults <- &tools.ToolResult{ForLLM: "result 2"}
-
-	// Dequeue should capture both results
-	results := al.dequeuePendingSubTurnResults(sessionKey)
-
-	if len(results) != 2 {
-		t.Errorf("expected 2 results, got %d", len(results))
-	}
-
-	// Verify channel is now empty
-	results = al.dequeuePendingSubTurnResults(sessionKey)
-	if len(results) != 0 {
-		t.Errorf("expected 0 results on second poll, got %d", len(results))
-	}
-}
-
 // TestSpawnSubTurn_PanicRecovery verifies that even if runTurn panics,
 // the result is still delivered for async calls and SubTurnEndEvent is emitted.
 func TestSpawnSubTurn_PanicRecovery(t *testing.T) {
@@ -866,7 +749,7 @@ func TestSpawnSubTurn_PanicRecovery(t *testing.T) {
 	defer collectCleanup()
 
 	// Test async call - result should still be delivered via channel
-	asyncCfg := SubTurnConfig{Tools: []tools.Tool{}, Async: true}
+	asyncCfg := SubTurnConfig{Async: true}
 	result, err := spawnSubTurn(context.Background(), al, parent, asyncCfg)
 
 	// Should return error from panic recovery

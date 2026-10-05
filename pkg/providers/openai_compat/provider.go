@@ -11,7 +11,9 @@ import (
 	"maps"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	core "github.com/xibodev/llmgw-core"
@@ -52,6 +54,14 @@ type Provider struct {
 	extraBody      map[string]any // Additional fields to inject into request body
 	// streamedChat makes Chat stream its request and assemble the answer.
 	streamedChat bool
+	// streamIdleTimeout bounds the wait for each read of a stream.
+	streamIdleTimeout time.Duration
+	// streamUsageRejected records an upstream that refused a request for
+	// naming stream_options, so later streams do not ask for their usage.
+	streamUsageRejected atomic.Bool
+	// systemParts sends a system message that has SystemParts as content
+	// parts carrying their cache_control.
+	systemParts bool
 }
 
 type Option func(*Provider)
@@ -89,13 +99,34 @@ func WithStreamedChat() Option {
 	}
 }
 
+// WithStreamIdleTimeout sets how long a stream may send nothing before the
+// request fails; zero or less keeps the default, five minutes.
+func WithStreamIdleTimeout(timeout time.Duration) Option {
+	return func(p *Provider) {
+		if timeout > 0 {
+			p.streamIdleTimeout = timeout
+		}
+	}
+}
+
+// WithSystemParts sends a system message's SystemParts, when it has them, as
+// content parts that carry their cache_control, so an upstream that caches
+// prompt prefixes by them, such as Anthropic's through translation, gets the
+// cache breakpoints. Other upstreams get the system prompt as one string.
+func WithSystemParts() Option {
+	return func(p *Provider) {
+		p.systemParts = true
+	}
+}
+
 // NewProvider returns the chat client of an instance at endpoint, sending
 // its requests with client, whose transport reaches the instance's core
 // provider.
 func NewProvider(endpoint string, client *http.Client, opts ...Option) *Provider {
 	p := &Provider{
-		endpoint:   strings.TrimRight(strings.TrimSpace(endpoint), "/"),
-		httpClient: client,
+		endpoint:          strings.TrimRight(strings.TrimSpace(endpoint), "/"),
+		httpClient:        client,
+		streamIdleTimeout: defaultStreamingReadIdleTimeout,
 	}
 	for _, opt := range opts {
 		if opt != nil {
@@ -108,15 +139,28 @@ func NewProvider(endpoint string, client *http.Client, opts ...Option) *Provider
 // GetDefaultModel returns "": every call names its model.
 func (p *Provider) GetDefaultModel() string { return "" }
 
+// Close closes the idle connections of the provider's HTTP client, so a
+// provider that is no longer used keeps no connection pool open. The
+// provider stays usable: a later request opens a new connection.
+func (p *Provider) Close() {
+	if p.httpClient != nil {
+		p.httpClient.CloseIdleConnections()
+	}
+}
+
 // buildRequestBody constructs the common request body for Chat and ChatStream.
 func (p *Provider) buildRequestBody(
 	messages []Message, tools []ToolDefinition, model string, options map[string]any,
 ) map[string]any {
 	preparedMessages := p.prepareMessagesForRequest(messages)
 	preparedTools := tools
+	serialized := common.SerializeMessages(preparedMessages)
+	if p.systemParts {
+		serialized = common.SerializeMessagesWithSystemParts(preparedMessages)
+	}
 	requestBody := map[string]any{
 		"model":    model,
-		"messages": common.SerializeMessages(preparedMessages),
+		"messages": serialized,
 	}
 
 	// When fallback uses a different provider (e.g. DeepSeek), that provider must not inject web_search_preview.
@@ -144,12 +188,9 @@ func (p *Provider) buildRequestBody(
 	if maxTokens, ok := common.AsInt(options["max_tokens"]); ok {
 		fieldName := p.maxTokensField
 		if fieldName == "" {
-			lowerModel := strings.ToLower(model)
-			if strings.Contains(lowerModel, "glm") || strings.Contains(lowerModel, "o1") ||
-				strings.Contains(lowerModel, "gpt-5") {
+			fieldName = "max_tokens"
+			if takesMaxCompletionTokens(model) {
 				fieldName = "max_completion_tokens"
-			} else {
-				fieldName = "max_tokens"
 			}
 		}
 		requestBody[fieldName] = maxTokens
@@ -181,6 +222,20 @@ func (p *Provider) buildRequestBody(
 	maps.Copy(requestBody, p.extraBody)
 
 	return requestBody
+}
+
+// openAIReasoningModel matches OpenAI's o-series reasoning models: o1, o3,
+// o4-mini and the like.
+var openAIReasoningModel = regexp.MustCompile(`^o\d`)
+
+// takesMaxCompletionTokens reports a model that takes max_completion_tokens
+// rather than max_tokens, when nothing configured says which: OpenAI's
+// reasoning models, which reject max_tokens - the o-series and GPT-5 - and
+// GLM's. A vendor prefix such as "openai/" is ignored.
+func takesMaxCompletionTokens(model string) bool {
+	lower := strings.ToLower(strings.TrimSpace(model))
+	base := lower[strings.LastIndex(lower, "/")+1:]
+	return openAIReasoningModel.MatchString(base) || strings.Contains(lower, "gpt-5") || strings.Contains(lower, "glm")
 }
 
 func (p *Provider) applyThinkingControl(requestBody map[string]any, model string, options map[string]any) {
@@ -504,15 +559,46 @@ func (p *Provider) ChatStreamEvents(
 ) (*LLMResponse, error) {
 	requestBody := p.buildRequestBody(messages, tools, model, options)
 	requestBody["stream"] = true
+	askedUsage := false
+	if _, set := requestBody["stream_options"]; !set && !p.streamUsageRejected.Load() {
+		// Without it a stream reports no usage; extra_body may say otherwise.
+		requestBody["stream_options"] = map[string]any{"include_usage": true}
+		askedUsage = true
+	}
 	resp, err := p.post(ctx, requestBody, true)
+	if err != nil && askedUsage && ctx.Err() == nil && rejectsStreamOptions(err) {
+		// An upstream that does not know the field refuses the request: ask
+		// again without it, and from now on never ask.
+		p.streamUsageRejected.Store(true)
+		delete(requestBody, "stream_options")
+		resp, err = p.post(ctx, requestBody, true)
+	}
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 
-	return parseStreamResponse(ctx, withStreamingReadIdleTimeout(resp.Body, defaultStreamingReadIdleTimeout), onChunk)
+	return parseStreamResponse(ctx, withStreamingReadIdleTimeout(resp.Body, p.streamIdleTimeout), onChunk)
 }
 
+// rejectsStreamOptions reports the refusal of a request for naming
+// stream_options: a 400 or 422 whose error mentions it.
+func rejectsStreamOptions(err error) bool {
+	status := core.ClassifyError(err).StatusCode
+	if status != http.StatusBadRequest && status != http.StatusUnprocessableEntity {
+		return false
+	}
+	for e := err; e != nil; e = errors.Unwrap(e) {
+		if text := strings.ToLower(e.Error()); strings.Contains(text, "stream_options") || strings.Contains(text, "include_usage") {
+			return true
+		}
+	}
+	return false
+}
+
+// withStreamingReadIdleTimeout fails a read of body that gets nothing for
+// timeout: the watchdog closes body, which interrupts the read, and the read
+// reports the timeout.
 func withStreamingReadIdleTimeout(body io.ReadCloser, timeout time.Duration) io.ReadCloser {
 	if body == nil || timeout <= 0 {
 		return body
@@ -537,19 +623,34 @@ func (b *streamingReadIdleTimeoutBody) Read(p []byte) (int, error) {
 	n, err := b.body.Read(p)
 	if !timer.Stop() {
 		<-timedOut
-		return n, &core.ProviderError{
-			Message: fmt.Sprintf("stream idle timeout after %s", b.timeout),
-			Class:   core.ProviderErrorTransport,
-			Classification: core.ProviderErrorClassification{
-				Retryable: true, FailoverEligible: true, CircuitFailure: true,
-			},
-		}
+		return n, idleTimeoutError(b.timeout)
 	}
 	return n, err
 }
 
 func (b *streamingReadIdleTimeoutBody) Close() error {
 	return b.body.Close()
+}
+
+// idleTimeout is the cause of a stream that went quiet: a timeout, as a
+// net.Error reports one.
+type idleTimeout struct{ after time.Duration }
+
+func (e *idleTimeout) Error() string   { return fmt.Sprintf("stream idle timeout after %s", e.after) }
+func (e *idleTimeout) Timeout() bool   { return true }
+func (e *idleTimeout) Temporary() bool { return true }
+
+// idleTimeoutError is the failure of a stream that sent nothing for after.
+func idleTimeoutError(after time.Duration) error {
+	cause := &idleTimeout{after: after}
+	return &core.ProviderError{
+		Message: cause.Error(),
+		Class:   core.ProviderErrorTransport,
+		Classification: core.ProviderErrorClassification{
+			Retryable: true, FailoverEligible: true, CircuitFailure: true,
+		},
+		Cause: cause,
+	}
 }
 
 // streamToolCall is one tool-call delta of a stream chunk.
@@ -587,6 +688,8 @@ type streamChoice struct {
 	Delta        streamMessage  `json:"delta"`
 	Message      *streamMessage `json:"message"`
 	FinishReason *string        `json:"finish_reason"`
+	// Error is an error some upstreams report on the choice it ended.
+	Error json.RawMessage `json:"error"`
 }
 
 // streamToolCalls assembles the tool calls of a stream from their deltas.
@@ -699,8 +802,11 @@ func (c *streamToolCallAccum) addArguments(raw json.RawMessage) {
 	c.arguments.WriteString(fragment)
 }
 
-// toolCalls returns the assembled calls in the order they began.
-func (a *streamToolCalls) toolCalls() []ToolCall {
+// toolCalls returns the assembled calls in the order they began. A call
+// whose arguments are not a JSON object fails the answer rather than run
+// with arguments it did not mean: an upstream cut off in the middle of a
+// call, or one that sent broken arguments.
+func (a *streamToolCalls) toolCalls() ([]ToolCall, error) {
 	var calls []ToolCall
 	for _, call := range a.calls {
 		if call.id == "" && call.name == "" && call.arguments.Len() == 0 {
@@ -713,7 +819,7 @@ func (a *streamToolCalls) toolCalls() []ToolCall {
 					"tool":  call.name,
 					"error": err.Error(),
 				})
-				args = map[string]any{"raw": raw}
+				return nil, common.InvalidToolArgumentsError(call.name)
 			}
 		}
 		toolCall := ToolCall{
@@ -727,7 +833,19 @@ func (a *streamToolCalls) toolCalls() []ToolCall {
 		}
 		calls = append(calls, toolCall)
 	}
-	return calls
+	return calls, nil
+}
+
+// truncatedToolCallsError is the failure of a stream that ended without a
+// finish reason or [DONE] while it was calling tools: the calls may be
+// incomplete, so none runs. Another target may serve the request, and it
+// counts against the upstream, as a stream cut short does.
+func truncatedToolCallsError() error {
+	return &core.ProviderError{
+		Message:        "the stream ended before the answer was complete; its tool calls were not run",
+		Class:          core.ProviderErrorUpstream,
+		Classification: core.ProviderErrorClassification{FailoverEligible: true, CircuitFailure: true},
+	}
 }
 
 // parseStreamResponse parses an OpenAI-compatible SSE stream.
@@ -738,6 +856,10 @@ func (a *streamToolCalls) toolCalls() []ToolCall {
 // message's text and tool calls across choices. The answer's tool calls are
 // what the stream sent, whatever its finish reason says (see
 // common.NormalizeFinishReason).
+//
+// A chunk that carries an error, or a choice that finishes with "error",
+// fails the answer. A stream that ends without a finish reason or [DONE] was
+// cut short: its answer is "truncated", and fails when it calls tools.
 func parseStreamResponse(
 	ctx context.Context,
 	reader io.Reader,
@@ -751,6 +873,9 @@ func parseStreamResponse(
 	var usage *UsageInfo
 	var finalMessage *streamMessage
 	var finalMessageChoice int
+	// ended reports a terminal event, a finish reason or [DONE], and done
+	// [DONE] itself.
+	var ended, done bool
 
 	tools := &streamToolCalls{
 		byKey: map[[2]int]*streamToolCallAccum{},
@@ -762,6 +887,7 @@ func parseStreamResponse(
 			return nil
 		}
 		if strings.TrimSpace(data) == "[DONE]" {
+			ended, done = true, true
 			return io.EOF
 		}
 
@@ -779,14 +905,17 @@ func parseStreamResponse(
 			usage = chunk.Usage
 		}
 
-		if len(chunk.Choices) == 0 {
-			if message := common.AnswerErrorMessage(chunk.Error); message != "" {
-				return common.AnswerError(message)
-			}
-			return nil
+		if message := common.AnswerErrorMessage(chunk.Error); message != "" {
+			return common.AnswerError(message)
 		}
 
 		for _, choice := range chunk.Choices {
+			if message := common.AnswerErrorMessage(choice.Error); message != "" {
+				return common.AnswerError(message)
+			}
+			if choice.FinishReason != nil && strings.EqualFold(strings.TrimSpace(*choice.FinishReason), "error") {
+				return common.AnswerError("the stream finished with an error")
+			}
 			delta := choice.Delta
 			if delta.ReasoningContent != "" {
 				reasoningContent.WriteString(delta.ReasoningContent)
@@ -819,6 +948,7 @@ func parseStreamResponse(
 			}
 			if choice.FinishReason != nil && strings.TrimSpace(*choice.FinishReason) != "" {
 				finishReason = *choice.FinishReason
+				ended = true
 			}
 		}
 
@@ -864,7 +994,7 @@ func parseStreamResponse(
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("streaming read error: %w", err)
 	}
-	if eventData.Len() > 0 {
+	if eventData.Len() > 0 && !done {
 		err := processEvent(eventData.String())
 		if err != nil && err != io.EOF {
 			return nil, err
@@ -873,7 +1003,13 @@ func parseStreamResponse(
 
 	// A complete message in the last chunk only fills in what the deltas
 	// did not send.
-	toolCalls := tools.toolCalls()
+	toolCalls, err := tools.toolCalls()
+	if err != nil {
+		if !ended {
+			return nil, truncatedToolCallsError()
+		}
+		return nil, err
+	}
 	if finalMessage != nil {
 		if textContent.Len() == 0 {
 			textContent.WriteString(common.ContentText(finalMessage.Content))
@@ -891,8 +1027,16 @@ func parseStreamResponse(
 			for _, call := range finalMessage.ToolCalls {
 				tools.add(finalMessageChoice, call)
 			}
-			toolCalls = tools.toolCalls()
+			if toolCalls, err = tools.toolCalls(); err != nil {
+				return nil, err
+			}
 		}
+	}
+	if !ended {
+		if len(toolCalls) > 0 {
+			return nil, truncatedToolCallsError()
+		}
+		finishReason = "truncated"
 	}
 
 	return &LLMResponse{

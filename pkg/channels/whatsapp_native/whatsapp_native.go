@@ -31,7 +31,6 @@ import (
 	"github.com/xibodev/compa/pkg/bus"
 	"github.com/xibodev/compa/pkg/channels"
 	"github.com/xibodev/compa/pkg/config"
-	"github.com/xibodev/compa/pkg/identity"
 	"github.com/xibodev/compa/pkg/logger"
 	"github.com/xibodev/compa/pkg/utils"
 )
@@ -43,12 +42,17 @@ const (
 	reconnectInitial    = 5 * time.Second
 	reconnectMax        = 5 * time.Minute
 	reconnectMultiplier = 2.0
+
+	// sentMessagesRemembered is how many of Compa's latest sent message IDs
+	// are kept to recognize their echo.
+	sentMessagesRemembered = 512
 )
 
 // WhatsAppNativeChannel implements the WhatsApp channel using whatsmeow (in-process, no external bridge).
 type WhatsAppNativeChannel struct {
 	*channels.BaseChannel
 	config       *config.WhatsAppSettings
+	sent         *sentMessages
 	storePath    string
 	client       *whatsmeow.Client
 	container    *sqlstore.Container
@@ -70,13 +74,18 @@ func NewWhatsAppNativeChannel(
 	bus *bus.MessageBus,
 	storePath string,
 ) (channels.Channel, error) {
-	base := channels.NewBaseChannel(name, cfg, bus, bc.AllowFrom, channels.WithMaxMessageLength(65536))
+	base := channels.NewBaseChannel(name, cfg, bus, bc.AllowFrom,
+		channels.WithMaxMessageLength(65536),
+		channels.WithGroupTrigger(bc.GroupTrigger),
+		channels.WithReasoningChannelID(bc.ReasoningChannelID),
+	)
 	if storePath == "" {
 		storePath = "whatsapp"
 	}
 	c := &WhatsAppNativeChannel{
 		BaseChannel: base,
 		config:      cfg,
+		sent:        newSentMessages(sentMessagesRemembered),
 		storePath:   storePath,
 	}
 	return c, nil
@@ -269,6 +278,7 @@ func (c *WhatsAppNativeChannel) Stop(ctx context.Context) error {
 }
 
 func (c *WhatsAppNativeChannel) eventHandler(evt any) {
+	defer channels.RecoverPanic(c.Name(), "event")
 	switch v := evt.(type) {
 	case *events.Message:
 		c.handleIncoming(v)
@@ -291,6 +301,7 @@ func (c *WhatsAppNativeChannel) eventHandler(evt any) {
 		c.reconnectMu.Unlock()
 		go func() {
 			defer c.wg.Done()
+			defer channels.RecoverPanic(c.Name(), "reconnect")
 			c.reconnectWithBackoff()
 		}()
 	}
@@ -343,29 +354,75 @@ func (c *WhatsAppNativeChannel) reconnectWithBackoff() {
 }
 
 func (c *WhatsAppNativeChannel) handleIncoming(evt *events.Message) {
-	if evt.Message == nil {
+	ownPhone, ownLID := c.ownUsers()
+	c.handleMessage(evt, ownPhone, ownLID)
+}
+
+// ownUsers returns the user parts of the linked account's phone-number
+// address and LID; both are empty before the account is paired.
+func (c *WhatsAppNativeChannel) ownUsers() (phone, lid string) {
+	c.mu.Lock()
+	client := c.client
+	c.mu.Unlock()
+	if client == nil || client.Store == nil {
+		return "", ""
+	}
+	return client.Store.GetJID().User, client.Store.GetLID().User
+}
+
+func (c *WhatsAppNativeChannel) chatsMode() string {
+	if c.config == nil {
+		return config.WhatsAppChatsSelf
+	}
+	return c.config.EffectiveChats()
+}
+
+// handleMessage decides whether a message on the linked account is input
+// (see classifyChat) and publishes it. ownPhone and ownLID identify the
+// account's own "message yourself" chat.
+func (c *WhatsAppNativeChannel) handleMessage(evt *events.Message, ownPhone, ownLID string) {
+	if evt == nil || evt.Message == nil {
 		return
 	}
-	senderID := evt.Info.Sender.String()
-	chatID := evt.Info.Chat.String()
+	info := evt.Info
+	chat := info.Chat
+	// Status updates, broadcast lists and channels are not conversations.
+	if chat.Server == types.BroadcastServer || chat.Server == types.NewsletterServer {
+		return
+	}
+	// Compa's own replies come back as the owner's messages.
+	if c.sent != nil && c.sent.contains(info.ID) {
+		return
+	}
+
+	mode := c.chatsMode()
+	selfChat := isOwnAddress(chat.User, chat.Server, ownPhone, ownLID)
+	role := classifyChat(mode, selfChat, info.IsFromMe)
+	if role == chatIgnored {
+		return
+	}
+
 	content := evt.Message.GetConversation()
-	if content == "" && evt.Message.ExtendedTextMessage != nil {
-		content = evt.Message.ExtendedTextMessage.GetText()
+	if content == "" {
+		content = evt.Message.GetExtendedTextMessage().GetText()
 	}
 	content = utils.SanitizeMessageContent(content)
-
 	if content == "" {
 		return
 	}
 
-	var mediaPaths []string
+	senderID := info.Sender.ToNonAD().String()
+	chatID := chat.String()
+	isGroup := chat.Server == types.GroupServer
+	sender := whatsAppIdentity(senderID, info.PushName)
 
-	metadata := make(map[string]string)
-	metadata["message_id"] = evt.Info.ID
-	if evt.Info.PushName != "" {
-		metadata["user_name"] = evt.Info.PushName
+	metadata := map[string]string{"message_id": info.ID}
+	if info.PushName != "" {
+		metadata["user_name"] = info.PushName
 	}
-	if evt.Info.Chat.Server == types.GroupServer {
+	peerKind := "direct"
+	if isGroup {
+		peerKind = "group"
 		metadata["peer_kind"] = "group"
 		metadata["peer_id"] = chatID
 	} else {
@@ -373,20 +430,39 @@ func (c *WhatsAppNativeChannel) handleIncoming(evt *events.Message) {
 		metadata["peer_id"] = senderID
 	}
 
-	peerKind := "direct"
-	if evt.Info.Chat.Server == types.GroupServer {
-		peerKind = "group"
-	}
-	messageID := evt.Info.ID
-	sender := bus.SenderInfo{
-		Platform:    "whatsapp",
-		PlatformID:  senderID,
-		CanonicalID: identity.BuildCanonicalID("whatsapp", senderID),
-		DisplayName: evt.Info.PushName,
+	inboundCtx := bus.InboundContext{
+		Channel:   c.Name(),
+		ChatID:    chatID,
+		ChatType:  peerKind,
+		SenderID:  senderID,
+		MessageID: info.ID,
+		Raw:       metadata,
 	}
 
-	if !c.IsAllowedSender(sender) {
-		return
+	if role == chatSelf {
+		// The owner instructing Compa in their own chat: owner, whatever
+		// allow_from says.
+		inboundCtx.SenderIsOwner = true
+	} else {
+		// "allowed" takes only the chats the policies admit and makes no
+		// pairing requests: these are the owner's own conversations, not
+		// requests to Compa. In "all", the central policy decides, and may
+		// record a pairing request.
+		if mode == config.WhatsAppChatsAllowed && !c.Admits(peerKind, sender, chatID) {
+			return
+		}
+		if isGroup {
+			mentioned := c.isAddressed(evt.Message, ownPhone, ownLID)
+			if mentioned {
+				content = stripOwnMention(content, ownPhone, ownLID)
+			}
+			respond, cleaned := c.ShouldRespondInGroup(mentioned, content)
+			if !respond {
+				return
+			}
+			content = cleaned
+			inboundCtx.Mentioned = mentioned
+		}
 	}
 
 	logger.DebugCF(
@@ -395,16 +471,34 @@ func (c *WhatsAppNativeChannel) handleIncoming(evt *events.Message) {
 		map[string]any{"sender_id": senderID, "content_preview": utils.Truncate(content, 50)},
 	)
 
-	inboundCtx := bus.InboundContext{
-		Channel:   "whatsapp",
-		ChatID:    chatID,
-		SenderID:  senderID,
-		MessageID: messageID,
-		ChatType:  peerKind,
-		Raw:       metadata,
-	}
+	c.HandleInboundContext(c.runCtx, chatID, content, nil, inboundCtx, sender)
+}
 
-	c.HandleInboundContext(c.runCtx, chatID, content, mediaPaths, inboundCtx, sender)
+// isAddressed reports whether a group message is meant for Compa: it
+// mentions the linked account, or it replies to a message Compa sent.
+func (c *WhatsAppNativeChannel) isAddressed(msg *waE2E.Message, ownPhone, ownLID string) bool {
+	ctxInfo := msg.GetExtendedTextMessage().GetContextInfo()
+	if ctxInfo == nil {
+		return false
+	}
+	for _, mentioned := range ctxInfo.GetMentionedJID() {
+		jid, err := types.ParseJID(mentioned)
+		if err == nil && isOwnAddress(jid.User, jid.Server, ownPhone, ownLID) {
+			return true
+		}
+	}
+	return c.sent != nil && c.sent.contains(ctxInfo.GetStanzaID())
+}
+
+// stripOwnMention removes "@<own number>" mentions, which WhatsApp writes into
+// the text of a message that mentions the account.
+func stripOwnMention(content, ownPhone, ownLID string) string {
+	for _, user := range []string{ownPhone, ownLID} {
+		if user != "" {
+			content = strings.ReplaceAll(content, "@"+user, "")
+		}
+	}
+	return strings.TrimSpace(content)
 }
 
 func (c *WhatsAppNativeChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]string, error) {
@@ -440,7 +534,11 @@ func (c *WhatsAppNativeChannel) Send(ctx context.Context, msg bus.OutboundMessag
 		Conversation: proto.String(msg.Content),
 	}
 
-	if _, err = client.SendMessage(ctx, to, waMsg); err != nil {
+	// Remember the ID before sending: the echo of this message on the linked
+	// account may arrive before SendMessage returns.
+	id := client.GenerateMessageID()
+	c.sent.add(id)
+	if _, err = client.SendMessage(ctx, to, waMsg, whatsmeow.SendRequestExtra{ID: id}); err != nil {
 		return nil, fmt.Errorf("whatsapp send: %w", channels.ErrTemporary)
 	}
 	return nil, nil

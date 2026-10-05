@@ -119,25 +119,25 @@ func TestHandleListSessions_JSONLStorage(t *testing.T) {
 	}
 
 	sessionKey := seedWebChatTestSession(t, dir, "history-jsonl")
-	if err := store.AddFullMessage(nil, sessionKey, providers.Message{
+	if err := store.AddFullMessage(context.Background(), sessionKey, providers.Message{
 		Role:    "user",
 		Content: "Explain why the history API is empty after migration.",
 	}); err != nil {
 		t.Fatalf("AddFullMessage(user) error = %v", err)
 	}
-	if err := store.AddFullMessage(nil, sessionKey, providers.Message{
+	if err := store.AddFullMessage(context.Background(), sessionKey, providers.Message{
 		Role:    "assistant",
 		Content: "Because the API did not read the JSONL session store.",
 	}); err != nil {
 		t.Fatalf("AddFullMessage(assistant) error = %v", err)
 	}
-	if err := store.AddFullMessage(nil, sessionKey, providers.Message{
+	if err := store.AddFullMessage(context.Background(), sessionKey, providers.Message{
 		Role:    "tool",
 		Content: "ignored",
 	}); err != nil {
 		t.Fatalf("AddFullMessage(tool) error = %v", err)
 	}
-	if err := store.SetSummary(nil, sessionKey, "JSONL-backed session"); err != nil {
+	if err := store.SetSummary(context.Background(), sessionKey, "JSONL-backed session"); err != nil {
 		t.Fatalf("SetSummary() error = %v", err)
 	}
 
@@ -246,14 +246,14 @@ func TestHandleListSessions_TitleUsesFirstUserMessage(t *testing.T) {
 	}
 
 	sessionKey := seedWebChatTestSession(t, dir, "summary-title")
-	if err := store.AddFullMessage(nil, sessionKey, providers.Message{
+	if err := store.AddFullMessage(context.Background(), sessionKey, providers.Message{
 		Role:    "user",
 		Content: "fallback preview",
 	}); err != nil {
 		t.Fatalf("AddFullMessage() error = %v", err)
 	}
 	if err := store.SetSummary(
-		nil,
+		context.Background(),
 		sessionKey,
 		"  This summary is intentionally longer than sixty characters so it must be truncated in the history menu.  ",
 	); err != nil {
@@ -303,11 +303,11 @@ func TestHandleGetSession_JSONLStorage(t *testing.T) {
 		{Role: "assistant", Content: "second"},
 		{Role: "tool", Content: "ignored"},
 	} {
-		if err := store.AddFullMessage(nil, sessionKey, msg); err != nil {
+		if err := store.AddFullMessage(context.Background(), sessionKey, msg); err != nil {
 			t.Fatalf("AddFullMessage() error = %v", err)
 		}
 	}
-	if err := store.SetSummary(nil, sessionKey, "detail summary"); err != nil {
+	if err := store.SetSummary(context.Background(), sessionKey, "detail summary"); err != nil {
 		t.Fatalf("SetSummary() error = %v", err)
 	}
 
@@ -374,7 +374,7 @@ func TestHandleGetSession_HidesHandledToolAttachmentsBackedByMediaRefs(t *testin
 			}},
 		},
 	} {
-		if err := store.AddFullMessage(nil, sessionKey, msg); err != nil {
+		if err := store.AddFullMessage(context.Background(), sessionKey, msg); err != nil {
 			t.Fatalf("AddFullMessage() error = %v", err)
 		}
 	}
@@ -429,7 +429,7 @@ func TestHandleGetSession_ExposesHandledToolAttachmentsWithDurableURL(t *testing
 			}},
 		},
 	} {
-		if err := store.AddFullMessage(nil, sessionKey, msg); err != nil {
+		if err := store.AddFullMessage(context.Background(), sessionKey, msg); err != nil {
 			t.Fatalf("AddFullMessage() error = %v", err)
 		}
 	}
@@ -489,13 +489,13 @@ func TestHandleSessions_JSONLScopeDiscovery(t *testing.T) {
 	}
 
 	sessionKey := "sk_v1_scope_discovery"
-	if err := store.AddFullMessage(nil, sessionKey, providers.Message{
+	if err := store.AddFullMessage(context.Background(), sessionKey, providers.Message{
 		Role:    "user",
 		Content: "scope discovered session",
 	}); err != nil {
 		t.Fatalf("AddFullMessage() error = %v", err)
 	}
-	if err := store.SetSummary(nil, sessionKey, "scope summary"); err != nil {
+	if err := store.SetSummary(context.Background(), sessionKey, "scope summary"); err != nil {
 		t.Fatalf("SetSummary() error = %v", err)
 	}
 
@@ -512,7 +512,7 @@ func TestHandleSessions_JSONLScopeDiscovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Marshal(scope) error = %v", err)
 	}
-	if err := store.UpsertSessionMeta(nil, sessionKey, scopeData); err != nil {
+	if err := store.UpsertSessionMeta(context.Background(), sessionKey, scopeData); err != nil {
 		t.Fatalf("UpsertSessionMeta() error = %v", err)
 	}
 
@@ -568,7 +568,7 @@ func TestHandleGetSession_SkipsTransientThoughtMessages(t *testing.T) {
 		{Role: "assistant", ReasoningContent: "internal chain of thought"},
 		{Role: "assistant", Content: "final visible answer"},
 	} {
-		if err := store.AddFullMessage(nil, sessionKey, msg); err != nil {
+		if err := store.AddFullMessage(context.Background(), sessionKey, msg); err != nil {
 			t.Fatalf("AddFullMessage() error = %v", err)
 		}
 	}
@@ -616,7 +616,7 @@ func TestHandleGetSession_ReconstructsThoughtFromAssistantReasoningContent(t *te
 		{Role: "user", Content: "hello"},
 		{Role: "assistant", Content: "final visible answer", ModelName: "gpt-5.4", ReasoningContent: "internal chain of thought"},
 	} {
-		if err := store.AddFullMessage(nil, sessionKey, msg); err != nil {
+		if err := store.AddFullMessage(context.Background(), sessionKey, msg); err != nil {
 			t.Fatalf("AddFullMessage() error = %v", err)
 		}
 	}
@@ -715,7 +715,7 @@ func TestHandleGetSession_ReconstructsRefreshMatrixForThoughtAndToolSummary(t *t
 		},
 		{Role: "tool", ToolCallID: "call_exec", Content: "pwd result"},
 	} {
-		if err := store.AddFullMessage(nil, sessionKey, msg); err != nil {
+		if err := store.AddFullMessage(context.Background(), sessionKey, msg); err != nil {
 			t.Fatalf("AddFullMessage() error = %v", err)
 		}
 	}
@@ -796,7 +796,7 @@ func TestHandleGetSession_ReconstructsVisibleMessageToolOutputWithoutDuplicateSu
 		{Role: "tool", Content: "Message sent to web:web:detail-message-tool", ToolCallID: "call_1"},
 		{Role: "assistant", Content: handledToolResponseSummaryText},
 	} {
-		if err := store.AddFullMessage(nil, sessionKey, msg); err != nil {
+		if err := store.AddFullMessage(context.Background(), sessionKey, msg); err != nil {
 			t.Fatalf("AddFullMessage() error = %v", err)
 		}
 	}
@@ -865,7 +865,7 @@ func TestHandleGetSession_PreservesFinalAssistantReplyAfterMessageToolOutput(t *
 		{Role: "tool", Content: "Message sent to web:web:detail-message-tool-final-reply", ToolCallID: "call_1"},
 		{Role: "assistant", Content: "final assistant reply"},
 	} {
-		if err := store.AddFullMessage(nil, sessionKey, msg); err != nil {
+		if err := store.AddFullMessage(context.Background(), sessionKey, msg); err != nil {
 			t.Fatalf("AddFullMessage() error = %v", err)
 		}
 	}
@@ -931,7 +931,7 @@ func TestHandleListSessions_MessageCountUsesVisibleTranscript(t *testing.T) {
 		{Role: "tool", Content: "Message sent to web:web:list-visible-count", ToolCallID: "call_1"},
 		{Role: "assistant", Content: handledToolResponseSummaryText},
 	} {
-		if err := store.AddFullMessage(nil, sessionKey, msg); err != nil {
+		if err := store.AddFullMessage(context.Background(), sessionKey, msg); err != nil {
 			t.Fatalf("AddFullMessage() error = %v", err)
 		}
 	}
@@ -991,7 +991,7 @@ func TestHandleListSessions_DeduplicatesAssistantToolCallContentFromVisibleTrans
 		},
 		{Role: "tool", Content: "raw read_file result", ToolCallID: "call_1"},
 	} {
-		if err := store.AddFullMessage(nil, sessionKey, msg); err != nil {
+		if err := store.AddFullMessage(context.Background(), sessionKey, msg); err != nil {
 			t.Fatalf("AddFullMessage() error = %v", err)
 		}
 	}
@@ -1051,7 +1051,7 @@ func TestHandleGetSession_DoesNotDuplicateAssistantToolCallContent(t *testing.T)
 		},
 		{Role: "tool", Content: "raw read_file result", ToolCallID: "call_1"},
 	} {
-		if err := store.AddFullMessage(nil, sessionKey, msg); err != nil {
+		if err := store.AddFullMessage(context.Background(), sessionKey, msg); err != nil {
 			t.Fatalf("AddFullMessage() error = %v", err)
 		}
 	}
@@ -1117,7 +1117,7 @@ func TestHandleGetSession_PreservesDistinctAssistantToolCallContent(t *testing.T
 			},
 		},
 	} {
-		if err := store.AddFullMessage(nil, sessionKey, msg); err != nil {
+		if err := store.AddFullMessage(context.Background(), sessionKey, msg); err != nil {
 			t.Fatalf("AddFullMessage() error = %v", err)
 		}
 	}
@@ -1181,7 +1181,7 @@ func TestHandleGetSession_PreservesMediaWhenAssistantToolCallContentDuplicatesSu
 			},
 		},
 	} {
-		if err := store.AddFullMessage(nil, sessionKey, msg); err != nil {
+		if err := store.AddFullMessage(context.Background(), sessionKey, msg); err != nil {
 			t.Fatalf("AddFullMessage() error = %v", err)
 		}
 	}
@@ -1255,7 +1255,7 @@ func TestHandleGetSession_PreservesAttachmentsWhenAssistantToolCallContentDuplic
 			},
 		},
 	} {
-		if err := store.AddFullMessage(nil, sessionKey, msg); err != nil {
+		if err := store.AddFullMessage(context.Background(), sessionKey, msg); err != nil {
 			t.Fatalf("AddFullMessage() error = %v", err)
 		}
 	}
@@ -1322,11 +1322,11 @@ func TestHandleGetSession_UsesConfiguredToolFeedbackMaxArgsLength(t *testing.T) 
 	argsJSON := `{"path":"README.md","start_line":1,"end_line":10,"extra":"abcdefghijklmnopqrstuvwxyz"}`
 	explanation := "Read README.md first to confirm the current project structure before editing the config example."
 	sessionKey := seedWebChatTestSession(t, dir, "detail-tool-summary-max-args")
-	err = store.AddFullMessage(nil, sessionKey, providers.Message{Role: "user", Content: "check file"})
+	err = store.AddFullMessage(context.Background(), sessionKey, providers.Message{Role: "user", Content: "check file"})
 	if err != nil {
 		t.Fatalf("AddFullMessage(user) error = %v", err)
 	}
-	err = store.AddFullMessage(nil, sessionKey, providers.Message{
+	err = store.AddFullMessage(context.Background(), sessionKey, providers.Message{
 		Role: "assistant",
 		ToolCalls: []providers.ToolCall{{
 			ID:   "call_1",
@@ -1401,13 +1401,13 @@ func TestHandleGetSession_FallsBackToToolArgumentsWhenExplanationMissing(t *test
 	argsJSON := `{"path":"README.md","start_line":1,"end_line":10,"extra":"abcdefghijklmnopqrstuvwxyz"}`
 	sessionKey := seedWebChatTestSession(t, dir, "detail-tool-summary-args-preview")
 	if err := store.AddFullMessage(
-		nil,
+		context.Background(),
 		sessionKey,
 		providers.Message{Role: "user", Content: "check file"},
 	); err != nil {
 		t.Fatalf("AddFullMessage(user) error = %v", err)
 	}
-	if err := store.AddFullMessage(nil, sessionKey, providers.Message{
+	if err := store.AddFullMessage(context.Background(), sessionKey, providers.Message{
 		Role: "assistant",
 		ToolCalls: []providers.ToolCall{{
 			ID:   "call_1",
@@ -1462,7 +1462,7 @@ func TestHandleGetSession_IncludesMediaOnlyMessages(t *testing.T) {
 	}
 
 	sessionKey := seedWebChatTestSession(t, dir, "detail-media-only")
-	if err := store.AddFullMessage(nil, sessionKey, providers.Message{
+	if err := store.AddFullMessage(context.Background(), sessionKey, providers.Message{
 		Role:  "user",
 		Media: []string{"data:image/png;base64,abc123"},
 	}); err != nil {
@@ -1510,7 +1510,7 @@ func TestHandleSessions_SupportsJSONLMessagesUpToStoreCap(t *testing.T) {
 
 	sessionKey := seedWebChatTestSession(t, dir, "detail-large-jsonl")
 	largeContent := strings.Repeat("x", 9*1024*1024)
-	if err := store.AddFullMessage(nil, sessionKey, providers.Message{
+	if err := store.AddFullMessage(context.Background(), sessionKey, providers.Message{
 		Role:    "user",
 		Content: largeContent,
 	}); err != nil {
@@ -1580,7 +1580,7 @@ func TestHandleListSessions_UsesImagePreviewForMediaOnlyMessage(t *testing.T) {
 	}
 
 	sessionKey := seedWebChatTestSession(t, dir, "preview-media-only")
-	if err := store.AddFullMessage(nil, sessionKey, providers.Message{
+	if err := store.AddFullMessage(context.Background(), sessionKey, providers.Message{
 		Role:  "user",
 		Media: []string{"data:image/png;base64,abc123"},
 	}); err != nil {
@@ -1624,13 +1624,13 @@ func TestHandleDeleteSession_JSONLStorage(t *testing.T) {
 	}
 
 	sessionKey := seedWebChatTestSession(t, dir, "delete-jsonl")
-	if err := store.AddFullMessage(nil, sessionKey, providers.Message{
+	if err := store.AddFullMessage(context.Background(), sessionKey, providers.Message{
 		Role:    "user",
 		Content: "delete me",
 	}); err != nil {
 		t.Fatalf("AddFullMessage() error = %v", err)
 	}
-	if err := store.SetSummary(nil, sessionKey, "delete summary"); err != nil {
+	if err := store.SetSummary(context.Background(), sessionKey, "delete summary"); err != nil {
 		t.Fatalf("SetSummary() error = %v", err)
 	}
 
@@ -1702,7 +1702,7 @@ func TestHandleSessions_IgnoresMetadataWithoutHistory(t *testing.T) {
 		t.Fatalf("NewJSONLStore() error = %v", err)
 	}
 	sessionKey := seedWebChatTestSession(t, dir, "meta-only")
-	if err := store.SetSummary(nil, sessionKey, "meta only"); err != nil {
+	if err := store.SetSummary(context.Background(), sessionKey, "meta only"); err != nil {
 		t.Fatalf("SetSummary() error = %v", err)
 	}
 

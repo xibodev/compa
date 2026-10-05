@@ -12,12 +12,12 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"github.com/xibodev/compa/pkg/config"
 	"github.com/xibodev/compa/pkg/logger"
 	"github.com/xibodev/compa/pkg/providers"
 	"github.com/xibodev/compa/pkg/skills"
+	"github.com/xibodev/compa/pkg/tokenizer"
 	"github.com/xibodev/compa/pkg/utils"
 )
 
@@ -46,6 +46,10 @@ type ContextBuilder struct {
 	// build time. This catches nested file creations/deletions/mtime changes
 	// that may not update the top-level skill root directory mtime.
 	skillFilesAtCache map[string]time.Time
+
+	// cachedDay is the local date (YYYYMMDD) the cache was built on. The
+	// prompt carries the recent daily notes, which move with the date.
+	cachedDay string
 }
 
 func (cb *ContextBuilder) WithToolDiscovery(useBM25, useRegex bool) *ContextBuilder {
@@ -98,19 +102,10 @@ func getGlobalConfigDir() string {
 }
 
 func NewContextBuilder(workspace string) *ContextBuilder {
-	// builtin skills: skills directory in current project
-	// Use the skills/ directory under the current working directory
-	builtinSkillsDir := strings.TrimSpace(os.Getenv(config.EnvBuiltinSkills))
-	if builtinSkillsDir == "" {
-		wd, err := os.Getwd()
-		if err != nil {
-			// os.Getwd failure is extremely rare; fall back to empty
-			// string so that filepath.Join produces a relative "skills"
-			// path, preserving the original lookup behavior.
-			wd = ""
-		}
-		builtinSkillsDir = filepath.Join(wd, "skills")
-	}
+	// Built-in skills come from $COMPA_BUILTIN_SKILLS or the install, never
+	// from the working directory: a skills/ folder where Compa happens to be
+	// launched must not join the system prompt as built-ins.
+	builtinSkillsDir := skills.BuiltinDir()
 	globalSkillsDir := filepath.Join(getGlobalConfigDir(), "skills")
 
 	return &ContextBuilder{
@@ -220,6 +215,35 @@ func (cb *ContextBuilder) BuildSystemPrompt() string {
 	return renderPromptParts(cb.BuildSystemPromptParts())
 }
 
+// moduleCatalogPart is the prompt part that lists the enabled module
+// capabilities, one line each; false when there are none.
+//
+// One line per capability, deliberately: an enabled module should cost
+// prompt budget proportional to what it offers, and eagerly loading every
+// module's documentation is exactly the failure layered composition exists
+// to prevent. Overlays and skills load later, and only when selected.
+func moduleCatalogPart(summaries []string) (PromptPart, bool) {
+	if len(summaries) == 0 {
+		return PromptPart{}, false
+	}
+	return PromptPart{
+		ID:     "capability.module_catalog",
+		Layer:  PromptLayerCapability,
+		Slot:   PromptSlotTooling,
+		Source: PromptSource{ID: PromptSourceToolRegistry, Name: "module:index"},
+		Title:  "installed modules",
+		Content: fmt.Sprintf(`# Installed modules
+
+These capabilities come from detached modules installed in this host. Call them
+by their tool name. A capability marked "cost unknown" may bill real money, so
+prefer a local or free capability when one will do.
+
+%s`, strings.Join(summaries, "\n\n")),
+		Stable: true,
+		Cache:  PromptCacheEphemeral,
+	}, true
+}
+
 func (cb *ContextBuilder) BuildSystemPromptParts() []PromptPart {
 	return cb.buildSystemPromptParts(systemPromptBuildOptions{
 		IncludeSkillCatalog: true,
@@ -281,29 +305,8 @@ func (cb *ContextBuilder) buildSystemPromptParts(opts systemPromptBuildOptions) 
 
 	// Skills - show summary, AI can read full content with read_file tool
 	// Enabled module capabilities.
-	//
-	// One line per capability, deliberately: an enabled module should cost
-	// prompt budget proportional to what it offers, and eagerly loading every
-	// module's documentation is exactly the failure layered composition exists
-	// to prevent. Overlays and skills load later, and only when selected.
-	if len(opts.ModuleSummaries) > 0 {
-		add(PromptPart{
-			ID:     "capability.module_catalog",
-			Layer:  PromptLayerCapability,
-			Slot:   PromptSlotTooling,
-			Source: PromptSource{ID: PromptSourceToolRegistry, Name: "module:index"},
-			Title:  "installed modules",
-			Content: fmt.Sprintf(`# Installed modules
-
-These capabilities come from detached modules installed in this host. Call them
-by their tool name. A capability marked "cost unknown" may bill real money and
-requires human approval before it runs, so prefer a local or free capability
-when one will do.
-
-%s`, strings.Join(opts.ModuleSummaries, "\n\n")),
-			Stable: true,
-			Cache:  PromptCacheEphemeral,
-		})
+	if part, ok := moduleCatalogPart(opts.ModuleSummaries); ok {
+		add(part)
 	}
 
 	skillsSummary := ""
@@ -405,6 +408,7 @@ func (cb *ContextBuilder) BuildSystemPromptWithCache() string {
 	cb.cachedAt = baseline.maxMtime
 	cb.existedAtCache = baseline.existed
 	cb.skillFilesAtCache = baseline.skillFiles
+	cb.cachedDay = baseline.day
 
 	logger.DebugCF("agent", "System prompt cached",
 		map[string]any{
@@ -427,7 +431,7 @@ func (cb *ContextBuilder) buildSystemPromptForRequest(
 		len(req.AllowedTools) == 0
 	if useDefaultCache {
 		staticPrompt := cb.BuildSystemPromptWithCache()
-		return staticPrompt, []providers.ContentBlock{
+		blocks := []providers.ContentBlock{
 			promptContentBlock(PromptPart{
 				ID:      "kernel.static",
 				Layer:   PromptLayerKernel,
@@ -436,6 +440,18 @@ func (cb *ContextBuilder) buildSystemPromptForRequest(
 				Content: staticPrompt,
 			}, &providers.CacheControl{Type: "ephemeral"}),
 		}
+		// The cached prompt is the agent's; the module catalog is the turn's
+		// (the approval policy may hide tools from it), so it follows the
+		// cached block, without a cache breakpoint of its own.
+		if part, ok := moduleCatalogPart(req.ModuleSummaries); ok {
+			part.Cache = PromptCacheNone
+			staticPrompt = renderPromptParts([]PromptPart{
+				{ID: "kernel.static", Layer: PromptLayerKernel, Slot: PromptSlotIdentity, Content: staticPrompt},
+				part,
+			})
+			blocks = append(blocks, promptContentBlock(part, nil))
+		}
+		return staticPrompt, blocks
 	}
 
 	parts := cb.buildSystemPromptParts(systemPromptBuildOptions{
@@ -517,11 +533,15 @@ func (cb *ContextBuilder) EstimateSystemTokens(summary string, activeSkills []st
 	// Actual buildDynamicContext produces ~200-400 chars of time/runtime/session info.
 	const dynamicContextChars = 300
 
-	totalChars := utf8.RuneCountInString(staticPrompt) + dynamicContextChars
+	// The text is estimated as tokenizer.EstimateMessageTokens does (CJK
+	// aware); the fixed overheads are ASCII.
+	var text strings.Builder
+	text.WriteString(staticPrompt)
+	overheadChars := dynamicContextChars
 
 	if skillsText := cb.buildActiveSkillsContext(activeSkills); skillsText != "" {
-		totalChars += utf8.RuneCountInString(skillsText)
-		totalChars += 7 // separator \n\n---\n\n
+		text.WriteString(skillsText)
+		overheadChars += 7 // separator \n\n---\n\n
 	}
 
 	if contributedParts, err := cb.promptRegistryOrDefault().Collect(context.Background(), PromptBuildRequest{
@@ -532,8 +552,8 @@ func (cb *ContextBuilder) EstimateSystemTokens(summary string, activeSkills []st
 			if strings.TrimSpace(part.Content) == "" {
 				continue
 			}
-			totalChars += utf8.RuneCountInString(part.Content)
-			totalChars += 7 // separator
+			text.WriteString(part.Content)
+			overheadChars += 7 // separator
 		}
 	}
 
@@ -541,11 +561,12 @@ func (cb *ContextBuilder) EstimateSystemTokens(summary string, activeSkills []st
 		// Matches the CONTEXT_SUMMARY: prefix added in BuildMessagesFromPrompt
 		const summaryPrefix = "CONTEXT_SUMMARY: The following is an approximate summary of prior conversation " +
 			"for reference only. It may be incomplete or outdated — always defer to explicit instructions.\n\n"
-		totalChars += utf8.RuneCountInString(summaryPrefix) + utf8.RuneCountInString(summary)
-		totalChars += 7 // separator
+		text.WriteString(summaryPrefix)
+		text.WriteString(summary)
+		overheadChars += 7 // separator
 	}
 
-	return totalChars * 2 / 5 // same heuristic as tokenizer.EstimateMessageTokens
+	return tokenizer.EstimateTextTokens(text.String()) + overheadChars*2/5
 }
 
 // InvalidateCache clears the cached system prompt.
@@ -559,16 +580,20 @@ func (cb *ContextBuilder) InvalidateCache() {
 	cb.cachedAt = time.Time{}
 	cb.existedAtCache = nil
 	cb.skillFilesAtCache = nil
+	cb.cachedDay = ""
 
 	logger.DebugCF("agent", "System prompt cache invalidated", nil)
 }
 
 // sourcePaths returns non-skill workspace source files tracked for cache
-// invalidation (bootstrap files + memory). Skill roots are handled separately
-// because they require both directory-level and recursive file-level checks.
+// invalidation (bootstrap files, memory and the daily notes the prompt
+// carries today). Skill roots are handled separately because they require
+// both directory-level and recursive file-level checks.
 func (cb *ContextBuilder) sourcePaths() []string {
 	paths := agentDefinitionPaths(cb.workspace)
-	paths = append(paths, filepath.Join(cb.workspace, "memory", "MEMORY.md"))
+	memoryDir := filepath.Join(cb.workspace, "memory")
+	paths = append(paths, filepath.Join(memoryDir, "MEMORY.md"))
+	paths = append(paths, dailyNotePaths(memoryDir, time.Now(), recentDailyNoteDays)...)
 	return uniquePaths(paths)
 }
 
@@ -592,12 +617,14 @@ type cacheBaseline struct {
 	existed    map[string]bool
 	skillFiles map[string]time.Time
 	maxMtime   time.Time
+	day        string
 }
 
 // buildCacheBaseline records which tracked paths currently exist and computes
 // the latest mtime across all tracked files + skills directory contents.
 // Called under write lock when the cache is built.
 func (cb *ContextBuilder) buildCacheBaseline() cacheBaseline {
+	day := time.Now().Format("20060102")
 	skillRoots := cb.skillRoots()
 
 	// All paths whose existence we track: source files + all skill roots.
@@ -641,7 +668,7 @@ func (cb *ContextBuilder) buildCacheBaseline() cacheBaseline {
 		maxMtime = time.Unix(1, 0)
 	}
 
-	return cacheBaseline{existed: existed, skillFiles: skillFiles, maxMtime: maxMtime}
+	return cacheBaseline{existed: existed, skillFiles: skillFiles, maxMtime: maxMtime, day: day}
 }
 
 // sourceFilesChangedLocked checks whether any workspace source file has been
@@ -653,6 +680,10 @@ func (cb *ContextBuilder) buildCacheBaseline() cacheBaseline {
 // which already holds RLock or Lock).
 func (cb *ContextBuilder) sourceFilesChangedLocked() bool {
 	if cb.cachedAt.IsZero() {
+		return true
+	}
+	// A new day brings other daily notes into the prompt.
+	if cb.cachedDay != time.Now().Format("20060102") {
 		return true
 	}
 

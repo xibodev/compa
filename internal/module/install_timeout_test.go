@@ -81,7 +81,7 @@ func buildSleeper(t *testing.T) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	if out, err := buildGo(ctx, bin, src); err != nil {
-		t.Skipf("cannot build the sleeper here: %v: %s", err, out)
+		t.Fatalf("cannot build the sleeper: %v: %s", err, out)
 	}
 	return bin
 }
@@ -95,7 +95,7 @@ func buildGo(ctx context.Context, out, src string) ([]byte, error) {
 // time to run.
 //
 // They each had their own number: the CLI 120s, the other two 180s. A render
-// that worked through the browser failed through `handoff` with
+// that worked through the browser failed through the CLI with
 // "command_timeout: node was cancelled or timed out", which reads as a broken
 // module rather than a shorter leash. Fourth divergence found between these
 // same three paths, after grantRoots, ApplyGrants and the seed request shape.

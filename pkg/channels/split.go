@@ -4,6 +4,11 @@ import (
 	"strings"
 )
 
+// minFenceSplitLen is the smallest maxLen at which SplitMessage closes and
+// reopens code fences around a split; a shorter limit has no room for them,
+// so the text is split plainly.
+const minFenceSplitLen = 16
+
 // SplitMessage splits long messages into chunks, preserving code block integrity.
 // The maxLen parameter is measured in runes (Unicode characters), not bytes.
 // The function reserves a buffer (10% of maxLen, min 50) to leave room for closing code blocks,
@@ -51,7 +56,10 @@ func SplitMessage(content string, maxLen int) []string {
 		}
 
 		// Check if this would end with an incomplete code block
-		unclosedIdx := findLastUnclosedCodeBlockInRange(runes, start, msgEnd)
+		unclosedIdx := -1
+		if maxLen >= minFenceSplitLen {
+			unclosedIdx = findLastUnclosedCodeBlockInRange(runes, start, msgEnd)
+		}
 
 		if unclosedIdx >= 0 {
 			// Message would end with incomplete code block
@@ -75,6 +83,10 @@ func SplitMessage(content string, maxLen int) []string {
 					if headerEnd != -1 {
 						headerEndIdx = headerEnd
 					}
+					// The next chunk reopens the block with this line. It must be
+					// shorter than what a split consumes, or the rebuilt remainder
+					// would never shrink.
+					reopen := fenceReopenHeader(header, maxLen)
 
 					// If we have a reasonable amount of content after the header, split inside
 					if msgEnd > headerEndIdx+20 {
@@ -83,14 +95,14 @@ func SplitMessage(content string, maxLen int) []string {
 							// Leave room for "\n```"
 							start+maxLen-5, totalLen)
 						betterEnd := findLastNewlineInRange(runes, start, innerLimit, 200)
-						if betterEnd > headerEndIdx {
+						if betterEnd > headerEndIdx && betterEnd-start > len([]rune(reopen))+1 {
 							msgEnd = betterEnd
 						} else {
 							msgEnd = innerLimit
 						}
 						chunk := strings.TrimRight(string(runes[start:msgEnd]), " \t\n\r") + "\n```"
 						messages = append(messages, chunk)
-						remaining := strings.TrimSpace(header + "\n" + string(runes[msgEnd:totalLen]))
+						remaining := strings.TrimSpace(reopen + "\n" + string(runes[msgEnd:totalLen]))
 						// Replace the tail of runes with the reconstructed remaining
 						runes = []rune(remaining)
 						totalLen = len(runes)
@@ -113,7 +125,7 @@ func SplitMessage(content string, maxLen int) []string {
 							splitAt := min(start+maxLen-5, totalLen)
 							chunk := strings.TrimRight(string(runes[start:splitAt]), " \t\n\r") + "\n```"
 							messages = append(messages, chunk)
-							remaining := strings.TrimSpace(header + "\n" + string(runes[splitAt:totalLen]))
+							remaining := strings.TrimSpace(reopen + "\n" + string(runes[splitAt:totalLen]))
 							runes = []rune(remaining)
 							totalLen = len(runes)
 							start = 0
@@ -137,6 +149,17 @@ func SplitMessage(content string, maxLen int) []string {
 	}
 
 	return messages
+}
+
+// fenceReopenHeader returns the line that reopens a code block split across
+// chunks: its opening line when that is short (a fence and a language), else
+// a bare fence. A rebuilt remainder therefore grows by at most maxLen/4+1
+// runes, while a split consumes about maxLen.
+func fenceReopenHeader(header string, maxLen int) string {
+	if len([]rune(header)) > maxLen/4 {
+		return "```"
+	}
+	return header
 }
 
 // findLastUnclosedCodeBlockInRange finds the last opening ``` that doesn't have a closing ```

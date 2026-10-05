@@ -1,4 +1,4 @@
-import { launcherFetch } from "@/api/http"
+import { HttpError, launcherFetch } from "@/api/http"
 
 export interface ToolSupportItem {
   name: string
@@ -61,7 +61,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     } catch {
       // ignore invalid body
     }
-    throw new Error(message)
+    throw new HttpError(message, res.status)
   }
   return res.json() as Promise<T>
 }

@@ -5,11 +5,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"gopkg.in/yaml.v3"
+
+	"github.com/xibodev/compa"
 	"github.com/xibodev/compa/cmd/compa-kernel/internal"
 	"github.com/xibodev/compa/pkg/config"
 	"github.com/xibodev/compa/pkg/fileutil"
@@ -26,7 +31,11 @@ type installedSkillOriginMeta struct {
 	Slug             string `json:"slug,omitempty"`
 	RegistryURL      string `json:"registry_url,omitempty"`
 	InstalledVersion string `json:"installed_version,omitempty"`
-	InstalledAt      int64  `json:"installed_at"`
+	// Commit is the commit a GitHub install was pinned to; Unpinned marks a
+	// GitHub install made from the ref because it couldn't be resolved.
+	Commit      string `json:"commit,omitempty"`
+	Unpinned    bool   `json:"unpinned,omitempty"`
+	InstalledAt int64  `json:"installed_at"`
 }
 
 func skillsListCmd(loader *skills.SkillsLoader) {
@@ -118,6 +127,8 @@ func skillsInstallFromRegistry(cfg *config.Config, registryName, target string) 
 		Slug:             normalizedSlug,
 		RegistryURL:      registryURL,
 		InstalledVersion: result.Version,
+		Commit:           result.Commit,
+		Unpinned:         result.Unpinned,
 		InstalledAt:      installedAt,
 	}); err != nil {
 		_ = os.RemoveAll(targetDir)
@@ -166,10 +177,12 @@ func skillsRemoveFromWorkspace(workspace string, toolsConfig config.SkillsToolsC
 		}
 		name = dirName
 	}
-	if name == "." || name == ".." {
-		return fmt.Errorf("invalid skill name %q", skillName)
+	// A valid skill name is a single folder name, so the removal stays inside
+	// the skills folder (`..\..\x` would leave it on Windows).
+	skillDir, err := skills.SkillDir(filepath.Join(workspace, "skills"), name)
+	if err != nil {
+		return fmt.Errorf("invalid skill name %q: %w", skillName, err)
 	}
-	skillDir := filepath.Join(workspace, "skills", name)
 	if _, err := os.Stat(skillDir); os.IsNotExist(err) {
 		return fmt.Errorf("skill '%s' not found", name)
 	}
@@ -179,101 +192,134 @@ func skillsRemoveFromWorkspace(workspace string, toolsConfig config.SkillsToolsC
 	return nil
 }
 
-func skillsInstallBuiltinCmd(workspace string) {
-	builtinSkillsDir := "./compa/skills"
-	workspaceSkillsDir := filepath.Join(workspace, "skills")
-
-	fmt.Printf("Copying builtin skills to workspace...\n")
-
-	skillsToInstall := []string{
-		"weather",
-		"news",
-		"stock",
-		"calculator",
-	}
-
-	for _, skillName := range skillsToInstall {
-		builtinPath := filepath.Join(builtinSkillsDir, skillName)
-		workspacePath := filepath.Join(workspaceSkillsDir, skillName)
-
-		if _, err := os.Stat(builtinPath); err != nil {
-			fmt.Printf("⊘ Builtin skill '%s' not found: %v\n", skillName, err)
-			continue
-		}
-
-		if err := os.MkdirAll(workspacePath, 0o755); err != nil {
-			fmt.Printf("✗ Failed to create directory for %s: %v\n", skillName, err)
-			continue
-		}
-
-		if err := copyDirectory(builtinPath, workspacePath); err != nil {
-			fmt.Printf("✗ Failed to copy %s: %v\n", skillName, err)
-		}
-	}
-
-	fmt.Println("\n✓ All builtin skills installed!")
-	fmt.Println("Now you can use them in your workspace.")
+// builtinSkill is a skill bundled in the binary (the workspace/skills tree
+// onboarding installs).
+type builtinSkill struct {
+	Name        string
+	Description string
 }
 
-func skillsListBuiltinCmd() {
-	cfg, err := internal.LoadConfig()
+// builtinSkillsFS returns the bundled skills.
+func builtinSkillsFS() (fs.FS, error) {
+	return fs.Sub(compa.OnboardWorkspace, "workspace/skills")
+}
+
+func listBuiltinSkills(fsys fs.FS) ([]builtinSkill, error) {
+	entries, err := fs.ReadDir(fsys, ".")
 	if err != nil {
-		fmt.Printf("Error loading config: %v\n", err)
-		return
+		return nil, err
 	}
-	builtinSkillsDir := filepath.Join(filepath.Dir(cfg.WorkspacePath()), "compa", "skills")
-
-	fmt.Println("\nAvailable Builtin Skills:")
-	fmt.Println("-----------------------")
-
-	entries, err := os.ReadDir(builtinSkillsDir)
-	if err != nil {
-		fmt.Printf("Error reading builtin skills: %v\n", err)
-		return
-	}
-
-	if len(entries) == 0 {
-		fmt.Println("No builtin skills available.")
-		return
-	}
-
+	var out []builtinSkill
 	for _, entry := range entries {
-		if entry.IsDir() {
-			skillName := entry.Name()
-			skillFile := filepath.Join(builtinSkillsDir, skillName, "SKILL.md")
-
-			description := "No description"
-			if _, err := os.Stat(skillFile); err == nil {
-				data, err := os.ReadFile(skillFile)
-				if err == nil {
-					content := string(data)
-					if idx := strings.Index(content, "\n"); idx > 0 {
-						firstLine := content[:idx]
-						if strings.Contains(firstLine, "description:") {
-							descLine := strings.Index(content[idx:], "\n")
-							if descLine > 0 {
-								description = strings.TrimSpace(content[idx+descLine : idx+descLine])
-							}
-						}
-					}
-				}
-			}
-			status := "✓"
-			fmt.Printf("  %s  %s\n", status, entry.Name())
-			if description != "" {
-				fmt.Printf("     %s\n", description)
-			}
+		if !entry.IsDir() {
+			continue
 		}
+		data, err := fs.ReadFile(fsys, path.Join(entry.Name(), "SKILL.md"))
+		if err != nil {
+			continue
+		}
+		out = append(out, builtinSkill{Name: entry.Name(), Description: frontmatterDescription(string(data))})
 	}
+	return out, nil
 }
 
-func skillsSearchCmd(query string) {
+// frontmatterDescription returns the description field of a SKILL.md.
+func frontmatterDescription(content string) string {
+	content = strings.ReplaceAll(content, "\r\n", "\n")
+	if !strings.HasPrefix(content, "---\n") {
+		return ""
+	}
+	end := strings.Index(content[4:], "\n---")
+	if end < 0 {
+		return ""
+	}
+	var meta struct {
+		Description string `yaml:"description"`
+	}
+	if err := yaml.Unmarshal([]byte(content[4:4+end]), &meta); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(meta.Description)
+}
+
+// installBuiltinSkills copies the bundled skills into the workspace. Skills
+// already in the workspace are kept as they are, since the user may have
+// changed them.
+func installBuiltinSkills(w io.Writer, fsys fs.FS, workspace string) error {
+	list, err := listBuiltinSkills(fsys)
+	if err != nil {
+		return fmt.Errorf("read builtin skills: %w", err)
+	}
+	workspaceSkillsDir := filepath.Join(workspace, "skills")
+	var failed []string
+	for _, skill := range list {
+		target := filepath.Join(workspaceSkillsDir, skill.Name)
+		if _, err := os.Stat(target); err == nil {
+			fmt.Fprintf(w, "⊘ %s is already installed (kept)\n", skill.Name)
+			continue
+		}
+		if err := copyFSDir(fsys, skill.Name, target); err != nil {
+			fmt.Fprintf(w, "✗ %s: %v\n", skill.Name, err)
+			failed = append(failed, skill.Name)
+			continue
+		}
+		fmt.Fprintf(w, "✓ %s installed\n", skill.Name)
+	}
+	if len(failed) > 0 {
+		return fmt.Errorf("failed to install builtin skills: %s", strings.Join(failed, ", "))
+	}
+	return nil
+}
+
+// copyFSDir copies dir from fsys to target; shell scripts are made executable.
+func copyFSDir(fsys fs.FS, dir, target string) error {
+	return fs.WalkDir(fsys, dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel := strings.TrimPrefix(strings.TrimPrefix(p, dir), "/")
+		dst := filepath.Join(target, filepath.FromSlash(rel))
+		if d.IsDir() {
+			return os.MkdirAll(dst, 0o755)
+		}
+		data, err := fs.ReadFile(fsys, p)
+		if err != nil {
+			return err
+		}
+		mode := os.FileMode(0o644)
+		if strings.HasSuffix(p, ".sh") {
+			mode = 0o755
+		}
+		return os.WriteFile(dst, data, mode)
+	})
+}
+
+func skillsListBuiltin(w io.Writer, fsys fs.FS) error {
+	list, err := listBuiltinSkills(fsys)
+	if err != nil {
+		return fmt.Errorf("read builtin skills: %w", err)
+	}
+	fmt.Fprintln(w, "\nAvailable Builtin Skills:")
+	fmt.Fprintln(w, "-----------------------")
+	if len(list) == 0 {
+		fmt.Fprintln(w, "No builtin skills available.")
+		return nil
+	}
+	for _, skill := range list {
+		fmt.Fprintf(w, "  ✓  %s\n", skill.Name)
+		if skill.Description != "" {
+			fmt.Fprintf(w, "     %s\n", skill.Description)
+		}
+	}
+	return nil
+}
+
+func skillsSearchCmd(query string) error {
 	fmt.Println("Searching for available skills...")
 
 	cfg, err := internal.LoadConfig()
 	if err != nil {
-		fmt.Printf("✗ Failed to load config: %v\n", err)
-		return
+		return fmt.Errorf("failed to load config: %w", err)
 	}
 
 	registryMgr := skills.NewRegistryManagerFromToolsConfig(cfg.Tools.Skills)
@@ -283,13 +329,12 @@ func skillsSearchCmd(query string) {
 
 	results, err := registryMgr.SearchAll(ctx, query, skillsSearchMaxResults)
 	if err != nil {
-		fmt.Printf("✗ Failed to fetch skills list: %v\n", err)
-		return
+		return fmt.Errorf("failed to fetch skills list: %w", err)
 	}
 
 	if len(results) == 0 {
 		fmt.Println("No skills available.")
-		return
+		return nil
 	}
 
 	fmt.Printf("\nAvailable Skills (%d):\n", len(results))
@@ -309,52 +354,17 @@ func skillsSearchCmd(query string) {
 		}
 		fmt.Println()
 	}
+	return nil
 }
 
-func skillsShowCmd(loader *skills.SkillsLoader, skillName string) {
+func skillsShowCmd(loader *skills.SkillsLoader, skillName string) error {
 	content, ok := loader.LoadSkill(skillName)
 	if !ok {
-		fmt.Printf("✗ Skill '%s' not found\n", skillName)
-		return
+		return fmt.Errorf("skill '%s' not found", skillName)
 	}
 
 	fmt.Printf("\n📦 Skill: %s\n", skillName)
 	fmt.Println("----------------------")
 	fmt.Println(content)
-}
-
-func copyDirectory(src, dst string) error {
-	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-
-		relPath, err := filepath.Rel(src, path)
-		if err != nil {
-			return err
-		}
-
-		dstPath := filepath.Join(dst, relPath)
-
-		if info.IsDir() {
-			return os.MkdirAll(dstPath, info.Mode())
-		}
-
-		srcFile, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		defer srcFile.Close()
-
-		dstFile, err := os.OpenFile(dstPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, info.Mode())
-		if err != nil {
-			return err
-		}
-
-		_, copyErr := io.Copy(dstFile, srcFile)
-		if closeErr := dstFile.Close(); closeErr != nil && copyErr == nil {
-			return fmt.Errorf("close destination file %s: %w", dstPath, closeErr)
-		}
-		return copyErr
-	})
+	return nil
 }

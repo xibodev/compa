@@ -41,6 +41,7 @@ func TestNewRootCommand(t *testing.T) {
 		"auth",
 		"config",
 		"cron",
+		"evolution",
 		"gateway",
 		"mcp",
 		"model",

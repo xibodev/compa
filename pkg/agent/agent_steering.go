@@ -9,28 +9,41 @@ import (
 	"github.com/xibodev/compa/pkg/logger"
 )
 
+// processMessageSync runs msg and sends its reply or error to its chat; the
+// caller provides the worker slot.
 func (al *AgentLoop) processMessageSync(ctx context.Context, msg bus.InboundMessage) {
-	if al.channelManager != nil {
-		defer al.channelManager.InvokeTypingStop(msg.Channel, msg.ChatID)
+	if cm := al.currentChannelManager(); cm != nil {
+		defer cm.InvokeTypingStop(msg.Channel, msg.ChatID)
 	}
 
 	response, err := al.processMessage(ctx, msg)
-	al.publishResponseOrError(ctx, msg.Channel, msg.ChatID, msg.SessionKey, response, err)
+	target := al.continuationTargetFor(msg, msg.SessionKey, "")
+	if err != nil {
+		if !al.maybePublishErrorTo(ctx, target, err) {
+			return
+		}
+		response = ""
+	}
+	al.publishTargetResponse(ctx, target, response)
 }
 
 func (al *AgentLoop) runTurnWithSteering(ctx context.Context, initialMsg bus.InboundMessage) {
+	// Build continuation target
+	target, targetErr := al.buildContinuationTarget(initialMsg)
+
 	// Process the initial message
 	response, err := al.processMessage(ctx, initialMsg)
 	if err != nil {
-		if !al.maybePublishError(ctx, initialMsg.Channel, initialMsg.ChatID, initialMsg.SessionKey, err) {
+		errTarget := target
+		if errTarget == nil {
+			errTarget = al.continuationTargetFor(initialMsg, initialMsg.SessionKey, "")
+		}
+		if !al.maybePublishErrorTo(ctx, errTarget, err) {
 			return // context canceled
 		}
 		response = ""
 	}
-	finalResponse := response
 
-	// Build continuation target
-	target, targetErr := al.buildContinuationTarget(initialMsg)
 	if targetErr != nil {
 		logger.WarnCF("agent", "Failed to build steering continuation target",
 			map[string]any{
@@ -39,41 +52,36 @@ func (al *AgentLoop) runTurnWithSteering(ctx context.Context, initialMsg bus.Inb
 			})
 		return
 	}
-	if target == nil {
-		// System message or non-routable, response already published
-		return
-	}
 
-	continued, continueErr := al.drainQueuedSteeringContinuations(ctx, target)
-	if continueErr != nil {
+	// The turn's answer goes out before the replies to steering that came
+	// after it, as an answer that steering overtakes mid-turn does
+	// (keepAnswerBeforeSteering): the user gets every answer, in order.
+	if response != "" {
+		al.publishTargetResponse(ctx, target, response)
+	}
+	if err := al.drainQueuedSteeringContinuations(ctx, target); err != nil {
 		logger.WarnCF("agent", "Failed to continue queued steering",
 			map[string]any{
 				"channel": target.Channel,
 				"chat_id": target.ChatID,
-				"error":   continueErr.Error(),
+				"error":   err.Error(),
 			})
-	} else if continued != "" {
-		finalResponse = continued
-	}
-
-	// Publish final response
-	if finalResponse != "" {
-		al.PublishResponseIfNeeded(ctx, target.Channel, target.ChatID, target.SessionKey, finalResponse)
 	}
 }
 
+// drainQueuedSteeringContinuations continues target's session while steering
+// waits for it, delivering each continuation's reply to target.
 func (al *AgentLoop) drainQueuedSteeringContinuations(
 	ctx context.Context,
 	target *continuationTarget,
-) (string, error) {
+) error {
 	if target == nil {
-		return "", nil
+		return nil
 	}
 
-	finalResponse := ""
 	for al.pendingSteeringCountForScope(target.SessionKey) > 0 {
 		if err := ctx.Err(); err != nil {
-			return finalResponse, err
+			return err
 		}
 
 		logger.InfoCF("agent", "Continuing queued steering after turn end",
@@ -84,24 +92,20 @@ func (al *AgentLoop) drainQueuedSteeringContinuations(
 				"queue_depth": al.pendingSteeringCountForScope(target.SessionKey),
 			})
 
-		continued, continueErr := al.Continue(ctx, target.SessionKey, target.Channel, target.ChatID)
-		if continueErr != nil {
-			return finalResponse, continueErr
+		continued, err := al.continueTarget(ctx, target)
+		if err != nil {
+			return err
 		}
 		if continued == "" {
 			break
 		}
-		finalResponse = continued
+		al.publishTargetResponse(ctx, target, continued)
 	}
 
-	return finalResponse, nil
+	return nil
 }
 
 func (al *AgentLoop) resolveSteeringTarget(msg bus.InboundMessage) (string, string, bool) {
-	if msg.Channel == "system" {
-		return "", "", false
-	}
-
 	route, agent, err := al.resolveMessageRoute(msg)
 	if err != nil || agent == nil {
 		return "", "", false
@@ -109,4 +113,16 @@ func (al *AgentLoop) resolveSteeringTarget(msg bus.InboundMessage) (string, stri
 	allocation := al.allocateRouteSession(route, msg)
 
 	return resolveScopeKey(allocation.SessionKey, msg.SessionKey), agent.ID, true
+}
+
+// continuationTargetFor addresses the replies of sessionKey's turns to the
+// chat msg came from, keeping its context.
+func (al *AgentLoop) continuationTargetFor(msg bus.InboundMessage, sessionKey, agentID string) *continuationTarget {
+	return &continuationTarget{
+		SessionKey: sessionKey,
+		Channel:    msg.Channel,
+		ChatID:     msg.ChatID,
+		AgentID:    agentID,
+		Inbound:    cloneInboundContext(&msg.Context),
+	}
 }

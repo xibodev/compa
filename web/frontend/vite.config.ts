@@ -20,18 +20,16 @@ export default defineConfig({
       "@": path.resolve(import.meta.dirname, "./src"),
     },
   },
-  build: {
-    chunkSizeWarningLimit: 2048,
-  },
   server: {
+    // The proxy keeps the browser's Host header: the launcher compares it
+    // with Origin (first-run password setup) and checks it against the names
+    // it serves, so rewriting it to the target would fail both checks.
     proxy: {
       "/api": {
         target: "http://localhost:18800",
-        changeOrigin: true,
       },
       "/web/media": {
         target: "http://localhost:18800",
-        changeOrigin: true,
       },
       "/web/ws": {
         target: "ws://localhost:18800",

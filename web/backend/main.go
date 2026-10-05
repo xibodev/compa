@@ -30,7 +30,6 @@ import (
 	"github.com/xibodev/compa/pkg/logger"
 	"github.com/xibodev/compa/pkg/netbind"
 	"github.com/xibodev/compa/web/backend/api"
-	"github.com/xibodev/compa/web/backend/dashboardauth"
 	"github.com/xibodev/compa/web/backend/launcherconfig"
 	"github.com/xibodev/compa/web/backend/middleware"
 	"github.com/xibodev/compa/web/backend/utils"
@@ -49,12 +48,36 @@ var (
 
 	servers    []*http.Server
 	serverAddr string
-	// browserLaunchURL is opened by openBrowser() (auto-open + tray "open console").
-	browserLaunchURL string
-	apiHandler       *api.Handler
+	// browserLaunch decides what openBrowser() opens, on auto-open and from
+	// the tray's "Open" (see launcherBrowserLaunchSuffix).
+	browserLaunch struct {
+		setupToken string
+		store      api.PasswordStore
+		autoLogin  *middleware.LauncherDashboardLocalAutoLogin
+	}
+	apiHandler *api.Handler
 
 	noBrowser *bool
 )
+
+const (
+	// launcherAutoLoginTTL bounds how long a sign-in link the launcher opens
+	// works; the browser uses it at once, and it works only once.
+	launcherAutoLoginTTL = 2 * time.Minute
+	// launcherReadHeaderTimeout, launcherIdleTimeout and
+	// launcherMaxHeaderBytes bound what one connection may hold. Bodies are
+	// bounded per request (middleware.APIBodyLimit).
+	launcherReadHeaderTimeout = 10 * time.Second
+	launcherIdleTimeout       = 2 * time.Minute
+	launcherMaxHeaderBytes    = 64 << 10
+)
+
+// launcherUploadBodyLimits are the /api routes that take uploads larger than
+// middleware.DefaultAPIBodyLimit; their handlers check the size themselves.
+var launcherUploadBodyLimits = map[string]int64{
+	// Recorded speech, as voice.go's maxVoiceUpload allows.
+	"/api/voice/transcribe": 32 << 20,
+}
 
 func shouldEnableLauncherFileLogging(enableConsole, debug bool) bool {
 	return !enableConsole || debug
@@ -77,17 +100,34 @@ func isLoopbackLaunchHost(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
+// launcherBrowserLaunchSuffix is the path the launcher opens: the setup page
+// with its token while no password is set, else a fresh one-time sign-in
+// link when this computer's browser may get one, else the dashboard.
 func launcherBrowserLaunchSuffix(
 	needsSetup bool,
+	setupToken string,
 	localAutoLogin *middleware.LauncherDashboardLocalAutoLogin,
 ) string {
 	if needsSetup {
-		return middleware.LauncherDashboardSetupPath
+		return middleware.LauncherDashboardSetupURLPath(setupToken)
 	}
 	if localAutoLogin != nil {
-		return localAutoLogin.URLPath()
+		if path, err := localAutoLogin.Renew(launcherAutoLoginTTL); err == nil {
+			return path
+		}
 	}
 	return ""
+}
+
+// launcherNeedsSetup reports whether no dashboard password is set yet.
+func launcherNeedsSetup(store api.PasswordStore) bool {
+	if store == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	initialized, err := store.IsInitialized(ctx)
+	return err == nil && !initialized
 }
 
 func resolveLauncherHostInput(flagHost string, explicitFlag bool, envHost string) (string, bool, error) {
@@ -404,13 +444,14 @@ func main() {
 	noBrowser = flag.Bool("no-browser", false, "Do not auto-open browser on startup")
 	lang := flag.String("lang", "", "Language: en (English) or zh (Chinese). Default: auto-detect from system locale")
 	console := flag.Bool("console", false, "Console mode, no GUI")
-	setPassword := flag.String("password", "", "Set dashboard password (min 8 characters) and exit")
+	setPassword := flag.String("password", "", "Set dashboard password (min 8 characters) and exit; - reads it from standard input")
 
 	var debug bool
 	flag.BoolVar(&debug, "d", false, "Enable debug logging")
 	flag.BoolVar(&debug, "debug", false, "Enable debug logging")
 
 	flag.Usage = func() {
+		attachParentConsole()
 		fmt.Fprintf(os.Stderr, "%s Launcher - Web console and gateway manager\n\n", appName)
 		fmt.Fprintf(os.Stderr, "Usage: %s [options] [config.json]\n\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "Arguments:\n")
@@ -434,6 +475,12 @@ func main() {
 		fmt.Fprintf(os.Stderr, "      Run in the terminal with debug logs enabled\n")
 	}
 	flag.Parse()
+	// A Windows build has no console of its own; one started from a
+	// terminal writes there.
+	consoleAttached := false
+	if *console || *setPassword != "" {
+		consoleAttached = attachParentConsole()
+	}
 
 	// Resolve an explicit config before any subsystem asks for host state. When
 	// COMPA_HOME is absent, a positional config owns the adjacent state
@@ -454,24 +501,10 @@ func main() {
 
 	// Initialize logger
 	homeDir := utils.GetHome()
+	launcherPath := launcherconfig.PathForAppConfig(absPath)
 
 	if *setPassword != "" {
-		if len(*setPassword) < 8 {
-			fmt.Fprintf(os.Stderr, "Error: password must be at least 8 characters\n")
-			os.Exit(1)
-		}
-		authStore, err := dashboardauth.New(homeDir)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error: could not open auth store: %v\n", err)
-			os.Exit(1)
-		}
-		defer authStore.Close()
-		if err := authStore.SetPassword(context.Background(), *setPassword); err != nil {
-			fmt.Fprintf(os.Stderr, "Error: failed to set password: %v\n", err)
-			os.Exit(1)
-		}
-		fmt.Println("✓ Dashboard password updated successfully.")
-		os.Exit(0)
+		os.Exit(runSetPassword(*setPassword, homeDir, launcherPath))
 	}
 
 	f := filepath.Join(homeDir, logPath, panicFile)
@@ -482,10 +515,12 @@ func main() {
 	defer panicFunc()
 
 	enableConsole := *console
-	fileLoggingEnabled := shouldEnableLauncherFileLogging(enableConsole, debug)
+	// The logger keeps the standard output it found at start, which an
+	// attached console does not replace: its lines go to the log file then.
+	fileLoggingEnabled := shouldEnableLauncherFileLogging(enableConsole, debug) || consoleAttached
 	if fileLoggingEnabled {
 		// GUI mode writes launcher logs to file. Debug mode keeps file logging enabled in console mode too.
-		if !debug {
+		if !debug && !enableConsole {
 			logger.DisableConsole()
 		}
 
@@ -511,6 +546,7 @@ func main() {
 	if !debug {
 		logger.SetLevelFromString(config.ResolveGatewayLogLevel(absPath))
 	}
+	applyLauncherLoggingSettings(absPath)
 
 	logger.InfoC("web", fmt.Sprintf("%s launcher starting (version %s)...", appName, appVersion))
 	logger.InfoC("web", fmt.Sprintf("%s Home: %s", appName, homeDir))
@@ -543,7 +579,6 @@ func main() {
 		}
 	})
 
-	launcherPath := launcherconfig.PathForAppConfig(absPath)
 	launcherCfg, err := launcherconfig.Load(launcherPath, launcherconfig.Default())
 	if err != nil {
 		logger.ErrorC("web", fmt.Sprintf("Warning: Failed to load %s: %v", launcherPath, err))
@@ -593,50 +628,70 @@ func main() {
 		logger.Fatalf("Invalid port %q: %v", effectivePort, err)
 	}
 
+	// Open the bcrypt password store (creates the DB file on first run).
+	passwordStore, closeStore, sqliteErr, authStoreErr := openPasswordStore(homeDir, launcherPath, launcherCfg)
+	if closeStore != nil {
+		defer closeStore()
+	}
+	switch {
+	case authStoreErr != nil:
+		logger.ErrorC("web", fmt.Sprintf("Warning: could not open auth store: %v", authStoreErr))
+	case sqliteErr != nil:
+		logger.InfoC(
+			"web",
+			fmt.Sprintf(
+				"Dashboard SQLite password store unavailable on this platform; using launcher-config password storage: %v",
+				sqliteErr,
+			),
+		)
+	}
+
+	needsInitialSetup := false
+	if passwordStore != nil {
+		initialized, initErr := passwordStore.IsInitialized(context.Background())
+		if initErr != nil {
+			logger.ErrorC("web", fmt.Sprintf("Warning: could not check dashboard password state: %v", initErr))
+		} else {
+			needsInitialSetup = !initialized
+		}
+	}
+
+	// LAN access waits for a password unless the owner allowed otherwise:
+	// the dashboard would face the network before anyone signed in once.
+	if needsInitialSetup && launcherBindMayExposeBeyondLoopback(hostInput, effectivePublic) {
+		if !launcherCfg.AllowLANWithoutPassword {
+			logger.Fatalf(
+				"LAN access needs a dashboard password first. Set one with `compa -password -`, or start Compa "+
+					"without -public, -host or Enable LAN Access and set it in the browser; to start anyway, set "+
+					"allow_lan_without_password to true in %s",
+				launcherPath,
+			)
+		}
+		logger.WarnC("web", "LAN access is on and no dashboard password is set yet (allow_lan_without_password)")
+	}
+
 	openResult, err := openLauncherListeners(hostInput, effectivePublic, effectivePort)
 	if err != nil {
 		logger.Fatalf("Failed to open launcher listener(s): %v", err)
 	}
 	listeners := openResult.Listeners
 
-	dashboardSessionCookie, dashErr := middleware.NewLauncherDashboardSessionCookie()
+	dashboardSession, dashErr := middleware.NewLauncherDashboardSession()
+	if dashErr != nil {
+		logger.Fatalf("Dashboard auth setup failed: %v", dashErr)
+	}
+	// Only the person who started Compa sees this token, in the browser
+	// the launcher opens or on its console; the first password needs it.
+	setupToken, dashErr := middleware.NewLauncherDashboardSetupToken()
 	if dashErr != nil {
 		logger.Fatalf("Dashboard auth setup failed: %v", dashErr)
 	}
 
-	// Open the bcrypt password store (creates the DB file on first run).
-	authStore, authStoreErr := dashboardauth.New(homeDir)
-	var passwordStore api.PasswordStore
-	if authStoreErr == nil {
-		passwordStore = authStore
-		defer authStore.Close()
-	} else if errors.Is(authStoreErr, dashboardauth.ErrUnsupportedPlatform) {
-		logger.InfoC(
-			"web",
-			fmt.Sprintf(
-				"Dashboard SQLite password store unavailable on this platform; using launcher-config password storage: %v",
-				authStoreErr,
-			),
-		)
-		passwordStore = launcherconfig.NewPasswordStore(launcherPath, launcherCfg)
-		authStoreErr = nil
-	} else {
-		logger.ErrorC("web", fmt.Sprintf("Warning: could not open auth store: %v", authStoreErr))
-	}
-
 	var localAutoLogin *middleware.LauncherDashboardLocalAutoLogin
-	needsInitialSetup := false
-	if passwordStore != nil {
-		initialized, initErr := passwordStore.IsInitialized(context.Background())
-		if initErr != nil {
-			logger.ErrorC("web", fmt.Sprintf("Warning: could not check dashboard password state: %v", initErr))
-		} else if !initialized {
-			needsInitialSetup = true
-		} else if shouldEnableLocalAutoLogin(*noBrowser, openResult.ProbeHost) {
-			localAutoLogin, err = middleware.NewLauncherDashboardLocalAutoLogin(5 * time.Minute)
-			if err != nil {
-				logger.Fatalf("Failed to create local auto-login grant: %v", err)
-			}
+	if shouldEnableLocalAutoLogin(*noBrowser, openResult.ProbeHost) {
+		localAutoLogin, err = middleware.NewLauncherDashboardLocalAutoLogin(launcherAutoLoginTTL)
+		if err != nil {
+			logger.Fatalf("Failed to create local auto-login grant: %v", err)
 		}
 	}
 
@@ -644,12 +699,13 @@ func main() {
 	mux := http.NewServeMux()
 
 	api.RegisterLauncherAuthRoutes(mux, api.LauncherAuthRouteOpts{
-		SessionCookie: dashboardSessionCookie,
-		PasswordStore: passwordStore,
-		StoreError:    authStoreErr,
+		Session:           dashboardSession,
+		PasswordStore:     passwordStore,
+		StoreError:        authStoreErr,
+		SetupToken:        setupToken,
+		TrustedProxyCIDRs: launcherCfg.TrustedProxyCIDRs,
 	})
 
-	// API Routes (e.g. /api/status)
 	apiHandler = api.NewHandler(absPath)
 	apiHandler.SetDebug(debug)
 	if _, err = apiHandler.EnsureWebChatChannel(); err != nil {
@@ -666,30 +722,47 @@ func main() {
 	// Frontend Embedded Assets
 	registerEmbedRoutes(mux)
 
-	// A saved model selection takes effect in the running gateway before its
-	// request is answered (see api.Handler.ApplyModelChanges).
-	accessControlledMux, err := middleware.IPAllowlist(middleware.IPAllowlistConfig{
+	// A saved change the gateway can apply without a restart reaches it once
+	// its request was answered (see api.Handler.ApplyLiveChanges).
+	dashAuth := middleware.LauncherDashboardAuth(middleware.LauncherDashboardAuthConfig{
+		Session:        dashboardSession,
+		LocalAutoLogin: localAutoLogin,
+	}, apiHandler.ApplyLiveChanges(mux))
+
+	// The network policy runs before the auth check, so the login and setup
+	// pages are as restricted as the rest.
+	accessControlled, err := middleware.IPAllowlist(middleware.IPAllowlistConfig{
 		AllowedCIDRs:         launcherCfg.AllowedCIDRs,
 		AllowLocalhostBypass: launcherCfg.AllowLocalhostBypass,
 		TrustedProxyCIDRs:    launcherCfg.TrustedProxyCIDRs,
-	}, apiHandler.ApplyModelChanges(mux))
+	}, middleware.HostAllowlist(middleware.HostAllowlistConfig{
+		ListenHosts:  []string{hostInput},
+		AllowedHosts: launcherCfg.AllowedHosts,
+	}, middleware.SameOriginGuard(
+		middleware.APIBodyLimit(middleware.DefaultAPIBodyLimit, launcherUploadBodyLimits,
+			middleware.JSONContentType(dashAuth),
+		),
+	)))
 	if err != nil {
 		logger.Fatalf("Invalid allowed CIDR configuration: %v", err)
 	}
 
-	dashAuth := middleware.LauncherDashboardAuth(middleware.LauncherDashboardAuthConfig{
-		ExpectedCookie: dashboardSessionCookie,
-		LocalAutoLogin: localAutoLogin,
-	}, accessControlledMux)
-
 	// Apply middleware stack
 	handler := middleware.Recoverer(
 		middleware.Logger(
-			middleware.ReferrerPolicyNoReferrer(
-				middleware.JSONContentType(dashAuth),
+			middleware.SecurityHeaders(
+				middleware.SecurityHeadersConfig{ScriptHashes: dashboardScriptHashes()},
+				accessControlled,
 			),
 		),
 	)
+
+	// Share the local URL with the launcher runtime.
+	serverAddr = fmt.Sprintf("http://%s", net.JoinHostPort(openResult.ProbeHost, effectivePort))
+	browserLaunch.setupToken = setupToken
+	browserLaunch.store = passwordStore
+	browserLaunch.autoLogin = localAutoLogin
+	setupURL := serverAddr + middleware.LauncherDashboardSetupURLPath(setupToken)
 
 	// Print startup banner (console mode only).
 	if enableConsole || debug {
@@ -698,11 +771,9 @@ func main() {
 		fmt.Print(utils.Banner)
 		fmt.Println()
 		if needsInitialSetup {
-			if *noBrowser {
-				fmt.Println("  First-time setup: open /launcher-setup to create the dashboard password.")
-			} else {
-				fmt.Println("  Launcher will open /launcher-setup automatically.")
-			}
+			fmt.Println("  First-time setup: create the dashboard password at")
+			fmt.Println()
+			fmt.Printf("    >> %s <<\n", setupURL)
 			fmt.Println()
 		}
 		fmt.Println("  Dashboard address:")
@@ -711,6 +782,12 @@ func main() {
 			fmt.Printf("    >> http://%s <<\n", net.JoinHostPort(host, effectivePort))
 		}
 		fmt.Println()
+	} else if needsInitialSetup {
+		// The tray's output, such as the installer's launcher.out.
+		fmt.Printf("First-time setup: create the dashboard password at %s\n", setupURL)
+	}
+	if needsInitialSetup {
+		logger.InfoC("web", "No dashboard password is set yet; the setup link is in the browser Compa opens, its console output and the tray's Open Console")
 	}
 
 	// Log startup info to file
@@ -723,12 +800,6 @@ func main() {
 		}
 	}
 
-	// Share the local URL with the launcher runtime.
-	serverAddr = fmt.Sprintf("http://%s", net.JoinHostPort(openResult.ProbeHost, effectivePort))
-	browserLaunchURL = serverAddr + launcherBrowserLaunchSuffix(needsInitialSetup, localAutoLogin)
-
-	// Auto-open browser will be handled by the launcher runtime.
-
 	// Auto-start gateway after backend starts listening.
 	go func() {
 		time.Sleep(1 * time.Second)
@@ -738,7 +809,12 @@ func main() {
 	// Start the server(s) in goroutines.
 	servers = make([]*http.Server, 0, len(listeners))
 	for _, ln := range listeners {
-		srv := &http.Server{Handler: handler}
+		srv := &http.Server{
+			Handler:           handler,
+			ReadHeaderTimeout: launcherReadHeaderTimeout,
+			IdleTimeout:       launcherIdleTimeout,
+			MaxHeaderBytes:    launcherMaxHeaderBytes,
+		}
 		servers = append(servers, srv)
 
 		go func(s *http.Server, l net.Listener) {
@@ -754,8 +830,6 @@ func main() {
 	// Start system tray or run in console mode
 	if enableConsole {
 		if !*noBrowser {
-			// Auto-open browser after systray is ready (if not disabled)
-			// Check no-browser flag via environment or pass as parameter if needed
 			if err := openBrowser(); err != nil {
 				logger.Errorf("Warning: Failed to auto-open browser: %v", err)
 			}
@@ -763,16 +837,8 @@ func main() {
 
 		sigChan := make(chan os.Signal, 1)
 		signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
-
-		// Main event loop - wait for signals or config changes
-		for {
-			select {
-			case <-sigChan:
-				logger.Info("Shutting down...")
-
-				return
-			}
-		}
+		<-sigChan
+		logger.Info("Shutting down...")
 	} else {
 		// GUI mode: start system tray
 		runTray()
@@ -784,4 +850,16 @@ func bindLauncherHomeToExplicitConfig(configPath string) error {
 		return nil
 	}
 	return os.Setenv(config.EnvHome, filepath.Dir(configPath))
+}
+
+// applyLauncherLoggingSettings applies config.json's logging settings,
+// redaction and rotation, to the launcher's log. A config that doesn't load
+// keeps the logger's defaults: redaction on, 10 MB × 5 files. A config save
+// applies them again (see api.ApplyLoggingSettings).
+func applyLauncherLoggingSettings(configPath string) {
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		return
+	}
+	api.ApplyLoggingSettings(cfg)
 }

@@ -122,29 +122,9 @@ func TestSwitchModel_NilDep(t *testing.T) {
 	}
 }
 
-func TestSwitchChannel_Redirect(t *testing.T) {
-	ex := NewExecutor(NewRegistry(BuiltinDefinitions()), &Runtime{})
-
-	var reply string
-	res := ex.Execute(context.Background(), Request{
-		Text: "/switch channel to telegram",
-		Reply: func(text string) error {
-			reply = text
-			return nil
-		},
-	})
-	if res.Outcome != OutcomeHandled {
-		t.Fatalf("outcome=%v, want=%v", res.Outcome, OutcomeHandled)
-	}
-	want := "This command has moved. Please use: /check channel <name>"
-	if reply != want {
-		t.Fatalf("reply=%q, want=%q", reply, want)
-	}
-}
-
 func TestCheckChannel_Success(t *testing.T) {
 	rt := &Runtime{
-		SwitchChannel: func(value string) error {
+		CheckChannel: func(value string) error {
 			return nil
 		},
 	}
@@ -169,7 +149,7 @@ func TestCheckChannel_Success(t *testing.T) {
 
 func TestCheckChannel_Error(t *testing.T) {
 	rt := &Runtime{
-		SwitchChannel: func(value string) error {
+		CheckChannel: func(value string) error {
 			return fmt.Errorf("channel '%s' not found", value)
 		},
 	}
@@ -192,27 +172,29 @@ func TestCheckChannel_Error(t *testing.T) {
 }
 
 func TestCheckChannel_NilDep(t *testing.T) {
-	ex := NewExecutor(NewRegistry(BuiltinDefinitions()), &Runtime{})
+	for _, rt := range []*Runtime{nil, {}} {
+		ex := NewExecutor(NewRegistry(BuiltinDefinitions()), rt)
 
-	var reply string
-	res := ex.Execute(context.Background(), Request{
-		Text: "/check channel telegram",
-		Reply: func(text string) error {
-			reply = text
-			return nil
-		},
-	})
-	if res.Outcome != OutcomeHandled {
-		t.Fatalf("outcome=%v, want=%v", res.Outcome, OutcomeHandled)
-	}
-	if reply != "Command unavailable in current context." {
-		t.Fatalf("reply=%q, want unavailable message", reply)
+		var reply string
+		res := ex.Execute(context.Background(), Request{
+			Text: "/check channel telegram",
+			Reply: func(text string) error {
+				reply = text
+				return nil
+			},
+		})
+		if res.Outcome != OutcomeHandled {
+			t.Fatalf("outcome=%v, want=%v", res.Outcome, OutcomeHandled)
+		}
+		if reply != "Command unavailable in current context." {
+			t.Fatalf("reply=%q, want unavailable message", reply)
+		}
 	}
 }
 
 func TestCheckChannel_MissingValue(t *testing.T) {
 	rt := &Runtime{
-		SwitchChannel: func(value string) error {
+		CheckChannel: func(value string) error {
 			return nil
 		},
 	}

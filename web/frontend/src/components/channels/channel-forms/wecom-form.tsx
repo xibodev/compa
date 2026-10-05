@@ -21,13 +21,7 @@ import {
 import { Switch } from "@/components/ui/switch"
 
 type BindingState =
-  | "idle"
-  | "loading"
-  | "waiting"
-  | "scaned"
-  | "confirmed"
-  | "expired"
-  | "error"
+  "idle" | "loading" | "waiting" | "scaned" | "confirmed" | "expired" | "error"
 
 interface WecomFormProps {
   config: ChannelConfig
@@ -343,6 +337,7 @@ export function WecomForm({
         <div className="flex flex-col items-end gap-2">
           <Switch
             checked={enabled}
+            aria-label={t("channels.page.enableLabel")}
             disabled={!isBound || toggleSaving}
             onCheckedChange={(checked) => void handleEnabledChange(checked)}
           />

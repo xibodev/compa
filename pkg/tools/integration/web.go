@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"html"
 	"io"
-	"mime"
 	"net"
 	"net/http"
 	"net/url"
@@ -36,16 +35,13 @@ const (
 	fetchTimeout      = 60 * time.Second // WebFetchTool
 
 	defaultMaxChars = 50000
+	maxFetchChars   = 200000
 	maxRedirects    = 5
 )
 
-// Pre-compiled regexes for HTML text extraction
+// Pre-compiled regexes for search result extraction
 var (
-	reScript     = regexp.MustCompile(`<script[\s\S]*?</script>`)
-	reStyle      = regexp.MustCompile(`<style[\s\S]*?</style>`)
-	reTags       = regexp.MustCompile(`<[^>]+>`)
-	reWhitespace = regexp.MustCompile(`[^\S\n]+`)
-	reBlankLines = regexp.MustCompile(`\n{3,}`)
+	reTags = regexp.MustCompile(`<[^>]+>`)
 
 	// DuckDuckGo result extraction
 	reDDGLink = regexp.MustCompile(
@@ -314,7 +310,7 @@ func (p *BraveSearchProvider) Search(
 			continue
 		}
 
-		body, err := io.ReadAll(resp.Body)
+		body, err := readSearchBody(resp.Body)
 		_ = resp.Body.Close()
 
 		if err != nil {
@@ -323,7 +319,7 @@ func (p *BraveSearchProvider) Search(
 		}
 
 		if resp.StatusCode != http.StatusOK {
-			lastErr = fmt.Errorf("API error (status %d): %s", resp.StatusCode, string(body))
+			lastErr = fmt.Errorf("API error (status %d): %s", resp.StatusCode, bodyExcerpt(body))
 			if resp.StatusCode == http.StatusTooManyRequests ||
 				resp.StatusCode == http.StatusUnauthorized ||
 				resp.StatusCode == http.StatusForbidden ||
@@ -353,15 +349,11 @@ func (p *BraveSearchProvider) Search(
 			// Log a warning when the API returned 200 but no results.
 			// This helps diagnose API format changes or silent errors
 			// where the response body does not match the expected structure.
-			bodyPreview := string(body)
-			if len(bodyPreview) > 300 {
-				bodyPreview = bodyPreview[:300]
-			}
+			// The query stays out of the log: it can carry private data.
 			logger.WarnCF("web_search", "Brave API returned empty results",
 				map[string]any{
-					"query":        query,
 					"status":       resp.StatusCode,
-					"body_preview": bodyPreview,
+					"body_preview": bodyExcerpt(body),
 				})
 			return fmt.Sprintf("No results for: %s", query), nil
 		}
@@ -447,7 +439,7 @@ func (p *TavilySearchProvider) Search(
 			continue
 		}
 
-		body, err := io.ReadAll(resp.Body)
+		body, err := readSearchBody(resp.Body)
 		_ = resp.Body.Close()
 
 		if err != nil {
@@ -456,7 +448,7 @@ func (p *TavilySearchProvider) Search(
 		}
 
 		if resp.StatusCode != http.StatusOK {
-			lastErr = fmt.Errorf("tavily api error (status %d): %s", resp.StatusCode, string(body))
+			lastErr = fmt.Errorf("tavily api error (status %d): %s", resp.StatusCode, bodyExcerpt(body))
 			if resp.StatusCode == http.StatusTooManyRequests ||
 				resp.StatusCode == http.StatusUnauthorized ||
 				resp.StatusCode == http.StatusForbidden ||
@@ -825,7 +817,7 @@ func (p *GeminiSearchProvider) Search(
 		return "", fmt.Errorf("failed to read response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("gemini search api error (status %d): %s", resp.StatusCode, string(body))
+		return "", fmt.Errorf("gemini search api error (status %d): %s", resp.StatusCode, bodyExcerpt(body))
 	}
 
 	var searchResp struct {
@@ -906,7 +898,7 @@ func (p *SogouSearchProvider) Search(
 			return "", fmt.Errorf("request failed: %w", err)
 		}
 
-		body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		body, err := readSearchBody(resp.Body)
 		_ = resp.Body.Close()
 		if err != nil {
 			return "", fmt.Errorf("failed to read response: %w", err)
@@ -915,33 +907,39 @@ func (p *SogouSearchProvider) Search(
 			return "", fmt.Errorf("Sogou returned status %d", resp.StatusCode)
 		}
 
-		html := string(body)
-		if len(html) < 200 {
+		page := string(body)
+		matches := reSogouTitle.FindAllStringSubmatch(page, -1)
+		if len(matches) == 0 && isSogouCaptcha(resp, page) {
+			if len(results) == 0 {
+				return "", errors.New("Sogou search blocked by captcha")
+			}
+			break
+		}
+		if len(page) < 200 {
 			break
 		}
 
-		matches := reSogouTitle.FindAllStringSubmatch(html, -1)
 		for _, match := range matches {
 			if len(match) < 3 {
 				continue
 			}
 
-			title := stripTags(match[2])
+			title := cleanSearchText(match[2])
 			link := extractSogouURL(match[1])
 			if title == "" || link == "" || seenURLs[link] {
 				continue
 			}
 			seenURLs[link] = true
 
-			start := strings.Index(html, match[0])
+			start := strings.Index(page, match[0])
 			snippet := ""
 			if start >= 0 {
-				after := html[start+len(match[0]):]
+				after := page[start+len(match[0]):]
 				if len(after) > 2000 {
 					after = after[:2000]
 				}
 				if snippetMatch := reSogouSnippet.FindStringSubmatch(after); len(snippetMatch) > 1 {
-					snippet = stripTags(snippetMatch[1])
+					snippet = cleanSearchText(snippetMatch[1])
 				}
 			}
 
@@ -999,16 +997,24 @@ func (p *DuckDuckGoSearchProvider) Search(
 	}
 	defer resp.Body.Close()
 
-	body, err := io.ReadAll(resp.Body)
+	body, err := readSearchBody(resp.Body)
 	if err != nil {
 		return "", fmt.Errorf("failed to read response: %w", err)
 	}
 
-	return p.extractResults(string(body), count, query)
+	page := string(body)
+	if !reDDGLink.MatchString(page) && isDuckDuckGoCaptcha(page) {
+		return "", errors.New("DuckDuckGo search blocked by captcha")
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("DuckDuckGo returned status %d", resp.StatusCode)
+	}
+
+	return p.extractResults(page, count, query)
 }
 
 func (p *DuckDuckGoSearchProvider) extractResults(
-	html string,
+	page string,
 	count int,
 	query string,
 ) (string, error) {
@@ -1018,7 +1024,7 @@ func (p *DuckDuckGoSearchProvider) extractResults(
 	// Try finding the result links directly first, as they are the most critical
 	// Pattern: <a class="result__a" href="...">Title</a>
 	// The previous regex was a bit strict. Let's make it more flexible for attributes order/content
-	matches := reDDGLink.FindAllStringSubmatch(html, count+5)
+	matches := reDDGLink.FindAllStringSubmatch(page, count+5)
 
 	if len(matches) == 0 {
 		return fmt.Sprintf("No results found or extraction failed. Query: %s", query), nil
@@ -1035,31 +1041,19 @@ func (p *DuckDuckGoSearchProvider) extractResults(
 
 	// A better regex approach: iterate through text and find matches in order
 	// But for now, let's grab all snippets too
-	snippetMatches := reDDGSnippet.FindAllStringSubmatch(html, count+5)
+	snippetMatches := reDDGSnippet.FindAllStringSubmatch(page, count+5)
 
 	maxItems := min(len(matches), count)
 
 	for i := range maxItems {
-		urlStr := matches[i][1]
-		title := stripTags(matches[i][2])
-		title = strings.TrimSpace(title)
-
-		// URL decoding if needed
-		if strings.Contains(urlStr, "uddg=") {
-			if u, err := url.QueryUnescape(urlStr); err == nil {
-				_, after, ok := strings.Cut(u, "uddg=")
-				if ok {
-					urlStr = after
-				}
-			}
-		}
+		urlStr := duckDuckGoTargetURL(matches[i][1])
+		title := cleanSearchText(matches[i][2])
 
 		lines = append(lines, fmt.Sprintf("%d. %s\n   %s", i+1, title, urlStr))
 
 		// Attempt to attach snippet if available and index aligns
 		if i < len(snippetMatches) {
-			snippet := stripTags(snippetMatches[i][1])
-			snippet = strings.TrimSpace(snippet)
+			snippet := cleanSearchText(snippetMatches[i][1])
 			if snippet != "" {
 				lines = append(lines, fmt.Sprintf("   %s", snippet))
 			}
@@ -1067,6 +1061,54 @@ func (p *DuckDuckGoSearchProvider) extractResults(
 	}
 
 	return strings.Join(lines, "\n"), nil
+}
+
+// duckDuckGoTargetURL returns the destination of a DuckDuckGo redirect link
+// (//duckduckgo.com/l/?uddg=<escaped URL>&rut=...), or the link itself.
+func duckDuckGoTargetURL(href string) string {
+	href = html.UnescapeString(href)
+	if u, err := url.Parse(href); err == nil {
+		if target := u.Query().Get("uddg"); target != "" {
+			return target
+		}
+	}
+	return href
+}
+
+func isDuckDuckGoCaptcha(page string) bool {
+	return strings.Contains(page, "anomaly-modal") ||
+		strings.Contains(page, "challenge-form") ||
+		strings.Contains(page, "bots use DuckDuckGo too")
+}
+
+func isSogouCaptcha(resp *http.Response, page string) bool {
+	if resp.Request != nil && resp.Request.URL != nil &&
+		strings.Contains(resp.Request.URL.Path, "antispider") {
+		return true
+	}
+	return strings.Contains(page, "antispider") || strings.Contains(page, "验证码")
+}
+
+// maxSearchResponseBytes bounds what a search provider reads into memory.
+const maxSearchResponseBytes = 2 << 20
+
+func readSearchBody(r io.Reader) ([]byte, error) {
+	return io.ReadAll(io.LimitReader(r, maxSearchResponseBytes))
+}
+
+// bodyExcerpt keeps upstream bodies short where they end up in errors and
+// logs: a full HTML error page helps neither the model nor the reader.
+func bodyExcerpt(body []byte) string {
+	const maxExcerpt = 200
+	if len(body) > 4096 {
+		body = body[:4096]
+	}
+	text := reTags.ReplaceAllString(strings.ToValidUTF8(string(body), ""), " ")
+	text = strings.Join(strings.Fields(html.UnescapeString(text)), " ")
+	if excerpt, _, cut := truncateRunes(text, maxExcerpt); cut {
+		return excerpt + "…"
+	}
+	return text
 }
 
 func stripTags(content string) string {
@@ -1147,7 +1189,7 @@ func (p *PerplexitySearchProvider) Search(
 			continue
 		}
 
-		body, err := io.ReadAll(resp.Body)
+		body, err := readSearchBody(resp.Body)
 		_ = resp.Body.Close()
 
 		if err != nil {
@@ -1156,7 +1198,7 @@ func (p *PerplexitySearchProvider) Search(
 		}
 
 		if resp.StatusCode != http.StatusOK {
-			lastErr = fmt.Errorf("Perplexity API error: %s", string(body))
+			lastErr = fmt.Errorf("Perplexity API error (status %d): %s", resp.StatusCode, bodyExcerpt(body))
 			if resp.StatusCode == http.StatusTooManyRequests ||
 				resp.StatusCode == http.StatusUnauthorized ||
 				resp.StatusCode == http.StatusForbidden ||
@@ -1244,7 +1286,7 @@ func (p *SearXNGSearchProvider) Search(
 		} `json:"results"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxSearchResponseBytes)).Decode(&result); err != nil {
 		return "", fmt.Errorf("failed to parse response: %w", err)
 	}
 
@@ -1330,7 +1372,7 @@ func (p *GLMSearchProvider) Search(
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("GLM Search API error (status %d): %s", resp.StatusCode, string(body))
+		return "", fmt.Errorf("GLM Search API error (status %d): %s", resp.StatusCode, bodyExcerpt(body))
 	}
 
 	var searchResp struct {
@@ -1426,7 +1468,7 @@ func (p *BaiduSearchProvider) Search(
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("baidu search API error %d: %s", resp.StatusCode, string(body))
+		return "", fmt.Errorf("baidu search API error %d: %s", resp.StatusCode, bodyExcerpt(body))
 	}
 
 	var result struct {
@@ -2089,7 +2131,7 @@ func (t *WebFetchTool) Parameters() map[string]any {
 			},
 			"maxChars": map[string]any{
 				"type":        "integer",
-				"description": "Maximum characters to extract",
+				"description": "Maximum characters to extract (at most 200000)",
 				"minimum":     100.0,
 			},
 		},
@@ -2131,6 +2173,8 @@ func (t *WebFetchTool) Execute(ctx context.Context, args map[string]any) *ToolRe
 			maxChars = int(mc)
 		}
 	}
+	// The value comes from the model; keep one fetch from flooding the context.
+	maxChars = min(maxChars, maxFetchChars)
 
 	doFetch := func(ua string) (*http.Response, []byte, error) {
 		req, reqErr := http.NewRequestWithContext(ctx, "GET", urlStr, nil)
@@ -2192,56 +2236,43 @@ func (t *WebFetchTool) Execute(ctx context.Context, args map[string]any) *ToolRe
 		}
 	}
 
-	bodyStr := string(body)
 	contentType := resp.Header.Get("Content-Type")
+	mediaType := fetchMediaType(contentType, body)
 
-	mediaType, params, err := mime.ParseMediaType(contentType)
-	if err != nil {
-		// The most common error here is "mime: no media type" if the header is empty.
-		logger.WarnCF("tool", "Failed to parse Content-Type", map[string]any{
-			"raw_header": contentType,
-			"error":      err.Error(),
-		})
-
-		// security fallback
-		mediaType = "application/octet-stream"
+	header := fmt.Sprintf("URL: %s\n", urlStr)
+	if resp.Request != nil && resp.Request.URL != nil && resp.Request.URL.String() != urlStr {
+		header += fmt.Sprintf("Redirected to: %s\n", resp.Request.URL.String())
 	}
+	header += fmt.Sprintf("Status: %d\n", resp.StatusCode)
 
-	charset, hasCharset := params["charset"]
-	if hasCharset {
-		// If the charset is not utf-8, we might have to convert the bodyStr
-		// before passing it to the HTML/Markdown parser
-		if strings.ToLower(charset) != "utf-8" {
-			logger.WarnCF(
-				"tool",
-				"Note: the content is not in UTF-8",
-				map[string]any{"charset": charset},
-			)
+	if !isTextMediaType(mediaType) {
+		// Binary bodies are useless to the model and can be large.
+		header += fmt.Sprintf("Content-Type: %s\n", mediaType)
+		return &ToolResult{
+			ForLLM: header + fmt.Sprintf(
+				"\n[Binary content (%s, %d bytes) not shown; web_fetch returns text only]",
+				mediaType, len(body),
+			),
+			ForUser: fmt.Sprintf("Fetched %d bytes of %s from %s (not shown)", len(body), mediaType, urlStr),
 		}
 	}
+	bodyStr := decodeText(body, contentType)
 
 	var text, extractor string
 
 	switch {
-	case mediaType == "application/json":
-		var jsonData any
-		if err := json.Unmarshal(body, &jsonData); err != nil {
+	case mediaType == "application/json" || strings.HasSuffix(mediaType, "+json"):
+		// json.Indent keeps key order and doesn't escape <, > and &.
+		var formatted bytes.Buffer
+		if err := json.Indent(&formatted, []byte(bodyStr), "", "  "); err != nil {
 			text = bodyStr
 			extractor = "raw"
 			break
 		}
-
-		formatted, err := json.MarshalIndent(jsonData, "", "  ")
-		if err != nil {
-			text = bodyStr
-			extractor = "raw"
-			break
-		}
-
-		text = string(formatted)
+		text = formatted.String()
 		extractor = "json"
 
-	case mediaType == "text/html" || looksLikeHTML(bodyStr):
+	case mediaType == "text/html" || mediaType == "application/xhtml+xml" || looksLikeHTML(bodyStr):
 		switch strings.ToLower(t.format) {
 		case "markdown":
 			var err error
@@ -2252,7 +2283,7 @@ func (t *WebFetchTool) Execute(ctx context.Context, args map[string]any) *ToolRe
 			extractor = "markdown"
 
 		default:
-			text = t.extractText(bodyStr)
+			text = extractHTMLText(bodyStr)
 			extractor = "text"
 		}
 
@@ -2261,68 +2292,23 @@ func (t *WebFetchTool) Execute(ctx context.Context, args map[string]any) *ToolRe
 		extractor = "raw"
 	}
 
-	truncated := len(text) > maxChars
+	header += fmt.Sprintf("Content-Type: %s (%s)\n", mediaType, extractor)
+	text, total, truncated := truncateRunes(text, maxChars)
 	if truncated {
-		text = text[:maxChars] + "\n[Content truncated due to size limit]"
-	}
-
-	result := map[string]any{
-		"url":       urlStr,
-		"status":    resp.StatusCode,
-		"extractor": extractor,
-		"truncated": truncated,
-		"length":    len(text),
-		"text":      text,
-	}
-
-	resultJSON, marshalErr := json.MarshalIndent(result, "", "  ")
-	if marshalErr != nil {
-		return ErrorResult(fmt.Sprintf("failed to marshal result: %v", marshalErr))
+		header += fmt.Sprintf("Truncated: first %d of %d characters\n", maxChars, total)
+		text += "\n[Content truncated due to size limit]"
 	}
 
 	return &ToolResult{
-		ForLLM: string(resultJSON),
+		ForLLM: header + "\n" + text,
 		ForUser: fmt.Sprintf(
 			"Fetched %d bytes from %s (extractor: %s, truncated: %v)",
-			len(text),
+			len(body),
 			urlStr,
 			extractor,
 			truncated,
 		),
 	}
-}
-
-func looksLikeHTML(body string) bool {
-	if body == "" {
-		return false
-	}
-
-	lower := strings.ToLower(body)
-
-	return strings.HasPrefix(body, "<!doctype") ||
-		strings.HasPrefix(lower, "<html")
-}
-
-func (t *WebFetchTool) extractText(htmlContent string) string {
-	result := reScript.ReplaceAllLiteralString(htmlContent, "")
-	result = reStyle.ReplaceAllLiteralString(result, "")
-	result = reTags.ReplaceAllLiteralString(result, "")
-
-	result = strings.TrimSpace(result)
-
-	result = reWhitespace.ReplaceAllString(result, " ")
-	result = reBlankLines.ReplaceAllString(result, "\n\n")
-
-	lines := strings.Split(result, "\n")
-	var cleanLines []string
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			cleanLines = append(cleanLines, line)
-		}
-	}
-
-	return strings.Join(cleanLines, "\n")
 }
 
 func newSafeDialContext(

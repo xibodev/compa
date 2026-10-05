@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/xibodev/compa/pkg/approval"
 	"github.com/xibodev/compa/pkg/bus"
 	"github.com/xibodev/compa/pkg/config"
 	runtimeevents "github.com/xibodev/compa/pkg/events"
@@ -148,6 +149,8 @@ func TestAgentLoop_MountProcessHook_ApprovalDeny(t *testing.T) {
 	al, agent, cleanup := newHookTestLoop(t, provider)
 	defer cleanup()
 
+	al.cfg.Tools.Approval = approval.Policy{Rules: []approval.Rule{{Tool: "blocked_tool", Action: approval.Ask}}}
+	al.RegisterTool(&policyProbe{name: "blocked_tool"})
 	if err := al.MountProcessHook(context.Background(), "ipc-approval", ProcessHookOptions{
 		Command:     processHookHelperCommand(),
 		Env:         processHookHelperEnv("deny", ""),
@@ -278,6 +281,56 @@ func processHookHelperCommand() []string {
 	return []string{os.Args[0], "-test.run=TestProcessHook_HelperProcess", "--"}
 }
 
+// AG-21: a process hook that crashes is restarted once, after a backoff; one
+// that crashes again stays stopped. Its failed calls are skipped.
+func TestSupervisedProcessHookRestartsOnceAfterACrash(t *testing.T) {
+	previous := processHookRestartBackoff
+	processHookRestartBackoff = 10 * time.Millisecond
+	t.Cleanup(func() { processHookRestartBackoff = previous })
+
+	hook, err := newSupervisedProcessHook(context.Background(), "crashy", ProcessHookOptions{
+		Command:      processHookHelperCommand(),
+		Env:          processHookHelperEnv("crash", ""),
+		InterceptLLM: true,
+	})
+	if err != nil {
+		t.Fatalf("newSupervisedProcessHook() error = %v", err)
+	}
+	defer hook.Close()
+	hm := NewHookManager(nil)
+	defer hm.Close()
+	if err := hm.Mount(HookRegistration{Name: "crashy", Source: HookSourceProcess, Hook: hook}); err != nil {
+		t.Fatalf("Mount() error = %v", err)
+	}
+
+	waitUntil := func(what string, done func() bool) {
+		t.Helper()
+		deadline := time.Now().Add(15 * time.Second)
+		for !done() {
+			if time.Now().After(deadline) {
+				t.Fatalf("timed out waiting until %s", what)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+
+	first := hook.hook()
+	if _, decision := hm.BeforeLLM(context.Background(), &LLMHookRequest{}); decision.normalizedAction() != HookActionContinue {
+		t.Fatalf("a crashed interceptor decided %q, want it skipped", decision.Action)
+	}
+	waitUntil("the hook restarts", func() bool { return hook.hook() != first })
+	second := hook.hook()
+
+	if _, decision := hm.BeforeLLM(context.Background(), &LLMHookRequest{}); decision.normalizedAction() != HookActionContinue {
+		t.Fatalf("the restarted interceptor crashed and decided %q, want it skipped", decision.Action)
+	}
+	<-second.done
+	time.Sleep(200 * time.Millisecond)
+	if hook.hook() != second || hook.restartCount() != 1 {
+		t.Fatalf("restarts = %d, want the hook restarted once and then left stopped", hook.restartCount())
+	}
+}
+
 func processHookHelperEnv(mode, eventLog string) []string {
 	env := []string{
 		"COMPA_HOOK_HELPER=1",
@@ -382,6 +435,17 @@ func runProcessHookHelper() error {
 				}
 			}
 			continue
+		}
+		if mode == "silent" {
+			continue // never answers, not even hello
+		}
+		if mode == "crash" && msg.Method != "hook.hello" {
+			os.Exit(3) // answers hello, then crashes on its first call
+		}
+		if mode == "record" && msg.Method == "hook.approve_tool" && eventLog != "" {
+			if err := os.WriteFile(eventLog, msg.Params, 0o644); err != nil {
+				return err
+			}
 		}
 
 		result, rpcErr := handleProcessHookRequest(mode, msg)

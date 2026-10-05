@@ -3,6 +3,7 @@ package matrix
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"html"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gomarkdown/markdown"
 	mdhtml "github.com/gomarkdown/markdown/html"
@@ -268,7 +270,7 @@ func (c *MatrixChannel) Start(ctx context.Context) error {
 	c.startTime = time.Now()
 
 	// Initialize crypto helper if database and passphrase are configured
-	if c.cryptoDbPath != "" && c.config.CryptoPassphrase != "" {
+	if c.cryptoDbPath != "" && c.config.CryptoPassphrase.String() != "" {
 		if err := c.initCrypto(ctx); err != nil {
 			logger.WarnCF(
 				"matrix",
@@ -363,7 +365,7 @@ func (c *MatrixChannel) initCrypto(ctx context.Context) error {
 		return fmt.Errorf("wrap database: %w", err)
 	}
 
-	cryptoHelper, err := cryptohelper.NewCryptoHelper(c.client, []byte(c.config.CryptoPassphrase), wrappedDB)
+	cryptoHelper, err := cryptohelper.NewCryptoHelper(c.client, []byte(c.config.CryptoPassphrase.String()), wrappedDB)
 	if err != nil {
 		return fmt.Errorf("create crypto helper: %w", err)
 	}
@@ -430,17 +432,58 @@ func (c *MatrixChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]st
 		content = channels.InitialAnimatedToolFeedbackContent(content)
 	}
 
-	resp, err := c.client.SendMessageEvent(ctx, roomID, event.EventMessage, c.messageContent(content))
-	if err != nil {
-		return nil, fmt.Errorf("matrix send: %w", channels.ErrTemporary)
+	chunks := []string{content}
+	if !isToolFeedback {
+		chunks = c.splitForEvent(content)
 	}
-	msgID := resp.EventID.String()
+	var msgIDs []string
+	for _, chunk := range chunks {
+		resp, err := c.client.SendMessageEvent(ctx, roomID, event.EventMessage, c.messageContent(chunk))
+		if err != nil {
+			return msgIDs, fmt.Errorf("matrix send: %w", channels.ErrTemporary)
+		}
+		msgIDs = append(msgIDs, resp.EventID.String())
+	}
 	if isToolFeedback {
-		c.RecordToolFeedbackMessage(msg.ChatID, msgID, msg.Content)
+		c.RecordToolFeedbackMessage(msg.ChatID, msgIDs[0], msg.Content)
 	} else if hasTrackedMsg {
 		c.dismissTrackedToolFeedbackMessage(ctx, msg.ChatID, trackedMsgID)
 	}
-	return []string{msgID}, nil
+	return msgIDs, nil
+}
+
+// maxEventContentBytes keeps a message event under Matrix's 65,536-byte
+// event limit, leaving room for the fields the server adds.
+const maxEventContentBytes = 60000
+
+// splitForEvent splits text into parts whose message events, with the
+// formatted body, fit maxEventContentBytes. The manager splits by
+// characters; multi-byte text and HTML can still exceed the byte limit.
+func (c *MatrixChannel) splitForEvent(text string) []string {
+	limit := utf8.RuneCountInString(text)
+	for {
+		chunks := channels.SplitMessage(text, limit)
+		fits := true
+		for _, chunk := range chunks {
+			if c.eventBytes(chunk) > maxEventContentBytes {
+				fits = false
+				break
+			}
+		}
+		if fits || limit <= 256 {
+			return chunks
+		}
+		limit /= 2
+	}
+}
+
+// eventBytes is the encoded size of the message event for text.
+func (c *MatrixChannel) eventBytes(text string) int {
+	encoded, err := json.Marshal(c.messageContent(text))
+	if err != nil {
+		return len(text)
+	}
+	return len(encoded)
 }
 
 func (c *MatrixChannel) messageContent(text string) *event.MessageEventContent {
@@ -740,6 +783,7 @@ func (c *MatrixChannel) FinalizeToolFeedbackMessage(ctx context.Context, msg bus
 }
 
 func (c *MatrixChannel) handleMemberEvent(ctx context.Context, evt *event.Event) {
+	defer channels.RecoverPanic(c.Name(), "member event")
 	if !c.config.JoinOnInvite {
 		return
 	}
@@ -752,6 +796,16 @@ func (c *MatrixChannel) handleMemberEvent(ctx context.Context, evt *event.Event)
 		return
 	}
 	if evt.GetStateKey() != c.client.UserID.String() {
+		return
+	}
+	// Join only rooms someone the access policy admits invites the bot to,
+	// or rooms named in allow_from; anyone else could otherwise pull the bot
+	// into rooms of their choosing.
+	if !c.invitationAdmitted(evt.Sender, evt.RoomID) {
+		logger.InfoCF("matrix", "Ignoring invite from a sender the access policy does not admit", map[string]any{
+			"room_id": evt.RoomID.String(),
+			"inviter": evt.Sender.String(),
+		})
 		return
 	}
 
@@ -769,7 +823,20 @@ func (c *MatrixChannel) handleMemberEvent(ctx context.Context, evt *event.Event)
 	})
 }
 
+// invitationAdmitted reports whether the bot should accept an invite from
+// inviter to room: the inviter would be admitted in a direct chat or in a
+// group, or the room itself is listed.
+func (c *MatrixChannel) invitationAdmitted(inviter id.UserID, room id.RoomID) bool {
+	sender := bus.SenderInfo{
+		Platform:    "matrix",
+		PlatformID:  inviter.String(),
+		CanonicalID: identity.BuildCanonicalID("matrix", inviter.String()),
+	}
+	return c.Admits("direct", sender, room.String()) || c.Admits("group", sender, room.String())
+}
+
 func (c *MatrixChannel) handleMessageEvent(ctx context.Context, evt *event.Event) {
+	defer channels.RecoverPanic(c.Name(), "message")
 	if evt == nil {
 		return
 	}
@@ -814,15 +881,6 @@ func (c *MatrixChannel) handleMessageEvent(ctx context.Context, evt *event.Event
 	roomID := evt.RoomID.String()
 	scope := channels.BuildMediaScope("matrix", roomID, evt.ID.String())
 
-	content, mediaPaths, ok := c.extractInboundContent(ctx, msgEvt, scope)
-	if !ok {
-		return
-	}
-	content = strings.TrimSpace(content)
-	if content == "" && len(mediaPaths) == 0 {
-		return
-	}
-
 	senderID := evt.Sender.String()
 	sender := bus.SenderInfo{
 		Platform:    "matrix",
@@ -832,14 +890,51 @@ func (c *MatrixChannel) handleMessageEvent(ctx context.Context, evt *event.Event
 		DisplayName: senderID,
 	}
 
-	if !c.IsAllowedSender(sender) {
-		logger.DebugCF("matrix", "Message rejected by allowlist", map[string]any{
+	isGroup := c.isGroupRoom(ctx, evt.RoomID)
+	peerKind := "direct"
+	if isGroup {
+		peerKind = "group"
+	}
+	inboundCtx := bus.InboundContext{
+		Channel:   c.Name(),
+		ChatID:    roomID,
+		ChatType:  peerKind,
+		SenderID:  senderID,
+		MessageID: evt.ID.String(),
+	}
+
+	// Decide before downloading any media. A direct message from an unpaired
+	// sender still goes to the access policy, without its media, so that the
+	// sender is recorded.
+	if !c.Admits(peerKind, sender, roomID) {
+		logger.DebugCF("matrix", "Message rejected by access policy", map[string]any{
 			"sender_id": senderID,
+		})
+		if !isGroup {
+			c.HandleInboundContext(c.baseContext(), roomID, "["+string(msgEvt.MsgType)+"]", nil, inboundCtx, sender)
+		}
+		return
+	}
+
+	// Apply the group trigger to the text before downloading media too.
+	if isGroup && !c.groupTriggerPasses(msgEvt) {
+		logger.DebugCF("matrix", "Ignoring group message by trigger rules", map[string]any{
+			"room_id":      roomID,
+			"mention_only": c.bc.GroupTrigger.MentionOnly,
+			"prefixes":     c.bc.GroupTrigger.Prefixes,
 		})
 		return
 	}
 
-	isGroup := c.isGroupRoom(ctx, evt.RoomID)
+	content, mediaPaths, ok := c.extractInboundContent(ctx, msgEvt, scope)
+	if !ok {
+		return
+	}
+	content = strings.TrimSpace(content)
+	if content == "" && len(mediaPaths) == 0 {
+		return
+	}
+
 	if isGroup {
 		isMentioned := c.isBotMentioned(msgEvt)
 		if isMentioned {
@@ -865,11 +960,6 @@ func (c *MatrixChannel) handleMessageEvent(ctx context.Context, evt *event.Event
 		return
 	}
 
-	peerKind := "direct"
-	if isGroup {
-		peerKind = "group"
-	}
-
 	metadata := map[string]string{
 		"room_id":    roomID,
 		"timestamp":  fmt.Sprintf("%d", evt.Timestamp),
@@ -880,19 +970,28 @@ func (c *MatrixChannel) handleMessageEvent(ctx context.Context, evt *event.Event
 		metadata["reply_to_msg_id"] = replyTo.String()
 	}
 
-	inboundCtx := bus.InboundContext{
-		Channel:   "matrix",
-		ChatID:    roomID,
-		ChatType:  peerKind,
-		SenderID:  senderID,
-		MessageID: evt.ID.String(),
-		Raw:       metadata,
-	}
+	inboundCtx.Raw = metadata
 	if replyTo := msgEvt.GetRelatesTo().GetReplyTo(); replyTo != "" {
 		inboundCtx.ReplyToMessageID = replyTo.String()
 	}
 
 	c.HandleInboundContext(c.baseContext(), roomID, content, mediaPaths, inboundCtx, sender)
+}
+
+// groupTriggerPasses reports whether a group message passes the group
+// trigger, judged on its text (a media message's caption or file name) so
+// that it can run before the media is downloaded.
+func (c *MatrixChannel) groupTriggerPasses(msgEvt *event.MessageEventContent) bool {
+	text := msgEvt.Body
+	if caption := strings.TrimSpace(msgEvt.GetCaption()); caption != "" {
+		text = caption
+	}
+	isMentioned := c.isBotMentioned(msgEvt)
+	if isMentioned {
+		text = c.stripSelfMention(text)
+	}
+	respond, _ := c.ShouldRespondInGroup(isMentioned, strings.TrimSpace(text))
+	return respond
 }
 
 // decryptEvent decrypts an encrypted event and returns the decrypted message event content.
@@ -1008,6 +1107,10 @@ func (c *MatrixChannel) downloadMedia(
 	if ctx != nil {
 		dlCtx = ctx
 	}
+	if msgEvt != nil && msgEvt.Info != nil && msgEvt.Info.Size > config.DefaultMaxMediaSize {
+		return "", fmt.Errorf("matrix media of %d bytes is over the %d-byte limit",
+			msgEvt.Info.Size, config.DefaultMaxMediaSize)
+	}
 	reqCtx, cancel := context.WithTimeout(dlCtx, 20*time.Second)
 	defer cancel()
 
@@ -1049,9 +1152,13 @@ func (c *MatrixChannel) downloadMedia(
 		}
 	}()
 
-	_, err = io.Copy(tmp, reader)
+	// A file over the media size limit is not kept.
+	written, err := io.Copy(tmp, io.LimitReader(reader, config.DefaultMaxMediaSize+1))
 	if err != nil {
 		return "", err
+	}
+	if written > config.DefaultMaxMediaSize {
+		return "", fmt.Errorf("matrix media is over the %d-byte limit", config.DefaultMaxMediaSize)
 	}
 	if err = readerClose(); err != nil {
 		return "", fmt.Errorf("decrypt matrix media: %w", err)
@@ -1221,11 +1328,14 @@ func (c *MatrixChannel) isGroupRoom(ctx context.Context, roomID id.RoomID) bool 
 
 	resp, err := c.client.JoinedMembers(reqCtx, roomID)
 	if err != nil {
-		logger.DebugCF("matrix", "Failed to query room members; assume direct", map[string]any{
+		// Not cached, so the next message asks again. Meanwhile the room is
+		// treated as a group: the group policy and trigger apply, rather
+		// than letting any room pass as a direct chat.
+		logger.DebugCF("matrix", "Failed to query room members; assume group", map[string]any{
 			"room_id": roomID.String(),
 			"error":   err.Error(),
 		})
-		return false
+		return true
 	}
 
 	isGroup := len(resp.Joined) > 2

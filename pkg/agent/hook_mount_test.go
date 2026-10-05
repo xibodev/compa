@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/xibodev/compa/pkg/bus"
@@ -180,7 +181,7 @@ func TestProcessHookObserveKindsFromConfigAcceptsRuntimeNames(t *testing.T) {
 	}
 }
 
-func TestAgentLoop_ProcessDirectWithChannel_InvalidConfiguredHookFails(t *testing.T) {
+func TestAgentLoop_ProcessDirectWithChannel_InvalidConfiguredHookIsReported(t *testing.T) {
 	provider := &llmHookTestProvider{}
 	al := newConfiguredHookLoop(t, provider, config.HooksConfig{
 		Enabled: true,
@@ -194,8 +195,11 @@ func TestAgentLoop_ProcessDirectWithChannel_InvalidConfiguredHookFails(t *testin
 	})
 	defer al.Close()
 
-	_, err := al.ProcessDirectWithChannel(context.Background(), "hello", "session-1", "cli", "direct")
-	if err == nil {
-		t.Fatal("expected invalid configured hook error")
+	// A hook that cannot start is left out and recorded; the turn runs.
+	if _, err := al.ProcessDirectWithChannel(context.Background(), "hello", "session-1", "cli", "direct"); err != nil {
+		t.Fatalf("ProcessDirectWithChannel() error = %v, want the turn to run without the hook", err)
+	}
+	if err := al.hookRuntime.getInitErr(); err == nil || !strings.Contains(err.Error(), "bad-hook") {
+		t.Fatalf("hook init error = %v, want the invalid hook", err)
 	}
 }

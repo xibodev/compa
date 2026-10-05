@@ -93,12 +93,95 @@ type AgentInstance struct {
 	modelErr error
 	// status mirrors the agent's primary model for readers outside a turn.
 	status *agentModelStatus
+	// models counts the turns running on the agent's current model
+	// providers; see turnSnapshot.
+	models *modelGeneration
+}
+
+// modelGeneration counts the turns running on one set of an agent's model
+// providers. A turn runs on a snapshot of the agent's model and holds no
+// lock, so the providers a /switch or Close replaces are closed only once
+// the last turn started on them ends.
+type modelGeneration struct {
+	mu      sync.Mutex
+	turns   int
+	retired bool
+	stale   []providers.LLMProvider
+}
+
+// acquire counts one more turn on the generation and reports whether its
+// providers are still open: they are not once it was retired with no turn
+// left on it.
+func (g *modelGeneration) acquire() bool {
+	if g == nil {
+		return true
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.retired && g.turns == 0 {
+		return false
+	}
+	g.turns++
+	return true
+}
+
+func (g *modelGeneration) release() {
+	if g == nil {
+		return
+	}
+	g.mu.Lock()
+	g.turns--
+	var stale []providers.LLMProvider
+	if g.turns == 0 && g.retired {
+		stale, g.stale = g.stale, nil
+	}
+	g.mu.Unlock()
+	closeUniqueStatefulProviders(stale...)
+}
+
+// retire marks the generation replaced: stale closes now when no turn runs
+// on it, and otherwise when its last turn ends.
+func (g *modelGeneration) retire(stale []providers.LLMProvider) {
+	if g == nil {
+		closeUniqueStatefulProviders(stale...)
+		return
+	}
+	g.mu.Lock()
+	g.retired = true
+	g.stale = append(g.stale, stale...)
+	if g.turns > 0 {
+		g.mu.Unlock()
+		return
+	}
+	stale, g.stale = g.stale, nil
+	g.mu.Unlock()
+	closeUniqueStatefulProviders(stale...)
+}
+
+// turnSnapshot returns a copy of the agent with its model as it is now, for
+// one turn to run on, and the release the turn calls when it ends. The turn
+// holds no lock while it runs: a /switch model never waits for it (nor for
+// the sub-agents it runs) and takes effect on the next turn.
+//
+// current is false only for a snapshot of a snapshot whose turns all ended
+// after a /switch closed its providers; its copy must not be run on.
+func (a *AgentInstance) turnSnapshot() (snapshot *AgentInstance, release func(), current bool) {
+	modelMu := a.modelStateMutex()
+	modelMu.RLock()
+	copied := *a
+	generation := a.models
+	current = generation.acquire()
+	modelMu.RUnlock()
+	if !current {
+		return &copied, func() {}, false
+	}
+	var once sync.Once
+	return &copied, func() { once.Do(generation.release) }, true
 }
 
 // agentModelStatus is the model state read outside a turn — by background
 // work (summaries, seahorse, evolution) and /show model — without the model
-// mutex, which a turn holds for its whole run. A shallow copy of an agent
-// (a sub-turn's) shares it.
+// mutex. A shallow copy of an agent (a turn's snapshot) shares it.
 type agentModelStatus struct {
 	mu       sync.Mutex
 	provider providers.LLMProvider
@@ -282,6 +365,19 @@ func NewAgentInstance(
 		// forceCompression handles any overshoot.
 		contextWindow = maxTokens * 4
 	}
+	if maxTokens >= contextWindow {
+		// The reply must fit the window with the prompt; otherwise every
+		// request is over budget and compaction empties the history.
+		clamped := max(contextWindow/2, 1)
+		logger.WarnCF("agent", "max_tokens is not below context_window; capping it at half the window",
+			map[string]any{
+				"agent_id":       agentID,
+				"max_tokens":     maxTokens,
+				"context_window": contextWindow,
+				"capped_to":      clamped,
+			})
+		maxTokens = clamped
+	}
 
 	temperature := 0.7
 	if defaults.Temperature != nil {
@@ -319,6 +415,7 @@ func NewAgentInstance(
 		CandidateProviders:        make(map[string]providers.LLMProvider),
 		CandidateConfigs:          make(map[string]*providers.CallSpec),
 		status:                    &agentModelStatus{},
+		models:                    &modelGeneration{},
 	}
 
 	models, err := modelsForSelection(cfg, provider, resolve, selection)
@@ -387,7 +484,10 @@ func (a *AgentInstance) setModels(models agentModels) {
 	a.ThinkingLevelConfigured = isConfiguredThinkingLevel(level)
 	a.status.set(a.Provider, primary.Model, nil)
 
-	closeUnreferencedStatefulProviders(previous, a.CandidateProviders)
+	// Turns still running on the previous model keep its providers.
+	retiring := a.models
+	a.models = &modelGeneration{}
+	retiring.retire(unreferencedProviders(previous, a.CandidateProviders))
 }
 
 // setModelError records that selection gave the agent no model: every turn
@@ -575,11 +675,15 @@ func mediaTempDirPattern() string {
 }
 
 // Close releases resources held by the agent's providers and session store.
+// Providers a running turn still uses close when that turn ends.
 func (a *AgentInstance) Close() error {
 	modelMu := a.modelStateMutex()
 	modelMu.Lock()
-	defer modelMu.Unlock()
-	closeUniqueStatefulProviders(a.providerList()...)
+	held := a.providerList()
+	retiring := a.models
+	a.models = &modelGeneration{}
+	modelMu.Unlock()
+	retiring.retire(held)
 	if a.Sessions != nil {
 		return a.Sessions.Close()
 	}
@@ -626,6 +730,16 @@ func closeUnreferencedStatefulProviders(
 	current map[string]providers.LLMProvider,
 	retained ...providers.LLMProvider,
 ) {
+	closeUniqueStatefulProviders(unreferencedProviders(previous, current, retained...)...)
+}
+
+// unreferencedProviders returns the providers of previous that neither
+// current nor retained hold.
+func unreferencedProviders(
+	previous map[string]providers.LLMProvider,
+	current map[string]providers.LLMProvider,
+	retained ...providers.LLMProvider,
+) []providers.LLMProvider {
 	retainedKeys := make(map[string]struct{}, len(current)+len(retained))
 	for _, provider := range current {
 		retainedKeys[fmt.Sprintf("%T:%p", provider, provider)] = struct{}{}
@@ -640,7 +754,7 @@ func closeUnreferencedStatefulProviders(
 			removed = append(removed, provider)
 		}
 	}
-	closeUniqueStatefulProviders(removed...)
+	return removed
 }
 
 // initSessionStore creates the JSONL session store rooted at dir.
@@ -655,16 +769,8 @@ func initSessionStore(dir string) session.SessionStore {
 	return session.NewJSONLBackend(store)
 }
 
+// expandHome expands a leading "~" the way the config does, "~\x" included:
+// a path it does not name never becomes the bare home directory.
 func expandHome(path string) string {
-	if path == "" {
-		return path
-	}
-	if path[0] == '~' {
-		home, _ := os.UserHomeDir()
-		if len(path) > 1 && path[1] == '/' {
-			return home + path[1:]
-		}
-		return home
-	}
-	return path
+	return config.ExpandHome(path)
 }

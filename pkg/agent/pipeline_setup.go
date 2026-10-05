@@ -34,12 +34,15 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 			SessionKey: ts.sessionKey,
 			Budget:     ts.agent.ContextWindow,
 			MaxTokens:  ts.agent.MaxTokens,
+			AgentID:    ts.agent.ID,
 		}); err == nil && resp != nil {
 			history = resp.History
 			summary = resp.Summary
 		}
 	}
-	ts.captureRestorePoint(history, summary)
+	// A hard abort restores the turn agent's stored session, not the
+	// assembled view: a context manager may assemble a trimmed one.
+	ts.refreshRestorePointFromSession(ts.agent)
 
 	contextualSkills := ts.activeSkills
 	if ts.agent.ContextBuilder != nil {
@@ -57,7 +60,7 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 	messages = resolveMediaRefs(messages, p.MediaStore, maxMediaSize, currentTurnStart)
 
 	if !ts.opts.NoHistory {
-		toolDefs := filterToolsByTurnProfile(ts.agent.Tools.ToProviderDefs(), ts.profile)
+		toolDefs := p.al.offeredToolDefs(ts)
 		if isOverContextBudget(ts.agent.ContextWindow, messages, toolDefs, ts.agent.MaxTokens) {
 			logger.WarnCF("agent", "Proactive compression: context budget exceeded before LLM call",
 				map[string]any{"session_key": ts.sessionKey})
@@ -65,6 +68,7 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 				SessionKey: ts.sessionKey,
 				Reason:     ContextCompressReasonProactive,
 				Budget:     ts.agent.ContextWindow,
+				AgentID:    ts.agent.ID,
 			}); err != nil {
 				logger.WarnCF("agent", "Proactive compact failed", map[string]any{
 					"session_key": ts.sessionKey,
@@ -76,6 +80,7 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 				SessionKey: ts.sessionKey,
 				Budget:     ts.agent.ContextWindow,
 				MaxTokens:  ts.agent.MaxTokens,
+				AgentID:    ts.agent.ID,
 			}); err == nil && resp != nil {
 				history = resp.History
 				summary = resp.Summary

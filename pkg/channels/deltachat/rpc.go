@@ -45,6 +45,11 @@ type rpcClient struct {
 	stdin  io.WriteCloser
 	stdout io.ReadCloser
 
+	// writeMu serializes request writes. It is not mu: a write blocks while
+	// the server is busy writing responses, and the read loop needs mu to
+	// hand those out.
+	writeMu sync.Mutex
+
 	mu      sync.Mutex
 	nextID  uint64
 	pending map[uint64]chan rpcResponse
@@ -139,9 +144,9 @@ func (c *rpcClient) call(ctx context.Context, method string, params ...any) (jso
 	}
 	data = append(data, '\n')
 
-	c.mu.Lock()
+	c.writeMu.Lock()
 	_, err = c.stdin.Write(data)
-	c.mu.Unlock()
+	c.writeMu.Unlock()
 	if err != nil {
 		c.clearPending(id)
 		return nil, fmt.Errorf("deltachat rpc write %s: %w", method, err)
@@ -163,6 +168,14 @@ func (c *rpcClient) clearPending(id uint64) {
 	c.mu.Lock()
 	delete(c.pending, id)
 	c.mu.Unlock()
+}
+
+// isClosed reports whether the connection is over: closed, or the server
+// went away.
+func (c *rpcClient) isClosed() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.closed
 }
 
 // close terminates the RPC server process.

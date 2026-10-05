@@ -102,9 +102,7 @@ export function useSessionHistory({
         }
       } catch (err) {
         console.error("Failed to delete session:", err)
-        toast.error(
-          err instanceof Error ? err.message : t("chat.deleteSessionFailed"),
-        )
+        toast.error(t("chat.deleteSessionFailed"))
       }
     },
     [activeSessionId, onDeletedActiveSession, sessions, t],

@@ -7,13 +7,16 @@ func newInstallBuiltinCommand(workspaceFn func() (string, error)) *cobra.Command
 		Use:     "install-builtin",
 		Short:   "Install all builtin skills to workspace",
 		Example: `compa-kernel skills install-builtin`,
-		RunE: func(_ *cobra.Command, _ []string) error {
+		RunE: func(cmd *cobra.Command, _ []string) error {
 			workspace, err := workspaceFn()
 			if err != nil {
 				return err
 			}
-			skillsInstallBuiltinCmd(workspace)
-			return nil
+			fsys, err := builtinSkillsFS()
+			if err != nil {
+				return err
+			}
+			return installBuiltinSkills(cmd.OutOrStdout(), fsys, workspace)
 		},
 	}
 

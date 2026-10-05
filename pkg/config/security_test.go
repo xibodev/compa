@@ -72,6 +72,15 @@ func TestSaveAndLoadSecurityConfig(t *testing.T) {
 		out, err = json.Marshal(s)
 		require.NoError(t, err)
 		t.Logf("output: %v", string(out))
+		assert.Equal(t, `{"secret":"[NOT_HERE]"}`, string(out))
+
+		// The placeholder reads back as unset.
+		var back testStruct
+		require.NoError(t, json.Unmarshal(out, &back))
+		assert.True(t, back.Secret.IsZero())
+		assert.Equal(t, "", back.Secret.String())
+		out, err = json.Marshal(back)
+		require.NoError(t, err)
 		assert.Equal(t, "{}", string(out))
 	})
 	tmpDir := t.TempDir()
@@ -134,8 +143,13 @@ func TestSaveAndLoadSecurityConfig(t *testing.T) {
 		marshal, err := json.Marshal(original)
 		require.NoError(t, err)
 		t.Logf("json: %s", string(marshal))
-		assert.NotContains(t, string(marshal), "\"api_keys\"")
-		assert.NotContains(t, string(marshal), notHere)
+		// Set secrets show the placeholder, channel settings leave them out,
+		// and no value is shown.
+		assert.Contains(t, string(marshal), `"api_keys":"[NOT_HERE]"`)
+		for _, value := range []string{"brave_key", "key1", "telegram_token", "feishu_app_secret", "web_client_token"} {
+			assert.NotContains(t, string(marshal), value)
+		}
+		assert.NotContains(t, string(marshal), `"token"`)
 
 		err = json.Unmarshal(marshal, cfg2)
 		require.NoError(t, err)

@@ -3,9 +3,22 @@ package moduletools
 import (
 	"context"
 	"os"
-	"path/filepath"
 	"testing"
 )
+
+// liveCompaHome returns $COMPA_HOME, the Compa home whose installed modules
+// the live tests read; they skip without one, or without modules there.
+func liveCompaHome(t *testing.T) string {
+	t.Helper()
+	home := os.Getenv("COMPA_HOME")
+	if home == "" {
+		t.Skip("COMPA_HOME is not set")
+	}
+	if _, err := os.Stat(ModulesDir(home)); err != nil {
+		t.Skip("no modules installed")
+	}
+	return home
+}
 
 // TestLoadKnowledgeAgainstRealModules exercises composition against whatever
 // modules are actually installed, and skips when none are. It is the check that
@@ -29,13 +42,7 @@ import (
 // zero assertions and my pass-1 grep still missed it, because it greps for
 // t.Error and this package's other tests use it while this function does not.
 func TestLoadKnowledgeAgainstRealModules(t *testing.T) {
-	home := os.Getenv("COMPA_HOME")
-	if home == "" {
-		home = filepath.Join("..", "..", ".local")
-	}
-	if _, err := os.Stat(ModulesDir(home)); err != nil {
-		t.Skip("no modules installed")
-	}
+	home := liveCompaHome(t)
 
 	installed := Discover(context.Background(), home)
 	if len(installed) == 0 {
@@ -89,14 +96,7 @@ func TestLoadKnowledgeAgainstRealModules(t *testing.T) {
 // TestSelectionGatesLoading is the property the connector gesture depends on:
 // an installed module costs nothing in context until a user selects it.
 func TestSelectionGatesLoading(t *testing.T) {
-	home := os.Getenv("COMPA_HOME")
-	if home == "" {
-		home = filepath.Join("..", "..", ".local")
-	}
-	if _, err := os.Stat(ModulesDir(home)); err != nil {
-		t.Skip("no modules installed")
-	}
-	installed := Discover(context.Background(), home)
+	installed := Discover(context.Background(), liveCompaHome(t))
 
 	if k := LoadKnowledge(installed, nil, nil); k.Tokens() != 0 {
 		t.Errorf("no selection loaded %d tokens; an unselected module must cost nothing", k.Tokens())

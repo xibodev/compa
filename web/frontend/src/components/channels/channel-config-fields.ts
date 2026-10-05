@@ -32,6 +32,7 @@ const CHANNEL_SECRET_FIELDS: Record<string, string[]> = {
   onebot: ["access_token"],
   wecom: ["secret"],
   web: ["token"],
+  maixcam: ["token"],
   matrix: ["access_token"],
   irc: ["password", "nickserv_password", "sasl_password"],
   mqtt: ["username", "password"],
@@ -100,4 +101,50 @@ export function getSecretInputPlaceholder(
   return hasConfiguredSecret(configuredSecrets, key)
     ? configuredPlaceholder
     : fallback
+}
+
+export const DM_POLICIES = ["pairing", "allowlist", "open", "disabled"] as const
+export const GROUP_POLICIES = ["allowlist", "open", "disabled"] as const
+export const WHATSAPP_CHATS = ["self", "allowed", "all"] as const
+
+export type DMPolicy = (typeof DM_POLICIES)[number]
+export type GroupPolicy = (typeof GROUP_POLICIES)[number]
+export type WhatsAppChats = (typeof WHATSAPP_CHATS)[number]
+
+function pickOption<T extends string>(options: readonly T[], value: unknown) {
+  const trimmed = typeof value === "string" ? value.trim() : ""
+  return options.find((option) => option === trimmed)
+}
+
+function allowEntries(config: ChannelConfig): string[] {
+  const entries = Array.isArray(config.allow_from) ? config.allow_from : []
+  return entries
+    .filter((entry): entry is string => typeof entry === "string")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry !== "")
+}
+
+/**
+ * The channel's dm_policy, or the one the gateway derives when it is unset:
+ * "*" in allow_from opens the channel, other entries make an allowlist, and
+ * none pairs.
+ */
+export function effectiveDMPolicy(config: ChannelConfig): DMPolicy {
+  const set = pickOption(DM_POLICIES, config.dm_policy)
+  if (set) return set
+  const entries = allowEntries(config)
+  if (entries.includes("*")) return "open"
+  return entries.length > 0 ? "allowlist" : "pairing"
+}
+
+/** The channel's group_policy, or the one derived from allow_from. */
+export function effectiveGroupPolicy(config: ChannelConfig): GroupPolicy {
+  const set = pickOption(GROUP_POLICIES, config.group_policy)
+  if (set) return set
+  return allowEntries(config).includes("*") ? "open" : "allowlist"
+}
+
+/** Native WhatsApp's settings.chats; only the self chat when unset. */
+export function effectiveWhatsAppChats(config: ChannelConfig): WhatsAppChats {
+  return pickOption(WHATSAPP_CHATS, config.chats) ?? "self"
 }

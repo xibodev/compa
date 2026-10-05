@@ -1,14 +1,10 @@
+import { getSafeLocalStorage } from "@/lib/storage"
+
 export type AssistantDetailVisibility =
-  | "none"
-  | "thought"
-  | "tool_calls"
-  | "all"
+  "none" | "thought" | "tool_calls" | "all"
 
 export type AssistantDetailMessageKind =
-  | "normal"
-  | "thought"
-  | "tool_calls"
-  | undefined
+  "normal" | "thought" | "tool_calls" | undefined
 
 export const ASSISTANT_DETAIL_VISIBILITY_STORAGE_KEY =
   "compa:chat-assistant-detail-visibility"
@@ -36,14 +32,6 @@ function parseAssistantDetailVisibility(
   try {
     const value: unknown = JSON.parse(rawValue)
     return isAssistantDetailVisibility(value) ? value : undefined
-  } catch {
-    return undefined
-  }
-}
-
-function getSafeLocalStorage(): Storage | undefined {
-  try {
-    return globalThis.localStorage
   } catch {
     return undefined
   }

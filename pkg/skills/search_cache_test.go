@@ -198,3 +198,32 @@ func TestSearchCacheLRUUpdateOnGet(t *testing.T) {
 		t.Fatal("query-B should have been evicted")
 	}
 }
+
+func TestSearchCacheShortQueriesNeedExactMatch(t *testing.T) {
+	cache := NewSearchCache(10, 5*time.Minute)
+	cache.Put("go", []SearchResult{{Slug: "golang"}})
+
+	for _, other := range []string{"ai", "db", "js"} {
+		if _, hit := cache.Get(other); hit {
+			t.Fatalf("short query %q matched the cached %q", other, "go")
+		}
+	}
+	got, hit := cache.Get("GO")
+	assert.True(t, hit)
+	assert.Equal(t, "golang", got[0].Slug)
+}
+
+func TestSearchCacheKeyIncludesLimit(t *testing.T) {
+	cache := NewSearchCache(10, 5*time.Minute)
+	cache.PutLimited("github integration", 1, []SearchResult{{Slug: "only-one"}})
+
+	if _, hit := cache.GetLimited("github integration", 10); hit {
+		t.Fatal("results fetched with limit 1 were served for limit 10")
+	}
+	if _, hit := cache.GetLimited("github integration tool", 10); hit {
+		t.Fatal("a similar query with another limit matched")
+	}
+	got, hit := cache.GetLimited("github integration", 1)
+	assert.True(t, hit)
+	assert.Len(t, got, 1)
+}

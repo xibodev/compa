@@ -8,9 +8,10 @@
 //
 // It also deliberately misbehaves on demand. Capabilities under fake.misbehave
 // produce the protocol violations the host must survive: stdout pollution,
-// oversized output, a hung process, a path escaping its root, and a process
-// that ignores termination. Those paths exist so the host's bounds are proven
-// against a real process rather than a fixture.
+// oversized output, a stdout flood, a hung process, a process that ignores
+// termination, a grandchild left running, a path escaping its root. Those
+// paths exist so the host's bounds are proven against a real process rather
+// than a fixture.
 //
 //	fakemodule module describe --json
 //	fakemodule module invoke <capability> --input <request.json>
@@ -20,9 +21,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/xibodev/compa/pkg/modproto"
@@ -36,6 +41,17 @@ func main() {
 }
 
 func run(args []string) int {
+	// A helper process some misbehaving capabilities start: it holds the
+	// inherited stdout and sleeps, like an ffmpeg left behind by a module. It
+	// ignores the polite request to stop, so only a kill that reaches the
+	// whole process tree ends it.
+	if len(args) == 2 && args[0] == "grandchild" {
+		signal.Ignore(os.Interrupt, syscall.SIGTERM)
+		seconds, _ := strconv.Atoi(args[1])
+		time.Sleep(time.Duration(seconds) * time.Second)
+		return 0
+	}
+
 	// The host speaks exactly two verbs. Anything else is not a protocol call,
 	// so it fails as a plain CLI error rather than as an envelope.
 	if len(args) < 2 || args[0] != "module" {
@@ -79,11 +95,34 @@ func emit(env modproto.Envelope) int {
 
 func describe() modproto.Envelope {
 	env, err := modproto.NewDescribeEnvelope(descriptor())
+	if err == nil {
+		env.Result, err = withContractVersion(env.Result)
+	}
 	if err != nil {
 		return modproto.NewErrorEnvelope(moduleID, modproto.OperationDescribe, "",
 			modproto.Error{Code: modproto.ErrInternal, Message: err.Error()}, modproto.Execution{Local: true})
 	}
 	return env
+}
+
+// withContractVersion adds the contract_version a test asks for, through a
+// file named contract_version beside the binary (modules run with no
+// environment). Without the file the descriptor is a plain v1 one.
+func withContractVersion(result json.RawMessage) (json.RawMessage, error) {
+	self, err := os.Executable()
+	if err != nil {
+		return result, nil
+	}
+	version, err := os.ReadFile(filepath.Join(filepath.Dir(self), "contract_version"))
+	if err != nil {
+		return result, nil
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(result, &fields); err != nil {
+		return nil, err
+	}
+	fields["contract_version"] = strings.TrimSpace(string(version))
+	return json.Marshal(fields)
 }
 
 func invoke(capabilityID, inputPath string) modproto.Envelope {
@@ -142,6 +181,16 @@ func invoke(capabilityID, inputPath string) modproto.Envelope {
 			map[string]any{"names": names}, localFree)
 		return env
 
+	case "fake.where":
+		// Reports the working directory the host started this process in.
+		wd, err := os.Getwd()
+		if err != nil {
+			return fail(req.RequestID, modproto.ErrInternal, err.Error(), nil)
+		}
+		env, _ := modproto.NewResultEnvelope(moduleID, modproto.OperationInvoke, req.RequestID,
+			map[string]any{"cwd": wd}, localFree)
+		return env
+
 	case "fake.echo":
 		var in struct {
 			Name   string `json:"name"`
@@ -192,6 +241,54 @@ func invoke(capabilityID, inputPath string) modproto.Envelope {
 		// host's timeout path would never have been exercised -- the test
 		// would have passed for the wrong reason.
 		time.Sleep(24 * time.Hour)
+
+	case "fake.misbehave.ignore-termination":
+		// Ignores the polite request to stop, so only the host's escalation
+		// to a forced kill ends it. The marker in the workspace carries its
+		// process ID and says it is running, so a test knows the request to
+		// stop arrived after this point.
+		signal.Ignore(os.Interrupt, syscall.SIGTERM)
+		writeMarker(req, "ignoring-termination", strconv.Itoa(os.Getpid()))
+		time.Sleep(24 * time.Hour)
+
+	case "fake.misbehave.note-termination":
+		// Stops when asked, and records that it was asked, so a test can tell
+		// a graceful stop from a forced one.
+		stopped := make(chan os.Signal, 1)
+		signal.Notify(stopped, os.Interrupt, syscall.SIGTERM)
+		writeMarker(req, "waiting-for-termination", "ready")
+		<-stopped
+		writeMarker(req, "terminated", "stopped by signal")
+		return fail(req.RequestID, modproto.ErrCancelled, "stopped on request", nil)
+
+	case "fake.misbehave.grandchild":
+		// Starts a helper that outlives any deadline and holds stdout, then
+		// hangs. Killing only this process would leave the helper running,
+		// holding the output pipe and the invocation with it.
+		if err := startGrandchild(req, 120); err != nil {
+			return fail(req.RequestID, modproto.ErrInternal, err.Error(), nil)
+		}
+		time.Sleep(24 * time.Hour)
+
+	case "fake.misbehave.orphan-stdout":
+		// Starts a helper that holds stdout, then answers and exits normally.
+		// The host must not wait for the helper to finish before returning.
+		if err := startGrandchild(req, 30); err != nil {
+			return fail(req.RequestID, modproto.ErrInternal, err.Error(), nil)
+		}
+		env, _ := modproto.NewResultEnvelope(moduleID, modproto.OperationInvoke, req.RequestID,
+			map[string]any{"ok": true}, localFree)
+		return env
+
+	case "fake.misbehave.flood":
+		// Writes to stdout without end. The host must stop it once the output
+		// bound is reached rather than wait for the deadline.
+		chunk := []byte(strings.Repeat("A", 64<<10))
+		for {
+			if _, err := os.Stdout.Write(chunk); err != nil {
+				return fail(req.RequestID, modproto.ErrInternal, "stdout closed", nil)
+			}
+		}
 
 	case "fake.misbehave.escape-root":
 		env, _ := modproto.NewResultEnvelope(moduleID, modproto.OperationInvoke, req.RequestID,
@@ -344,6 +441,32 @@ func objectSchema(properties, required string) json.RawMessage {
 		properties, required))
 }
 
+// writeMarker writes a small file into the workspace root, when one was
+// granted, so a test can observe what the module did.
+func writeMarker(req modproto.Request, name, body string) {
+	if root, ok := req.Roots["workspace"]; ok {
+		_ = os.WriteFile(filepath.Join(root.Path, name), []byte(body), 0o644)
+	}
+}
+
+// startGrandchild starts a copy of this program that sleeps for seconds while
+// holding the inherited stdout and stderr, and records its process ID in
+// grandchild.pid in the workspace root.
+func startGrandchild(req modproto.Request, seconds int) error {
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	cmd := exec.Command(self, "grandchild", strconv.Itoa(seconds))
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	writeMarker(req, "grandchild.pid", strconv.Itoa(cmd.Process.Pid))
+	return nil
+}
+
 func descriptor() *modproto.Descriptor {
 	overlayPath := "agents/fake.md"
 	skillPath := "skills/echo-usage/SKILL.md"
@@ -358,6 +481,11 @@ func descriptor() *modproto.Descriptor {
 				ID: "fake.env", Title: "Report environment",
 				Summary:       "Report the environment variable names this process can see.",
 				RequestSchema: "fake.env.request/v1", ResultSchema: "fake.env.result/v1",
+				Effects: modproto.Effects{Local: true, Provider: "local", CostKnown: true},
+			},
+			{
+				ID: "fake.where", Title: "Report working directory",
+				Summary: "Report the working directory this process runs in.",
 				Effects: modproto.Effects{Local: true, Provider: "local", CostKnown: true},
 			},
 			{
@@ -395,6 +523,31 @@ func descriptor() *modproto.Descriptor {
 			{
 				ID: "fake.misbehave.hang", Title: "Misbehave: hang",
 				Summary: "Never return. Host must kill the process tree on deadline.",
+				Effects: modproto.Effects{Local: true, Provider: "local", CostKnown: true},
+			},
+			{
+				ID: "fake.misbehave.ignore-termination", Title: "Misbehave: ignore termination",
+				Summary: "Ignore the request to stop. Host must kill it after the grace period.",
+				Effects: modproto.Effects{Local: true, ExternalWrites: true, Provider: "local", CostKnown: true},
+			},
+			{
+				ID: "fake.misbehave.note-termination", Title: "Misbehave: note termination",
+				Summary: "Wait to be asked to stop, record that it was, and stop.",
+				Effects: modproto.Effects{Local: true, ExternalWrites: true, Provider: "local", CostKnown: true},
+			},
+			{
+				ID: "fake.misbehave.grandchild", Title: "Misbehave: grandchild",
+				Summary: "Start a helper that holds stdout, then hang. Host must kill the whole tree.",
+				Effects: modproto.Effects{Local: true, ExternalWrites: true, Provider: "local", CostKnown: true},
+			},
+			{
+				ID: "fake.misbehave.orphan-stdout", Title: "Misbehave: orphan holding stdout",
+				Summary: "Start a helper that holds stdout, then answer and exit. Host must not wait for the helper.",
+				Effects: modproto.Effects{Local: true, ExternalWrites: true, Provider: "local", CostKnown: true},
+			},
+			{
+				ID: "fake.misbehave.flood", Title: "Misbehave: flood stdout",
+				Summary: "Write to stdout without end. Host must stop it at the output bound.",
 				Effects: modproto.Effects{Local: true, Provider: "local", CostKnown: true},
 			},
 			{

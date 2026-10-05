@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/xibodev/compa/pkg/bus"
 	"github.com/xibodev/compa/pkg/constants"
@@ -27,6 +28,14 @@ const (
 	minIntervalMinutes     = 5
 	defaultIntervalMinutes = 30
 	userTasksMarker        = "Add your heartbeat tasks below this line:"
+	// heartbeatOK is the reply that means "nothing needs attention".
+	heartbeatOK = "HEARTBEAT_OK"
+	// firstRunDelay is how soon the first heartbeat of a process runs.
+	firstRunDelay = time.Second
+	// maxLogBytes caps heartbeat.log; a full log moves to heartbeat.log.1.
+	maxLogBytes = 1 << 20
+	// maxLogEntryRunes keeps one reply from filling the log.
+	maxLogEntryRunes = 2000
 )
 
 // HeartbeatHandler is the function type for handling heartbeat.
@@ -38,13 +47,30 @@ type HeartbeatHandler func(prompt, channel, chatID string) *tools.ToolResult
 type HeartbeatService struct {
 	workspace string
 	bus       *bus.MessageBus
-	state     *state.Manager
-	handler   HeartbeatHandler
-	interval  time.Duration
-	enabled   bool
-	mu        sync.RWMutex
-	stopChan  chan struct{}
+	// state is the manager the agent loop records the owner's chat in. When
+	// it isn't set, each heartbeat reads state.json afresh.
+	state    *state.Manager
+	handler  HeartbeatHandler
+	interval time.Duration
+	enabled  bool
+	mu       sync.RWMutex
+	stopChan chan struct{}
+	// logMu serializes writes and rotation of heartbeat.log.
+	logMu sync.Mutex
 }
+
+// runRecord remembers, per workspace and for this process, whether a
+// heartbeat service already started and when a heartbeat last ran. A config
+// reload replaces the service; the record keeps the reload from firing an
+// immediate heartbeat.
+type runRecord struct {
+	lastRun time.Time
+}
+
+var (
+	runsMu sync.Mutex
+	runs   = map[string]*runRecord{}
+)
 
 // NewHeartbeatService creates a new heartbeat service
 func NewHeartbeatService(workspace string, intervalMinutes int, enabled bool) *HeartbeatService {
@@ -61,7 +87,6 @@ func NewHeartbeatService(workspace string, intervalMinutes int, enabled bool) *H
 		workspace: workspace,
 		interval:  time.Duration(intervalMinutes) * time.Minute,
 		enabled:   enabled,
-		state:     state.NewManager(workspace),
 	}
 }
 
@@ -77,6 +102,14 @@ func (hs *HeartbeatService) SetHandler(handler HeartbeatHandler) {
 	hs.mu.Lock()
 	defer hs.mu.Unlock()
 	hs.handler = handler
+}
+
+// SetStateManager makes the heartbeat read the owner's chat, which it runs for
+// and reports to, from the state manager the agent loop records it in.
+func (hs *HeartbeatService) SetStateManager(sm *state.Manager) {
+	hs.mu.Lock()
+	defer hs.mu.Unlock()
+	hs.state = sm
 }
 
 // Start begins the heartbeat service
@@ -95,7 +128,7 @@ func (hs *HeartbeatService) Start() error {
 	}
 
 	hs.stopChan = make(chan struct{})
-	go hs.runLoop(hs.stopChan)
+	go hs.runLoop(hs.stopChan, hs.firstDelay(time.Now()))
 
 	logger.InfoCF("heartbeat", "Heartbeat service started", map[string]any{
 		"interval_minutes": hs.interval.Minutes(),
@@ -125,22 +158,48 @@ func (hs *HeartbeatService) IsRunning() bool {
 	return hs.stopChan != nil
 }
 
-// runLoop runs the heartbeat ticker
-func (hs *HeartbeatService) runLoop(stopChan chan struct{}) {
-	ticker := time.NewTicker(hs.interval)
-	defer ticker.Stop()
+// firstDelay is the wait before the first heartbeat: short on the first start
+// in this process, and the remainder of the interval after a reload, which
+// replaces the service with a new one.
+func (hs *HeartbeatService) firstDelay(now time.Time) time.Duration {
+	runsMu.Lock()
+	defer runsMu.Unlock()
 
-	// Run first heartbeat after initial delay
-	time.AfterFunc(time.Second, func() {
-		hs.executeHeartbeat()
-	})
+	key := filepath.Clean(hs.workspace)
+	rec, started := runs[key]
+	if !started {
+		runs[key] = &runRecord{}
+		return firstRunDelay
+	}
+	if rec.lastRun.IsZero() {
+		return hs.interval
+	}
+	return max(rec.lastRun.Add(hs.interval).Sub(now), firstRunDelay)
+}
+
+func (hs *HeartbeatService) recordRun(now time.Time) {
+	runsMu.Lock()
+	defer runsMu.Unlock()
+	key := filepath.Clean(hs.workspace)
+	if rec := runs[key]; rec != nil {
+		rec.lastRun = now
+	} else {
+		runs[key] = &runRecord{lastRun: now}
+	}
+}
+
+// runLoop runs the heartbeat timer
+func (hs *HeartbeatService) runLoop(stopChan chan struct{}, firstDelay time.Duration) {
+	timer := time.NewTimer(firstDelay)
+	defer timer.Stop()
 
 	for {
 		select {
 		case <-stopChan:
 			return
-		case <-ticker.C:
+		case <-timer.C:
 			hs.executeHeartbeat()
+			timer.Reset(hs.interval)
 		}
 	}
 }
@@ -160,6 +219,7 @@ func (hs *HeartbeatService) executeHeartbeat() {
 		return
 	}
 
+	hs.recordRun(time.Now())
 	logger.DebugC("heartbeat", "Executing heartbeat")
 
 	prompt := hs.buildPrompt()
@@ -173,12 +233,18 @@ func (hs *HeartbeatService) executeHeartbeat() {
 		return
 	}
 
-	// Get last channel info for context
-	lastChannel := hs.state.GetLastChannel()
-	channel, chatID := hs.parseLastChannel(lastChannel)
+	// The heartbeat runs as, and reports to, the chat the owner last wrote
+	// from. Without one it doesn't run, so nothing is delivered: falling
+	// back to the internal CLI identity would grant local privileges to
+	// unattended work, and another chat's people aren't the owner.
+	channel, chatID := hs.ownerChat()
+	if channel == "" || chatID == "" {
+		hs.logInfof("The owner's chat is not known yet; heartbeat skipped")
+		logger.InfoC("heartbeat", "Heartbeat skipped: the owner's chat is not known yet")
+		return
+	}
 
-	// Debug log for channel resolution
-	hs.logInfof("Resolved channel: %s, chatID: %s (from lastChannel: %s)", channel, chatID, lastChannel)
+	hs.logInfof("Reporting to the owner's chat: channel %s, chatID %s", channel, chatID)
 
 	result := handler(prompt, channel, chatID)
 
@@ -208,14 +274,40 @@ func (hs *HeartbeatService) executeHeartbeat() {
 		return
 	}
 
-	// Send result to user
-	if result.ForUser != "" {
-		hs.sendResponse(result.ForUser)
-	} else if result.ForLLM != "" {
-		hs.sendResponse(result.ForLLM)
+	reply := result.ForUser
+	if reply == "" {
+		reply = result.ForLLM
+	}
+	if isHeartbeatOK(reply) || strings.TrimSpace(reply) == "" {
+		hs.logInfof("Heartbeat OK")
+		return
 	}
 
-	hs.logInfof("Heartbeat completed: %s", result.ForLLM)
+	hs.sendResponse(channel, chatID, reply)
+	hs.logInfof("Heartbeat completed: %s", reply)
+}
+
+// ownerChat returns the chat the owner last wrote from, as the agent recorded
+// it. Both are empty when none is known, or when it is an internal channel,
+// which delivers nothing.
+func (hs *HeartbeatService) ownerChat() (channel, chatID string) {
+	hs.mu.RLock()
+	sm := hs.state
+	hs.mu.RUnlock()
+	if sm == nil {
+		// Without the agent's manager, the workspace's state file is read.
+		sm = state.NewManager(hs.workspace)
+	}
+	channel, chatID = sm.GetOwnerChat()
+	channel, chatID = strings.TrimSpace(channel), strings.TrimSpace(chatID)
+	if channel == "" || chatID == "" || constants.IsInternalChannel(channel) {
+		return "", ""
+	}
+	return channel, chatID
+}
+
+func isHeartbeatOK(reply string) bool {
+	return strings.TrimSpace(reply) == heartbeatOK
 }
 
 // buildPrompt builds the heartbeat prompt from HEARTBEAT.md
@@ -262,7 +354,7 @@ This file contains tasks for the heartbeat service to check periodically.
 
 - Check for unread messages
 - Review upcoming calendar events
-- Check device status (e.g., MaixCam)
+- Check that the backup ran today
 
 ## Instructions
 
@@ -311,8 +403,8 @@ func heartbeatHasUserTasks(content string) bool {
 	return false
 }
 
-// sendResponse sends the heartbeat response to the last channel
-func (hs *HeartbeatService) sendResponse(response string) {
+// sendResponse sends the heartbeat reply to the chat the heartbeat ran for.
+func (hs *HeartbeatService) sendResponse(platform, chatID, response string) {
 	hs.mu.RLock()
 	msgBus := hs.bus
 	hs.mu.RUnlock()
@@ -322,53 +414,17 @@ func (hs *HeartbeatService) sendResponse(response string) {
 		return
 	}
 
-	// Get last channel from state
-	lastChannel := hs.state.GetLastChannel()
-	if lastChannel == "" {
-		hs.logInfof("No last channel recorded, heartbeat result not sent")
-		return
-	}
-
-	platform, userID := hs.parseLastChannel(lastChannel)
-
-	// Skip internal channels that can't receive messages
-	if platform == "" || userID == "" {
-		return
-	}
-
 	pubCtx, pubCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer pubCancel()
-	msgBus.PublishOutbound(pubCtx, bus.OutboundMessage{
-		Context: bus.NewOutboundContext(platform, userID, ""),
+	if err := msgBus.PublishOutbound(pubCtx, bus.OutboundMessage{
+		Context: bus.NewOutboundContext(platform, chatID, ""),
 		Content: response,
-	})
+	}); err != nil {
+		hs.logErrorf("Failed to send heartbeat result to %s: %v", platform, err)
+		return
+	}
 
 	hs.logInfof("Heartbeat result sent to %s", platform)
-}
-
-// parseLastChannel parses the last channel string into platform and userID.
-// Returns empty strings for invalid or internal channels.
-func (hs *HeartbeatService) parseLastChannel(lastChannel string) (platform, userID string) {
-	if lastChannel == "" {
-		return "", ""
-	}
-
-	// Parse channel format: "platform:user_id" (e.g., "telegram:123456")
-	parts := strings.SplitN(lastChannel, ":", 2)
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		hs.logErrorf("Invalid last channel format: %s", lastChannel)
-		return "", ""
-	}
-
-	platform, userID = parts[0], parts[1]
-
-	// Skip internal channels
-	if constants.IsInternalChannel(platform) {
-		hs.logInfof("Skipping internal channel: %s", platform)
-		return "", ""
-	}
-
-	return platform, userID
 }
 
 // logInfof logs an informational message to the heartbeat log
@@ -381,15 +437,27 @@ func (hs *HeartbeatService) logErrorf(format string, args ...any) {
 	hs.logf("ERROR", format, args...)
 }
 
-// logf writes a message to the heartbeat log file
+// logf writes a message to the heartbeat log file. The log is capped at
+// maxLogBytes: a full log moves to heartbeat.log.1, replacing the previous one.
 func (hs *HeartbeatService) logf(level, format string, args ...any) {
+	hs.logMu.Lock()
+	defer hs.logMu.Unlock()
+
 	logFile := filepath.Join(hs.workspace, "heartbeat.log")
-	f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if info, err := os.Stat(logFile); err == nil && info.Size() >= maxLogBytes {
+		_ = os.Rename(logFile, logFile+".1")
+	}
+
+	f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return
 	}
 	defer f.Close()
 
+	message := fmt.Sprintf(format, args...)
+	if utf8.RuneCountInString(message) > maxLogEntryRunes {
+		message = string([]rune(message)[:maxLogEntryRunes]) + "…"
+	}
 	timestamp := time.Now().Format("2006-01-02 15:04:05")
-	fmt.Fprintf(f, "[%s] [%s] %s\n", timestamp, level, fmt.Sprintf(format, args...))
+	fmt.Fprintf(f, "[%s] [%s] %s\n", timestamp, level, message)
 }

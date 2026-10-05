@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/xibodev/compa/pkg/logger"
 )
@@ -200,25 +201,30 @@ func TestWebTool_WebFetch_Truncation(t *testing.T) {
 	}
 
 	// ForLLM should contain truncated content (not the full 20000 chars)
-	resultMap := make(map[string]any)
-	json.Unmarshal([]byte(result.ForLLM), &resultMap)
-	if text, ok := resultMap["text"].(string); ok {
-		if len(text) > 1100 { // Allow some margin
-			t.Errorf("Expected content to be truncated to ~1000 chars, got: %d", len(text))
-		}
+	header, text := splitFetchResult(t, result.ForLLM)
+	if len(text) > 1100 { // Allow some margin
+		t.Errorf("Expected content to be truncated to ~1000 chars, got: %d", len(text))
 	}
 
 	// Should be marked as truncated
-	if truncated, ok := resultMap["truncated"].(bool); !ok || !truncated {
-		t.Errorf("Expected 'truncated' to be true in result")
+	if !strings.Contains(header, "Truncated: first 1000 of 20000 characters") {
+		t.Errorf("Expected a truncation line in the header, got %q", header)
 	}
 
 	// Text should end with the truncation notice
-	if text, ok := resultMap["text"].(string); ok {
-		if !strings.HasSuffix(text, "[Content truncated due to size limit]") {
-			t.Errorf("Expected text to end with truncation notice, got: %q", text[max(0, len(text)-60):])
-		}
+	if !strings.HasSuffix(text, "[Content truncated due to size limit]") {
+		t.Errorf("Expected text to end with truncation notice, got: %q", text[max(0, len(text)-60):])
 	}
+}
+
+// splitFetchResult separates web_fetch's short header from the content.
+func splitFetchResult(t *testing.T, out string) (string, string) {
+	t.Helper()
+	header, text, ok := strings.Cut(out, "\n\n")
+	if !ok || !strings.HasPrefix(header, "URL: ") {
+		t.Fatalf("unexpected web_fetch output: %q", out)
+	}
+	return header, text
 }
 
 // TestWebTool_WebFetch_TruncationNotice verifies the truncation notice is appended
@@ -280,22 +286,13 @@ func TestWebTool_WebFetch_TruncationNotice(t *testing.T) {
 				t.Fatalf("unexpected error: %s", result.ForLLM)
 			}
 
-			var resultMap map[string]any
-			if err := json.Unmarshal([]byte(result.ForLLM), &resultMap); err != nil {
-				t.Fatalf("failed to unmarshal result JSON: %v", err)
-			}
-
-			text, ok := resultMap["text"].(string)
-			if !ok {
-				t.Fatal("missing 'text' field in result")
-			}
-
+			header, text := splitFetchResult(t, result.ForLLM)
 			if !strings.HasSuffix(text, truncationNotice) {
 				t.Errorf("expected text to end with %q, got suffix: %q", truncationNotice, text[max(0, len(text)-60):])
 			}
 
-			if truncated, ok := resultMap["truncated"].(bool); !ok || !truncated {
-				t.Errorf("expected truncated=true in result")
+			if !strings.Contains(header, "Truncated: first 100 of") {
+				t.Errorf("expected a truncation line in the header, got %q", header)
 			}
 		})
 	}
@@ -325,18 +322,132 @@ func TestWebTool_WebFetch_NoTruncationNoticeWhenFitsInLimit(t *testing.T) {
 		t.Fatalf("unexpected error: %s", result.ForLLM)
 	}
 
-	var resultMap map[string]any
-	if err := json.Unmarshal([]byte(result.ForLLM), &resultMap); err != nil {
-		t.Fatalf("failed to unmarshal result JSON: %v", err)
-	}
-
-	text, _ := resultMap["text"].(string)
+	header, text := splitFetchResult(t, result.ForLLM)
 	if strings.Contains(text, truncationNotice) {
 		t.Errorf("expected no truncation notice for content within limit, got: %q", text)
 	}
+	if strings.Contains(header, "Truncated") {
+		t.Errorf("expected no truncation line for content within limit, got %q", header)
+	}
+	if text != "short content" {
+		t.Errorf("text = %q, want plain content without escaping", text)
+	}
+}
 
-	if truncated, _ := resultMap["truncated"].(bool); truncated {
-		t.Errorf("expected truncated=false for content within limit")
+func TestWebTool_WebFetch_MaxCharsCeilingAndRuneSafeTruncation(t *testing.T) {
+	withPrivateWebFetchHostsAllowed(t)
+
+	// 250,000 three-byte characters: a byte cut would split one.
+	body := strings.Repeat("界", 250000)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Write([]byte(body))
+	}))
+	defer server.Close()
+
+	tool, err := NewWebFetchTool(50000, format, testFetchLimit)
+	if err != nil {
+		t.Fatalf("NewWebFetchTool() error: %v", err)
+	}
+	result := tool.Execute(context.Background(), map[string]any{
+		"url":      server.URL,
+		"maxChars": float64(10_000_000),
+	})
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.ForLLM)
+	}
+	header, text := splitFetchResult(t, result.ForLLM)
+	text = strings.TrimSuffix(text, "\n[Content truncated due to size limit]")
+	if got := utf8.RuneCountInString(text); got != maxFetchChars {
+		t.Fatalf("got %d characters, want the %d ceiling", got, maxFetchChars)
+	}
+	if !utf8.ValidString(text) {
+		t.Fatal("truncation split a character")
+	}
+	if !strings.Contains(header, "Truncated: first 200000 of 250000 characters") {
+		t.Fatalf("unexpected header %q", header)
+	}
+}
+
+func TestWebTool_WebFetch_TextExtractionAndCharsets(t *testing.T) {
+	withPrivateWebFetchHostsAllowed(t)
+
+	tests := []struct {
+		name        string
+		contentType string
+		body        []byte
+		want        []string
+		notWant     []string
+	}{
+		{
+			name:        "entities and upper-case script",
+			contentType: "text/html",
+			body:        []byte(`<HTML><BODY><SCRIPT>steal()</SCRIPT><p>Fish &amp; chips&nbsp;&lt;3</p></BODY></HTML>`),
+			want:        []string{"Fish & chips <3"},
+			notWant:     []string{"steal", "&amp;"},
+		},
+		{
+			name:        "header charset",
+			contentType: "text/html; charset=iso-8859-1",
+			body:        []byte("<html><body><p>Caf\xe9 cr\xe8me</p></body></html>"),
+			want:        []string{"Café crème"},
+		},
+		{
+			name:        "meta charset",
+			contentType: "text/html",
+			body:        []byte("<html><head><meta charset=\"gbk\"></head><body><p>\xc4\xe3\xba\xc3</p></body></html>"),
+			want:        []string{"你好"},
+		},
+		{
+			name:        "upper-case doctype served as text/plain",
+			contentType: "text/plain",
+			body:        []byte("<!DOCTYPE html><html><body><p>Hello <b>world</b></p></body></html>"),
+			want:        []string{"Content-Type: text/plain (text)", "Hello world"},
+			notWant:     []string{"<p>"},
+		},
+		{
+			name:        "json keeps markup characters",
+			contentType: "application/json",
+			body:        []byte(`{"z":"<a href=\"x\">&</a>","a":1}`),
+			want:        []string{`"z": "<a href=\"x\">&</a>"`},
+			notWant:     []string{`\u003c`},
+		},
+		{
+			name:        "binary body",
+			contentType: "image/png",
+			body:        append([]byte("\x89PNG\r\n\x1a\n"), bytes.Repeat([]byte{0}, 64)...),
+			want:        []string{"[Binary content (image/png, 72 bytes) not shown"},
+			notWant:     []string{"PNG"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", tt.contentType)
+				w.Write(tt.body)
+			}))
+			defer server.Close()
+
+			tool, err := NewWebFetchTool(50000, format, testFetchLimit)
+			if err != nil {
+				t.Fatalf("NewWebFetchTool() error: %v", err)
+			}
+			result := tool.Execute(context.Background(), map[string]any{"url": server.URL})
+			if result.IsError {
+				t.Fatalf("unexpected error: %s", result.ForLLM)
+			}
+			for _, want := range tt.want {
+				if !strings.Contains(result.ForLLM, want) {
+					t.Errorf("output lacks %q:\n%s", want, result.ForLLM)
+				}
+			}
+			for _, notWant := range tt.notWant {
+				if strings.Contains(result.ForLLM, notWant) {
+					t.Errorf("output contains %q:\n%s", notWant, result.ForLLM)
+				}
+			}
+		})
 	}
 }
 
@@ -561,8 +672,6 @@ func TestWebTool_WebFetch_HTMLExtraction(t *testing.T) {
 
 // TestWebFetchTool_extractText verifies text extraction preserves newlines
 func TestWebFetchTool_extractText(t *testing.T) {
-	tool := &WebFetchTool{}
-
 	tests := []struct {
 		name     string
 		input    string
@@ -628,7 +737,7 @@ func TestWebFetchTool_extractText(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := tool.extractText(tt.input)
+			got := extractHTMLText(tt.input)
 			tt.wantFunc(t, got)
 		})
 	}
@@ -884,19 +993,18 @@ func TestWebFetch_Allows6to4WithPublicEmbed(t *testing.T) {
 
 // TestWebFetch_RedirectToPrivateBlocked verifies redirects to private IPs are blocked
 func TestWebFetch_RedirectToPrivateBlocked(t *testing.T) {
-	withPrivateWebFetchHostsAllowed(t)
-
+	hits := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Redirect to a private IP
+		hits++
+		// Redirect to a private IP other than the whitelisted test server
 		http.Redirect(w, r, "http://10.0.0.1/secret", http.StatusFound)
 	}))
 	defer server.Close()
 
-	// Temporarily disable private host allowance for the redirect check
-	allowPrivateWebFetchHosts.Store(false)
-	defer allowPrivateWebFetchHosts.Store(true)
-
-	tool, err := NewWebFetchTool(50000, format, testFetchLimit)
+	// Whitelisting only the test server lets the first request through, so
+	// the redirect check is what has to refuse the private target.
+	host, _ := serverHostAndPort(t, server.URL)
+	tool, err := NewWebFetchToolWithConfig(50000, "", format, testFetchLimit, []string{host})
 	if err != nil {
 		t.Fatalf("Failed to create web fetch tool: %v", err)
 	}
@@ -905,7 +1013,13 @@ func TestWebFetch_RedirectToPrivateBlocked(t *testing.T) {
 	})
 
 	if !result.IsError {
-		t.Error("expected error when redirecting to private IP, got success")
+		t.Fatal("expected error when redirecting to private IP, got success")
+	}
+	if !strings.Contains(result.ForLLM, "redirect target is private or local network host") {
+		t.Fatalf("expected the redirect check to refuse the target, got %q", result.ForLLM)
+	}
+	if hits != 1 {
+		t.Fatalf("server hits = %d, want 1", hits)
 	}
 }
 
@@ -1986,6 +2100,66 @@ func TestWebTool_SogouSearch_Success(t *testing.T) {
 	}
 	if !strings.Contains(out, "via Sogou") || !strings.Contains(out, "https://example.com/a") {
 		t.Fatalf("unexpected output: %s", out)
+	}
+}
+
+func staticPageClient(status int, page string) *http.Client {
+	return &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			rec := httptest.NewRecorder()
+			rec.WriteHeader(status)
+			fmt.Fprint(rec, page)
+			return rec.Result(), nil
+		}),
+	}
+}
+
+func TestSearchProviders_CaptchaPagesAreErrors(t *testing.T) {
+	ddg := &DuckDuckGoSearchProvider{client: staticPageClient(http.StatusAccepted,
+		`<html><body><div class="anomaly-modal__title">Unfortunately, bots use DuckDuckGo too.</div></body></html>`)}
+	if _, err := ddg.Search(context.Background(), "q", 3, ""); err == nil ||
+		!strings.Contains(err.Error(), "blocked by captcha") {
+		t.Fatalf("DuckDuckGo captcha: got %v", err)
+	}
+
+	sogou := &SogouSearchProvider{client: staticPageClient(http.StatusOK,
+		`<html><body><form action="/antispider/thank.php"><p>请输入验证码</p>`+strings.Repeat(" ", 300)+`</form></body></html>`)}
+	if _, err := sogou.Search(context.Background(), "q", 3, ""); err == nil ||
+		!strings.Contains(err.Error(), "blocked by captcha") {
+		t.Fatalf("Sogou captcha: got %v", err)
+	}
+}
+
+func TestDuckDuckGoExtractResults_DecodesTargetAndTitle(t *testing.T) {
+	page := `<a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fpage%3Fx%3D1&amp;rut=abc123">Tom &amp; Jerry&#39;s <b>page</b></a>
+<a class="result__snippet" href="#">Cats &lt;3 mice</a>`
+	out, err := (&DuckDuckGoSearchProvider{}).extractResults(page, 5, "q")
+	if err != nil {
+		t.Fatalf("extractResults() error: %v", err)
+	}
+	if !strings.Contains(out, "1. Tom & Jerry's page\n   https://example.com/page?x=1\n") {
+		t.Fatalf("unexpected output:\n%s", out)
+	}
+	if strings.Contains(out, "rut=") {
+		t.Fatalf("redirect parameters leaked into the URL:\n%s", out)
+	}
+	if !strings.Contains(out, "Cats <3 mice") {
+		t.Fatalf("snippet not unescaped:\n%s", out)
+	}
+}
+
+func TestBraveSearch_ErrorCarriesShortExcerpt(t *testing.T) {
+	provider := &BraveSearchProvider{
+		keyPool: NewAPIKeyPool([]string{"k"}),
+		client: staticPageClient(http.StatusBadRequest,
+			"<html><body><h1>Bad request</h1>"+strings.Repeat("detail ", 5000)+"</body></html>"),
+	}
+	_, err := provider.Search(context.Background(), "q", 3, "")
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if len(err.Error()) > 400 || !strings.Contains(err.Error(), "status 400): Bad request detail") {
+		t.Fatalf("error should carry a short, tag-free excerpt, got %d bytes: %.300s", len(err.Error()), err)
 	}
 }
 

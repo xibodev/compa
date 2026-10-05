@@ -45,7 +45,7 @@ func computeContextUsage(agent *AgentInstance, sessionKey string) *bus.ContextUs
 	// Tool definition tokens
 	toolTokens := 0
 	if agent.Tools != nil {
-		toolTokens = EstimateToolDefsTokens(agent.Tools.ToProviderDefs())
+		toolTokens = EstimateToolDefsTokens(agent.Tools.ToProviderDefsForSession(sessionKey))
 	}
 
 	// Used = history + system (includes summary) + tools

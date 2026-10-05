@@ -7,33 +7,18 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/xibodev/compa/internal/module"
-	"github.com/xibodev/compa/internal/moduletools"
 	"github.com/xibodev/compa/pkg/modproto"
 )
 
 func TestDisabledModuleAPICannotInvokeAndReenableRestoresInvocation(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("COMPA_HOME", home)
-	moduleDir := filepath.Join(moduletools.ModulesDir(home), "fake")
-	if err := os.MkdirAll(moduleDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	binaryName := "fake"
-	if runtime.GOOS == "windows" {
-		binaryName += ".exe"
-	}
-	binary := filepath.Join(moduleDir, binaryName)
-	command := exec.Command("go", "build", "-tags", "goolm,stdjson", "-o", binary, "../../../cmd/fakemodule")
-	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("build fake module: %v: %s", err, output)
-	}
+	installAPIFakeModule(t, home)
 
 	configPath := filepath.Join(home, "config.json")
 	handler := NewHandler(configPath)

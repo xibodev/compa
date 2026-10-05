@@ -36,7 +36,7 @@ func (al *AgentLoop) ProcessInstanceSelection(
 	owned := make([]providers.LLMProvider, 0, len(resolved.Candidates))
 	defer func() { closeUniqueStatefulProviders(owned...) }()
 
-	result, err := al.failover.Execute(ctx, resolved.Candidates, func(
+	result, err := al.currentFailover().Execute(ctx, resolved.Candidates, func(
 		ctx context.Context,
 		candidate providers.FallbackCandidate,
 	) (*providers.LLMResponse, error) {

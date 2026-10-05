@@ -28,7 +28,7 @@ func TestPingCommandRequiresConfig(t *testing.T) {
 	if err := config.SaveConfig(cfgPath, cfg); err != nil {
 		t.Fatalf("save config: %v", err)
 	}
-	t.Setenv("COMPA_CONFIG_PATH", cfgPath)
+	t.Setenv(config.EnvConfig, cfgPath)
 
 	err := cmd.Execute()
 	if err == nil || !strings.Contains(err.Error(), "not found") {

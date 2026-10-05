@@ -4,9 +4,13 @@
 #   curl -fsSL https://github.com/xibodev/compa/releases/latest/download/install.sh | sh
 #
 # Installs compa, the launcher, and compa-kernel, the harness it runs, into
-# ~/.local/bin and starts Compa in the background; open the address it prints
-# to finish setting up. Your settings and data live in ~/.compa, which this
-# script never touches, and it does not edit your shell startup files.
+# ~/.local/bin. Run in a terminal on a desktop, it then starts Compa, which
+# opens your browser to finish setting up; anywhere else (CI, Docker, a remote
+# shell) it prints how to start Compa instead. Your settings and data live in
+# ~/.compa, which this script leaves alone apart from the log of the Compa it
+# starts, and it does not edit your shell startup files.
+#
+# Run it as yourself, not with sudo: Compa runs as the user who installs it.
 #
 # Options are environment variables; with "curl | sh" put them before sh:
 #   curl -fsSL .../install.sh | COMPA_NO_START=1 sh
@@ -15,17 +19,18 @@
 #   COMPA_INSTALL_DIR=<dir>   install somewhere else
 #   COMPA_NO_START=1          do not start Compa
 #   COMPA_UNINSTALL=1         remove the programs, keep your data
+#   COMPA_ALLOW_ROOT=1        install even when run as root
 #
-# For tests only: COMPA_RELEASE_BASE_URL replaces
-# https://github.com/xibodev/compa/releases/download, so the installer can run
-# against a locally served fake release.
+# COMPA_RELEASE_BASE_URL replaces https://github.com/xibodev/compa/releases/download,
+# for example with a mirror. It must be an https:// address unless
+# COMPA_INSTALL_TEST=1, which the installer tests set to serve a fake release.
 
 set -eu
 
 # The release workflow replaces this placeholder with the release tag.
 STAMPED_TAG='__COMPA_VERSION__'
 REPO='xibodev/compa'
-URL='http://127.0.0.1:18800'
+DEFAULT_PORT=18800
 
 say() { printf '%s\n' "$*"; }
 step() { printf '  %s\n' "$*"; }
@@ -59,13 +64,21 @@ detect_platform() {
 	fi
 }
 
-# download URL FILE
+# download URL FILE, over HTTPS only. COMPA_INSTALL_TEST also allows the
+# plain HTTP of a local test server.
 download() {
 	if command -v curl >/dev/null 2>&1; then
-		curl --fail --silent --show-error --location --retry 3 --output "$2" "$1" ||
-			die "could not download $1"
+		proto='=https'
+		if is_set "${COMPA_INSTALL_TEST:-}"; then proto='=http,https'; fi
+		curl --proto "$proto" --tlsv1.2 --fail --silent --show-error --location --retry 3 \
+			--output "$2" "$1" || die "could not download $1"
 	elif command -v wget >/dev/null 2>&1; then
-		wget -q -O "$2" "$1" || die "could not download $1"
+		# BusyBox wget lacks --https-only; it still starts from an https:// URL.
+		if ! is_set "${COMPA_INSTALL_TEST:-}" && wget --help 2>&1 | grep -q -e --https-only; then
+			wget --https-only -q -O "$2" "$1" || die "could not download $1"
+		else
+			wget -q -O "$2" "$1" || die "could not download $1"
+		fi
 	else
 		die "curl or wget is needed to download Compa."
 	fi
@@ -79,6 +92,18 @@ sha256_of() {
 	else
 		die "sha256sum or shasum is needed to verify the download."
 	fi
+}
+
+resolve_base() {
+	BASE=${COMPA_RELEASE_BASE_URL:-https://github.com/$REPO/releases/download}
+	case "$BASE" in
+	https://*) ;;
+	*)
+		is_set "${COMPA_INSTALL_TEST:-}" ||
+			die "COMPA_RELEASE_BASE_URL must be an https:// address, not '$BASE'."
+		;;
+	esac
+	BASE=${BASE%/}
 }
 
 resolve_tag() {
@@ -153,40 +178,134 @@ stop_running() {
 }
 
 remove_leftovers() {
-	# Files the in-app updater leaves behind while an old program still runs.
+	# Files the in-app updater leaves behind while an old program still runs,
+	# and those of an installer run that was killed.
 	for leftover in "$1"/compa.old "$1"/compa-kernel.old "$1"/compa.*.old "$1"/compa-kernel.*.old \
-		"$1"/.compa.new "$1"/.compa-kernel.new "$1"/.compa.old "$1"/.compa-kernel.old; do
+		"$1"/.compa.new "$1"/.compa-kernel.new "$1"/.compa.old "$1"/.compa-kernel.old \
+		"$1"/.compa.install-* "$1"/.compa-kernel.install-*; do
 		if [ -e "$leftover" ]; then rm -f "$leftover"; fi
 	done
 }
 
-# install_program FROM DIR NAME: replace DIR/NAME by renaming a finished copy
-# over it, which works even while the old program is still running.
-install_program() {
-	staged="$2/.$3.install.$$"
-	cp "$1" "$staged" || die "could not write to $2."
-	chmod 755 "$staged"
-	if ! mv -f "$staged" "$2/$3"; then
-		rm -f "$staged"
-		die "could not replace $2/$3."
+# install_programs DIR: replace compa-kernel and compa in DIR together, or
+# neither. Both are copied in first, so a folder that can't be written fails
+# before the running Compa is stopped. Then each one is renamed over the old
+# one, which works even while it runs; cleanup puts the old ones back if that
+# is cut short.
+install_programs() {
+	remove_leftovers "$1"
+	STAGE_DIR=$1
+	for program in compa-kernel compa; do
+		staged="$1/.$program.install-new.$$"
+		{ cp "$TMP/files/$program" "$staged" && chmod 755 "$staged"; } 2>/dev/null ||
+			die "could not write to $1."
+	done
+	stop_running "$1"
+	SWAP_DIR=$1
+	for program in compa-kernel compa; do
+		if [ -e "$1/$program" ]; then
+			mv -f "$1/$program" "$1/.$program.install-old.$$" || die "could not replace $1/$program."
+		fi
+		mv -f "$1/.$program.install-new.$$" "$1/$program" || die "could not replace $1/$program."
+		SWAPPED="$SWAPPED $program"
+	done
+	SWAP_DIR=
+	rm -f "$1/.compa-kernel.install-old.$$" "$1/.compa.install-old.$$"
+}
+
+# restore_programs DIR: undo the part of install_programs that already ran.
+restore_programs() {
+	for program in compa-kernel compa; do
+		if [ -e "$1/.$program.install-old.$$" ]; then
+			mv -f "$1/.$program.install-old.$$" "$1/$program" || true
+		else
+			case " $SWAPPED " in
+			*" $program "*) rm -f "$1/$program" ;;
+			esac
+		fi
+	done
+}
+
+cleanup() {
+	if [ -n "$SWAP_DIR" ]; then restore_programs "$SWAP_DIR"; fi
+	if [ -n "$STAGE_DIR" ]; then
+		rm -f "$STAGE_DIR/.compa-kernel.install-new.$$" "$STAGE_DIR/.compa.install-new.$$"
 	fi
+	if [ -n "$TMP" ]; then rm -rf "$TMP"; fi
 }
 
 data_dir() {
 	printf '%s\n' "${COMPA_HOME:-$HOME/.compa}"
 }
 
+# launcher_port: the Service Port setting Compa listens on, kept in
+# launcher-config.json beside config.json.
+launcher_port() {
+	settings="$(dirname "${COMPA_CONFIG:-$(data_dir)/config.json}")/launcher-config.json"
+	port=
+	if [ -f "$settings" ]; then
+		port=$(awk -F '[,{}]' '{ for (i = 1; i <= NF; i++) print $i }' "$settings" |
+			sed -n 's/^[[:space:]]*"port"[[:space:]]*:[[:space:]]*\([0-9]\{1,5\}\)[[:space:]]*$/\1/p' | head -n 1)
+	fi
+	if [ -z "$port" ] || [ "$port" -lt 1 ] || [ "$port" -gt 65535 ]; then port=$DEFAULT_PORT; fi
+	printf '%s\n' "$port"
+}
+
+# can_start: whether someone at this computer's desktop can finish setting up
+# in the browser Compa opens. Not under CI, without a terminal, or in a
+# remote shell.
+can_start() {
+	[ -t 1 ] || return 1
+	! is_set "${CI:-}" || return 1
+	[ -z "${SSH_CONNECTION:-}${SSH_TTY:-}" ] || return 1
+	[ "$OS" = darwin ] || [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]
+}
+
+file_size() {
+	if [ -f "$1" ]; then wc -c <"$1" | tr -d ' '; else echo 0; fi
+}
+
+# show_new_lines FILE SIZE: the last lines FILE gained after it was SIZE bytes.
+show_new_lines() {
+	if [ "$(file_size "$1")" -gt "$2" ]; then
+		say "  $1:" >&2
+		tail -c "+$(($2 + 1))" "$1" | tail -n 8 | sed 's/^/    /' >&2
+	fi
+}
+
+start_compa() {
+	logs="$(data_dir)/logs"
+	mkdir -p "$logs"
+	# Both logs keep earlier runs, so only what this start adds is shown.
+	log_size=$(file_size "$logs/launcher.log")
+	out_size=$(file_size "$logs/launcher.out")
+	nohup "$DIR/compa" >>"$logs/launcher.out" 2>&1 </dev/null &
+	started=$!
+	sleep 2
+	if kill -0 "$started" 2>/dev/null; then
+		say "Compa is running in the background and opens your browser to finish setting up."
+		say "If it doesn't, open http://localhost:$(launcher_port)"
+	else
+		say "Compa stopped right after starting. Its logs say:" >&2
+		show_new_lines "$logs/launcher.log" "$log_size"
+		show_new_lines "$logs/launcher.out" "$out_size"
+		say "Start it again with: $DIR/compa" >&2
+	fi
+}
+
 install_compa() {
+	if [ "$(id -u)" = 0 ] && ! is_set "${COMPA_ALLOW_ROOT:-}"; then
+		die "run the installer as your own user, not as root or with sudo: Compa would be installed for root and run as root. To do that anyway, set COMPA_ALLOW_ROOT=1."
+	fi
 	detect_platform
+	resolve_base
 	resolve_tag
 	archive="compa_${VERSION}_${OS}_${ARCH}.tar.gz"
-	base=${COMPA_RELEASE_BASE_URL:-https://github.com/$REPO/releases/download}
-	base=${base%/}
 	say "Installing Compa $TAG ($OS/$ARCH) into $DIR"
 
 	step "Downloading $archive..."
-	download "$base/$TAG/SHA256SUMS" "$TMP/SHA256SUMS"
-	download "$base/$TAG/$archive" "$TMP/$archive"
+	download "$BASE/$TAG/SHA256SUMS" "$TMP/SHA256SUMS"
+	download "$BASE/$TAG/$archive" "$TMP/$archive"
 	expected=$(tr -d '\r' <"$TMP/SHA256SUMS" |
 		awk -v f="$archive" '$2 == f || $2 == "*" f { print tolower($1); exit }')
 	[ -n "$expected" ] || die "SHA256SUMS does not list $archive, so it cannot be verified."
@@ -206,10 +325,7 @@ install_compa() {
 	mkdir -p "$DIR" || die "could not create $DIR."
 	# The real path, which is what running processes report.
 	DIR=$(cd "$DIR" && pwd -P)
-	stop_running "$DIR"
-	remove_leftovers "$DIR"
-	install_program "$TMP/files/compa-kernel" "$DIR" compa-kernel
-	install_program "$TMP/files/compa" "$DIR" compa
+	install_programs "$DIR"
 	step "Installed compa and compa-kernel."
 
 	say ""
@@ -223,19 +339,14 @@ install_compa() {
 	esac
 	if is_set "${COMPA_NO_START:-}"; then
 		say "Start it with: $DIR/compa"
+	elif can_start; then
+		start_compa
 	else
-		logs="$(data_dir)/logs"
-		mkdir -p "$logs"
-		nohup "$DIR/compa" >>"$logs/launcher.out" 2>&1 </dev/null &
-		started=$!
-		sleep 2
-		if kill -0 "$started" 2>/dev/null; then
-			say "Compa is running in the background: open $URL to finish setting up."
-			say "Its output goes to $logs/launcher.out."
-		else
-			say "Compa stopped right after starting; the end of $logs/launcher.out says:" >&2
-			tail -n 5 "$logs/launcher.out" >&2 || true
-		fi
+		say "Compa was not started: this looks like CI, a script or a remote shell."
+		say "  On this computer's desktop, run: $DIR/compa"
+		say "  Without a desktop, set the password, then run Compa in the terminal:"
+		say "    $DIR/compa -password 'your-password'"
+		say "    $DIR/compa -console -no-browser"
 	fi
 	say "Your settings and data live in $(data_dir)."
 }
@@ -274,9 +385,10 @@ uninstall_compa() {
 main() {
 	[ -n "${HOME:-}" ] || die "HOME is not set."
 	DIR=${COMPA_INSTALL_DIR:-$HOME/.local/bin}
-	TMP=$(mktemp -d 2>/dev/null || mktemp -d -t compa-install) || die "could not create a temporary directory."
-	trap 'rm -rf "$TMP"' EXIT
+	TMP='' STAGE_DIR='' SWAP_DIR='' SWAPPED=''
+	trap cleanup EXIT
 	trap 'exit 1' HUP INT TERM
+	TMP=$(mktemp -d 2>/dev/null || mktemp -d -t compa-install) || die "could not create a temporary directory."
 	if is_set "${COMPA_UNINSTALL:-}"; then
 		uninstall_compa
 	else

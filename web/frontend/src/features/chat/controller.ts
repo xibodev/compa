@@ -5,6 +5,7 @@ import { SessionNotFoundError } from "@/api/sessions"
 import {
   loadSessionMessages,
   mergeHistoryMessages,
+  mergeReconnectedHistory,
 } from "@/features/chat/history"
 import {
   type WebChatMessage,
@@ -28,22 +29,57 @@ import { type GatewayState, gatewayAtom } from "@/store/gateway"
 
 const store = getDefaultStore()
 
+// After sleep or a network change a socket can stay "open" while nothing
+// arrives, so the client pings and drops a connection that stays silent.
+export const PING_INTERVAL_MS = 25_000
+export const PONG_TIMEOUT_MS = 10_000
+const HYDRATE_RETRY_MAX_MS = 30_000
+
 let wsRef: WebSocket | null = null
 let isConnecting = false
 let msgIdCounter = 0
 let activeSessionIdRef = getChatState().activeSessionId
 let initialized = false
 let hydratePromise: Promise<void> | null = null
+let hydrateRetryTimer: number | null = null
+let hydrateRetryAttempts = 0
 let connectionGeneration = 0
 let reconnectTimer: number | null = null
 let reconnectAttempts = 0
 let shouldMaintainConnection = false
+let pingTimer: number | null = null
+let pongTimer: number | null = null
+// The session the last socket opened for. Opening again for the same one is
+// a reconnect, and frames sent meanwhile were missed.
+let lastOpenedSessionId: string | null = null
+// Bumped by every session switch and new chat, so a history load that
+// finishes after a later switch is dropped instead of winning.
+let sessionChangeToken = 0
 
 function clearReconnectTimer() {
   if (reconnectTimer !== null) {
     window.clearTimeout(reconnectTimer)
     reconnectTimer = null
   }
+}
+
+function stopHeartbeat() {
+  if (pingTimer !== null) {
+    window.clearInterval(pingTimer)
+    pingTimer = null
+  }
+  if (pongTimer !== null) {
+    window.clearTimeout(pongTimer)
+    pongTimer = null
+  }
+}
+
+function clearHydrateRetry() {
+  if (hydrateRetryTimer !== null) {
+    window.clearTimeout(hydrateRetryTimer)
+    hydrateRetryTimer = null
+  }
+  hydrateRetryAttempts = 0
 }
 
 function shouldReconnectFor(generation: number, sessionId: string): boolean {
@@ -71,6 +107,77 @@ function scheduleReconnect(generation: number, sessionId: string) {
   }, delay)
 }
 
+/** Closes a connection that stopped answering and schedules a new one. */
+function dropConnection(generation: number, sessionId: string) {
+  const socket = wsRef
+  wsRef = null
+  isConnecting = false
+  stopHeartbeat()
+  invalidateSocket(socket)
+  updateChatStore({
+    connectionState: "disconnected",
+    isTyping: false,
+    isTurnActive: false,
+  })
+  scheduleReconnect(generation, sessionId)
+}
+
+function startHeartbeat(
+  socket: WebSocket,
+  generation: number,
+  sessionId: string,
+) {
+  stopHeartbeat()
+  pingTimer = window.setInterval(() => {
+    if (
+      socket !== wsRef ||
+      socket.readyState !== WebSocket.OPEN ||
+      pongTimer !== null
+    ) {
+      return
+    }
+    try {
+      socket.send(JSON.stringify({ type: "ping", id: `ping-${Date.now()}` }))
+    } catch {
+      // The timeout below drops the connection.
+    }
+    pongTimer = window.setTimeout(() => {
+      pongTimer = null
+      if (socket === wsRef) {
+        console.warn("Web chat connection stopped answering; reconnecting")
+        dropConnection(generation, sessionId)
+      }
+    }, PONG_TIMEOUT_MS)
+  }, PING_INTERVAL_MS)
+}
+
+/** Any frame from the server shows the connection is alive. */
+function noteServerActivity() {
+  if (pongTimer !== null) {
+    window.clearTimeout(pongTimer)
+    pongTimer = null
+  }
+}
+
+async function reloadHistoryAfterReconnect(sessionId: string) {
+  const token = sessionChangeToken
+  try {
+    const loaded = await loadSessionMessages(sessionId)
+    if (token !== sessionChangeToken || activeSessionIdRef !== sessionId) {
+      return
+    }
+    updateChatStore((prev) => ({
+      messages: mergeReconnectedHistory(loaded.messages, prev.messages),
+    }))
+  } catch (error) {
+    // A chat with nothing saved yet has no history to reload; on any other
+    // failure the page keeps what it shows.
+    if (!(error instanceof SessionNotFoundError)) {
+      console.warn("Failed to reload chat history after reconnecting:", error)
+    }
+  }
+}
+
 function needsActiveSessionHydration(): boolean {
   const state = getChatState()
   const storedSessionId = readStoredSessionId()
@@ -94,6 +201,7 @@ function disconnectChatInternal({
 }) {
   connectionGeneration += 1
   clearReconnectTimer()
+  stopHeartbeat()
 
   if (clearDesiredConnection) {
     shouldMaintainConnection = false
@@ -108,6 +216,7 @@ function disconnectChatInternal({
   updateChatStore({
     connectionState: "disconnected",
     isTyping: false,
+    isTurnActive: false,
   })
 }
 
@@ -169,6 +278,11 @@ export async function connectChat() {
       updateChatStore({ connectionState: "connected" })
       isConnecting = false
       reconnectAttempts = 0
+      startHeartbeat(socket, generation, sessionId)
+      if (lastOpenedSessionId === sessionId) {
+        void reloadHistoryAfterReconnect(sessionId)
+      }
+      lastOpenedSessionId = sessionId
     }
 
     socket.onmessage = (event) => {
@@ -185,6 +299,7 @@ export async function connectChat() {
         return
       }
 
+      noteServerActivity()
       try {
         const message = JSON.parse(event.data) as WebChatMessage
         handleWebChatMessage(message, sessionId)
@@ -208,9 +323,11 @@ export async function connectChat() {
       }
       wsRef = null
       isConnecting = false
+      stopHeartbeat()
       updateChatStore({
         connectionState: "disconnected",
         isTyping: false,
+        isTurnActive: false,
       })
       scheduleReconnect(generation, sessionId)
     }
@@ -246,6 +363,24 @@ export async function connectChat() {
   }
 }
 
+function scheduleHydrateRetry() {
+  // Only the running app retries; a direct call (tests) reports and stops.
+  if (!initialized || hydrateRetryTimer !== null) {
+    return
+  }
+
+  const delay = Math.min(2000 * 2 ** hydrateRetryAttempts, HYDRATE_RETRY_MAX_MS)
+  hydrateRetryAttempts += 1
+  hydrateRetryTimer = window.setTimeout(() => {
+    hydrateRetryTimer = null
+    void hydrateActiveSession().then(() => {
+      if (shouldMaintainConnection && !needsActiveSessionHydration()) {
+        void connectChat()
+      }
+    })
+  }, delay)
+}
+
 export async function hydrateActiveSession() {
   if (hydratePromise) {
     return hydratePromise
@@ -271,6 +406,7 @@ export async function hydrateActiveSession() {
       if (currentState.activeSessionId !== storedSessionId) {
         return
       }
+      hydrateRetryAttempts = 0
 
       if (currentState.messages.length > 0) {
         updateChatStore({
@@ -292,15 +428,21 @@ export async function hydrateActiveSession() {
       setChatSelection(storedSessionId, loaded.selection)
     })
     .catch((error) => {
-      // A remembered session that no longer exists, e.g. one that was
-      // deleted, is no failure: the chat forgets it and starts fresh.
       const missing = error instanceof SessionNotFoundError
-      if (!missing) {
-        console.error("Failed to restore last session history:", error)
-      }
-
       const currentState = getChatState()
       if (currentState.activeSessionId !== storedSessionId) {
+        return
+      }
+
+      if (!missing) {
+        // The conversation exists but could not be shown. It stays the
+        // active one but is not connected to, because the next message would
+        // continue a conversation the user cannot see; loading is retried.
+        console.error("Failed to restore last session history:", error)
+        if (hydrateRetryAttempts === 0) {
+          toast.error(i18n.t("chat.historyLoadFailed"))
+        }
+        scheduleHydrateRetry()
         return
       }
 
@@ -309,9 +451,9 @@ export async function hydrateActiveSession() {
         return
       }
 
-      if (missing) {
-        setActiveSessionId(generateSessionId())
-      }
+      // A remembered session that no longer exists, e.g. one that was
+      // deleted, is no failure: the chat forgets it and starts fresh.
+      setActiveSessionId(generateSessionId())
       // A session is remembered again once it holds a message.
       clearStoredSessionId()
       updateChatStore({
@@ -397,6 +539,7 @@ export function sendChatMessage({
       },
     ],
     isTyping: true,
+    isTurnActive: true,
   }))
 
   try {
@@ -420,6 +563,7 @@ export function sendChatMessage({
     updateChatStore((prev) => ({
       messages: prev.messages.filter((message) => message.id !== id),
       isTyping: false,
+      isTurnActive: false,
     }))
     return false
   }
@@ -442,13 +586,23 @@ export async function sendChatMessageWhenReady(
 }
 
 export async function switchChatSession(sessionId: string) {
-  if (sessionId === activeSessionIdRef) {
+  const token = ++sessionChangeToken
+  // Choosing the open chat again cancels a switch still loading, and loads
+  // the open chat when its history never arrived.
+  if (
+    sessionId === activeSessionIdRef &&
+    getChatState().hasHydratedActiveSession
+  ) {
     return
   }
 
   try {
     const loaded = await loadSessionMessages(sessionId)
+    if (token !== sessionChangeToken) {
+      return
+    }
 
+    clearHydrateRetry()
     disconnectChatInternal({ clearDesiredConnection: false })
     setActiveSessionId(sessionId)
     updateChatStore({
@@ -464,6 +618,9 @@ export async function switchChatSession(sessionId: string) {
       await connectChat()
     }
   } catch (error) {
+    if (token !== sessionChangeToken) {
+      return
+    }
     console.error("Failed to load session history:", error)
     toast.error(i18n.t("chat.historyOpenFailed"))
   }
@@ -471,10 +628,14 @@ export async function switchChatSession(sessionId: string) {
 
 export async function newChatSession() {
   const current = getChatState()
-  if (current.messages.length === 0) {
+  // An empty chat is already new, unless its history never loaded: then a
+  // new chat is the way out of a conversation that cannot be shown.
+  if (current.messages.length === 0 && current.hasHydratedActiveSession) {
     return
   }
 
+  sessionChangeToken += 1
+  clearHydrateRetry()
   disconnectChatInternal({ clearDesiredConnection: false })
   const sessionId = generateSessionId()
   setActiveSessionId(sessionId)

@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react"
 
+import { createVoiceActivityDetector } from "./voice-activity"
 import { transcribeAudioBlob } from "./voice-client"
 import { type WavRecorderController, startWavRecording } from "./wav-recorder"
-import { createVoiceActivityDetector } from "./voice-activity"
 
 export function useVoiceRecording() {
   const [isRecording, setIsRecording] = useState(false)

@@ -240,6 +240,17 @@
   "tools": {
     "allow_read_paths": null,
     "allow_write_paths": null,
+    "approval": {
+      "default": "allow",
+      "rules": [
+        {
+          "source": "module:*",
+          "hints": ["cost_unknown", "network", "external_writes"],
+          "action": "ask"
+        },
+        { "tool": "install_skill", "action": "ask" }
+      ]
+    },
     "web": {
       "enabled": true,
       "prefer_native": true,
@@ -424,7 +435,8 @@
       "enabled": true
     },
     "message": {
-      "enabled": true
+      "enabled": true,
+      "targets": "current_chat"
     },
     "read_file": {
       "enabled": true,
@@ -484,6 +496,14 @@
       "min_severity": "info",
       "include_payload": false
     }
+  },
+  "commands": {
+    "owner_only": true
+  },
+  "logging": {
+    "redact_secrets": true,
+    "max_size_mb": 10,
+    "max_files": 5
   },
   "gateway": {
     "host": "localhost",

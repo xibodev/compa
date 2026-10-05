@@ -16,6 +16,7 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Switch } from "@/components/ui/switch"
 import { cn } from "@/lib/utils"
 
+import { ToolCardSettings } from "./tool-card-settings"
 import { ToolStatusBadge } from "./tool-status-badge"
 import type { GroupedTools, ToolStatusFilter } from "./types"
 
@@ -205,7 +206,7 @@ function ToolCard({
             <Switch
               checked={isToggledOn}
               disabled={isPending || isBlocked}
-              aria-label={`${isToggledOn ? "Disable" : "Enable"} ${tool.name}`}
+              aria-label={tool.name}
               onCheckedChange={(checked) => onToggleTool(tool.name, checked)}
               className={cn(
                 "shrink-0",
@@ -218,6 +219,8 @@ function ToolCard({
         <p className="text-muted-foreground/80 flex-1 text-[14px] leading-relaxed">
           {tool.description}
         </p>
+
+        <ToolCardSettings toolName={tool.name} />
 
         {reasonText && (
           <div className="border-border/40 mt-4 border-t pt-4">

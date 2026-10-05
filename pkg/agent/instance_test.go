@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/xibodev/compa/pkg/config"
 	"github.com/xibodev/compa/pkg/media"
@@ -437,6 +438,66 @@ func TestAgentInstanceSetModelsKeepsImageAndLightModels(t *testing.T) {
 	}
 	if provider, model, err := agent.primaryModel(); err != nil || provider != next || model != "model" {
 		t.Fatalf("primaryModel() = %T/%q/%v, want the new target", provider, model, err)
+	}
+}
+
+// AG-08: a turn runs on a snapshot of the model. /switch model neither waits
+// for the turn nor for its nested sub-agents, the turn keeps its model, the
+// replaced provider closes when the turn ends, and the next turn switches.
+func TestSwitchModelDuringTurnTakesEffectOnTheNextTurn(t *testing.T) {
+	cfg := newModelTestConfig(t, "main/model")
+	oldPrimary, next := &countingStatefulProvider{}, &countingStatefulProvider{}
+	resolve := testModelResolver(cfg, nil,
+		oneModel("main", "model", oldPrimary),
+		oneModel("next", "model", next),
+	)
+	agent := NewAgentInstance(nil, &cfg.Agents.Defaults, cfg, nil, resolve)
+	al := &AgentLoop{cfg: cfg, resolveModel: resolve, rateLimits: newCandidateRateLimits()}
+
+	turn, releaseTurn, _ := agent.turnSnapshot()
+	child, releaseChild, _ := turn.turnSnapshot() // a synchronous sub-agent
+
+	switched := make(chan error, 1)
+	go func() {
+		_, err := al.switchModel(agent, "next/model")
+		switched <- err
+	}()
+	select {
+	case err := <-switched:
+		if err != nil {
+			t.Fatalf("switchModel() error = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("/switch model waited for the running turn")
+	}
+
+	// A sub-agent the turn starts after the switch still runs on its model.
+	nested, releaseNested, current := child.turnSnapshot()
+	if !current {
+		t.Fatal("the running turn's model was closed")
+	}
+	for name, snapshot := range map[string]*AgentInstance{"turn": turn, "child": child, "nested": nested} {
+		if snapshot.Provider != oldPrimary || snapshot.Model != "main/model" {
+			t.Fatalf("%s runs on %q, want the model it started on", name, snapshot.Model)
+		}
+	}
+	releaseNested()
+	releaseChild()
+	if oldPrimary.closeCount != 0 {
+		t.Fatal("/switch model closed the provider of a running turn")
+	}
+	releaseTurn()
+	if oldPrimary.closeCount != 1 {
+		t.Fatalf("replaced provider closed %d times after the turn ended, want 1", oldPrimary.closeCount)
+	}
+
+	nextTurn, releaseNext, _ := agent.turnSnapshot()
+	defer releaseNext()
+	if nextTurn.Provider != next || nextTurn.Model != "next/model" {
+		t.Fatalf("next turn runs on %q, want next/model", nextTurn.Model)
+	}
+	if _, _, current := turn.turnSnapshot(); current {
+		t.Fatal("a snapshot of the ended turn reported its closed model as current")
 	}
 }
 

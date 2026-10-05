@@ -1,0 +1,39 @@
+# golangci-lint v2 settings, used by `make lint` and the lint job in
+# .github/workflows/ci.yml.
+#
+# Only checks the code already passes are on, so any new finding fails CI.
+# errcheck is off because about 900 unchecked errors predate this file; the
+# staticcheck checks turned off below have existing findings. Turn one on
+# once it is fixed.
+version: "2"
+
+run:
+  build-tags:
+    - goolm
+    - stdjson
+
+linters:
+  default: none
+  enable:
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+  settings:
+    govet:
+      disable:
+        # Go 1.26's //go:fix inline hints (reflect.Ptr -> reflect.Pointer).
+        - inline
+    staticcheck:
+      # The bug checks; style and simplification checks are left to review.
+      checks:
+        - SA*
+        - -SA1012 # nil context, in tests
+        - -SA2001 # empty critical section
+        - -SA4010 # append result never used
+        - -SA4023 # comparison that is always true
+        - -SA9003 # empty branch
+
+formatters:
+  enable:
+    - gofmt

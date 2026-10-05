@@ -108,13 +108,19 @@ func TestLauncherBrowserLaunchSuffix(t *testing.T) {
 		t.Fatalf("NewLauncherDashboardLocalAutoLogin() error = %v", err)
 	}
 
-	if got := launcherBrowserLaunchSuffix(true, autoLogin); got != middleware.LauncherDashboardSetupPath {
+	if got := launcherBrowserLaunchSuffix(true, "setup-token", autoLogin); got != "/launcher-setup?token=setup-token" {
 		t.Fatalf("setup suffix = %q", got)
 	}
-	if got := launcherBrowserLaunchSuffix(false, autoLogin); !strings.HasPrefix(got, "/launcher-auto-login?nonce=") {
-		t.Fatalf("auto-login suffix = %q", got)
+	first := launcherBrowserLaunchSuffix(false, "setup-token", autoLogin)
+	if !strings.HasPrefix(first, "/launcher-auto-login?nonce=") {
+		t.Fatalf("auto-login suffix = %q", first)
 	}
-	if got := launcherBrowserLaunchSuffix(false, nil); got != "" {
+	// Each launch gets its own one-time link; the tray's Open never
+	// reopens a used one.
+	if second := launcherBrowserLaunchSuffix(false, "setup-token", autoLogin); second == first {
+		t.Fatalf("the second launch reused the sign-in link %q", second)
+	}
+	if got := launcherBrowserLaunchSuffix(false, "setup-token", nil); got != "" {
 		t.Fatalf("empty suffix = %q, want empty", got)
 	}
 }

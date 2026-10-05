@@ -4,18 +4,28 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/xibodev/compa/pkg/agent"
+	"github.com/xibodev/compa/pkg/approval"
 	"github.com/xibodev/compa/pkg/bus"
 	"github.com/xibodev/compa/pkg/config"
+	"github.com/xibodev/compa/pkg/cron"
 	runtimeevents "github.com/xibodev/compa/pkg/events"
+	"github.com/xibodev/compa/pkg/health"
+	"github.com/xibodev/compa/pkg/logger"
+	"github.com/xibodev/compa/pkg/state"
+	"github.com/xibodev/compa/pkg/tools"
 )
 
 func TestRun_StartupFailuresReturnErrorAndEmitStructuredLog(t *testing.T) {
@@ -295,5 +305,274 @@ func receiveGatewayRuntimeEvent(t *testing.T, ch <-chan runtimeevents.Event) run
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for gateway runtime event")
 		return runtimeevents.Event{}
+	}
+}
+
+// newTestHealthMux returns a ready health server with token "tok" and a mux
+// serving its endpoints.
+func newTestHealthMux() (*health.Server, *http.ServeMux) {
+	hs := health.NewServer("127.0.0.1", 0, "tok")
+	hs.SetReady(true)
+	mux := http.NewServeMux()
+	hs.RegisterOnMux(mux)
+	return hs, mux
+}
+
+func getReady(t *testing.T, mux *http.ServeMux) (int, string) {
+	t.Helper()
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/ready", nil))
+	return w.Code, w.Body.String()
+}
+
+func TestRunAgentLoopFailureMarksTheGatewayNotReady(t *testing.T) {
+	hs, mux := newTestHealthMux()
+
+	runAgentLoop(context.Background(), func(context.Context) error {
+		return errors.New("agent loop has no message bus")
+	}, hs)
+
+	code, body := getReady(t, mux)
+	if code != http.StatusServiceUnavailable {
+		t.Fatalf("GET /ready after the agent loop failed = %d, want %d: %s", code, http.StatusServiceUnavailable, body)
+	}
+	if !strings.Contains(body, agentLoopCheck) || !strings.Contains(body, "no message bus") {
+		t.Fatalf("GET /ready body = %s, want the failed %s check with its error", body, agentLoopCheck)
+	}
+}
+
+func TestRunAgentLoopStoppingCleanlyKeepsTheGatewayReady(t *testing.T) {
+	hs, mux := newTestHealthMux()
+
+	runAgentLoop(context.Background(), func(context.Context) error { return nil }, hs)
+
+	if code, body := getReady(t, mux); code != http.StatusOK {
+		t.Fatalf("GET /ready after a clean stop = %d, want %d: %s", code, http.StatusOK, body)
+	}
+}
+
+func TestShutdownEndpointTakesTheSignalPath(t *testing.T) {
+	hs, mux := newTestHealthMux()
+	sigChan := make(chan os.Signal, 1)
+	hs.SetShutdownFunc(shutdownRequester(sigChan))
+
+	req := httptest.NewRequest(http.MethodPost, "/shutdown", nil)
+	req.Header.Set("Authorization", "Bearer tok")
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("POST /shutdown = %d, want %d", w.Code, http.StatusAccepted)
+	}
+	select {
+	case sig := <-sigChan:
+		if sig != syscall.SIGTERM {
+			t.Fatalf("shutdown sent %v, want SIGTERM", sig)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("POST /shutdown did not reach the gateway loop")
+	}
+
+	// A second request while one is pending doesn't block.
+	request := shutdownRequester(sigChan)
+	request()
+	request()
+	if len(sigChan) != 1 {
+		t.Fatalf("pending shutdowns = %d, want 1", len(sigChan))
+	}
+}
+
+func TestHeartbeatHandler(t *testing.T) {
+	t.Run("a reply other than HEARTBEAT_OK is delivered", func(t *testing.T) {
+		var gotChannel, gotChat string
+		handler := heartbeatHandler(func(_ context.Context, _, channel, chatID string) (string, error) {
+			gotChannel, gotChat = channel, chatID
+			return "Disk is 95% full\n", nil
+		})
+		result := handler("check", "telegram", "123")
+		if gotChannel != "telegram" || gotChat != "123" {
+			t.Fatalf("heartbeat ran as %s:%s, want telegram:123", gotChannel, gotChat)
+		}
+		if result == nil || result.Silent || result.IsError || result.ForUser != "Disk is 95% full" {
+			t.Fatalf("result = %+v, want a non-silent reply for the user", result)
+		}
+	})
+
+	t.Run("HEARTBEAT_OK and empty replies stay silent", func(t *testing.T) {
+		for _, reply := range []string{"HEARTBEAT_OK", " HEARTBEAT_OK\n", ""} {
+			handler := heartbeatHandler(func(context.Context, string, string, string) (string, error) {
+				return reply, nil
+			})
+			if result := handler("check", "telegram", "123"); result == nil || !result.Silent {
+				t.Fatalf("reply %q gave %+v, want a silent result", reply, result)
+			}
+		}
+	})
+
+	t.Run("no known chat skips the turn", func(t *testing.T) {
+		for _, target := range [][2]string{{"", ""}, {"telegram", ""}, {"", "123"}} {
+			called := false
+			handler := heartbeatHandler(func(context.Context, string, string, string) (string, error) {
+				called = true
+				return "ran", nil
+			})
+			if result := handler("check", target[0], target[1]); result != nil || called {
+				t.Fatalf("target %q ran the heartbeat (result %+v); it must not fall back to another identity",
+					target, result)
+			}
+		}
+	})
+
+	t.Run("errors are reported", func(t *testing.T) {
+		handler := heartbeatHandler(func(context.Context, string, string, string) (string, error) {
+			return "", errors.New("provider down")
+		})
+		if result := handler("check", "telegram", "123"); result == nil || !result.IsError {
+			t.Fatalf("result = %+v, want an error result", result)
+		}
+	})
+}
+
+func TestSetupCronToolKeepsTheStoreOutOfTheWorkspace(t *testing.T) {
+	home := t.TempDir()
+	workspace := filepath.Join(home, "workspace")
+
+	cfg := config.DefaultConfig()
+	cfg.Tools.Cron.Enabled = false
+	cs, err := setupCronTool(nil, nil, home, workspace, true, 0, cfg)
+	if err != nil {
+		t.Fatalf("setupCronTool() error = %v", err)
+	}
+	every := int64(3_600_000)
+	if _, err := cs.AddJob("daily", cron.CronSchedule{Kind: "every", EveryMS: &every}, "hi", "cli", "direct"); err != nil {
+		t.Fatalf("AddJob() error = %v", err)
+	}
+
+	if _, err := os.Stat(cron.DefaultStorePath(home)); err != nil {
+		t.Fatalf("store not at %s: %v", cron.DefaultStorePath(home), err)
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "cron")); !os.IsNotExist(err) {
+		t.Fatalf("store written inside the workspace (stat err = %v)", err)
+	}
+}
+
+// cronApprover approves every call it is asked about, and records them.
+type cronApprover struct {
+	mu       sync.Mutex
+	requests []*agent.ToolApprovalRequest
+}
+
+func (a *cronApprover) ApproveTool(_ context.Context, req *agent.ToolApprovalRequest) (agent.ApprovalDecision, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.requests = append(a.requests, req)
+	return agent.ApprovalDecision{Approved: true}, nil
+}
+
+func TestSetupCronToolDecidesScheduledCommandsThroughTheAgentLoop(t *testing.T) {
+	home := t.TempDir()
+	cfg := config.DefaultConfig()
+	cfg.Agents.Defaults.Workspace = filepath.Join(home, "workspace")
+	cfg.Tools.Exec.Enabled = true
+	cfg.Tools.Cron.Enabled = true
+	cfg.Tools.Approval = approval.Policy{Rules: []approval.Rule{
+		{Tool: "exec", Origin: []approval.Origin{approval.OriginCron}, Action: approval.Ask},
+	}}
+	msgBus := bus.NewMessageBus()
+	t.Cleanup(msgBus.Close)
+	al := agent.NewAgentLoop(cfg, msgBus, nil)
+	t.Cleanup(al.Close)
+	if _, err := setupCronTool(al, msgBus, home, cfg.Agents.Defaults.Workspace, true, 0, cfg); err != nil {
+		t.Fatalf("setupCronTool() error = %v", err)
+	}
+	registered, ok := al.GetRegistry().GetDefaultAgent().Tools.Get("cron")
+	if !ok {
+		t.Fatal("cron tool not registered")
+	}
+	cronTool, ok := registered.(*tools.CronTool)
+	if !ok {
+		t.Fatalf("cron tool is a %T", registered)
+	}
+
+	readOutput := func() string {
+		t.Helper()
+		select {
+		case out := <-msgBus.OutboundChan():
+			return out.Content
+		case <-time.After(5 * time.Second):
+			t.Fatal("the job reported nothing")
+		}
+		return ""
+	}
+	job := &cron.CronJob{ID: "job1", Name: "disk check"}
+	job.Payload.Command = "echo approved-by-hook"
+
+	// No approver, and no chat of the owner's known yet: nobody can be asked.
+	if _, err := cronTool.RunJob(context.Background(), job); err == nil {
+		t.Fatal("RunJob() error = nil, want the unapproved command refused")
+	}
+	if out := readOutput(); !strings.Contains(out, "was not run: The owner's approval is needed") {
+		t.Fatalf("job output = %q, want the command refused for want of an approval", out)
+	}
+
+	// The loop's approvers decide the ask.
+	approver := &cronApprover{}
+	if err := al.MountHook(agent.NamedHook("approver", approver)); err != nil {
+		t.Fatalf("MountHook() error = %v", err)
+	}
+	if _, err := cronTool.RunJob(context.Background(), job); err != nil {
+		t.Fatalf("RunJob() error = %v, want the approved command run", err)
+	}
+	if out := readOutput(); !strings.Contains(out, "approved-by-hook") {
+		t.Fatalf("job output = %q, want the command's output", out)
+	}
+	approver.mu.Lock()
+	defer approver.mu.Unlock()
+	if len(approver.requests) != 1 || approver.requests[0].Origin != approval.OriginCron {
+		t.Fatalf("approver requests = %+v, want one from origin cron", approver.requests)
+	}
+}
+
+func TestSharedStateManagerIsTheAgentLoops(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Agents.Defaults.Workspace = t.TempDir()
+	al := agent.NewAgentLoop(cfg, bus.NewMessageBus(), nil)
+	t.Cleanup(al.Close)
+	if al.StateManager() == nil {
+		t.Fatal("agent loop has no state manager")
+	}
+	// The heartbeat and the device service read the owner's chat the loop
+	// records, from the loop's own manager.
+	if got := sharedStateManager(al, t.TempDir()); got != al.StateManager() {
+		t.Fatal("sharedStateManager() is not the agent loop's state manager")
+	}
+
+	// Without one, the workspace's state file stands in.
+	workspace := t.TempDir()
+	if err := state.NewManager(workspace).SetOwnerChat("telegram", "42"); err != nil {
+		t.Fatal(err)
+	}
+	if channel, chatID := sharedStateManager(nil, workspace).GetOwnerChat(); channel != "telegram" || chatID != "42" {
+		t.Fatalf("owner chat = %s:%s, want telegram:42", channel, chatID)
+	}
+}
+
+func TestApplyLoggingSettings(t *testing.T) {
+	t.Cleanup(func() {
+		logger.SetRedaction(true)
+		logger.SetRotation(0, 0)
+	})
+	const line = "GET https://user:secret@example.com/x"
+
+	cfg := config.DefaultConfig()
+	cfg.Logging.RedactSecrets = false
+	applyLoggingSettings(cfg)
+	if got := logger.Redact(line); got != line {
+		t.Fatalf("Redact() with redact_secrets off = %q, want the line unchanged", got)
+	}
+
+	cfg.Logging.RedactSecrets = true
+	applyLoggingSettings(cfg)
+	if got := logger.Redact(line); strings.Contains(got, "secret") {
+		t.Fatalf("Redact() with redact_secrets on = %q, want the password masked", got)
 	}
 }

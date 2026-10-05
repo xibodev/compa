@@ -15,8 +15,9 @@ func SetDisableTruncation(enabled bool) {
 }
 
 // SanitizeMessageContent removes Unicode control characters, format characters (RTL overrides,
-// zero-width characters), and other non-graphic characters that could confuse an LLM
-// or cause display issues in the agent UI.
+// zero-width spaces), and other non-graphic characters that could confuse an LLM
+// or cause display issues in the agent UI. The joiners ZWJ and ZWNJ and emoji tag
+// characters stay: Persian and Indic words and emoji sequences need them.
 func SanitizeMessageContent(input string) string {
 	var sb strings.Builder
 	// Pre-allocate memory to avoid multiple allocations
@@ -27,12 +28,19 @@ func SanitizeMessageContent(input string) string {
 		// This includes letters, marks, numbers, punctuation, and symbols.
 		// It excludes control characters (Cc), format characters (Cf),
 		// surrogates (Cs), and private use (Co).
-		if unicode.IsGraphic(r) || r == '\n' || r == '\r' || r == '\t' {
+		if unicode.IsGraphic(r) || r == '\n' || r == '\r' || r == '\t' || keptFormatRune(r) {
 			sb.WriteRune(r)
 		}
 	}
 
 	return sb.String()
+}
+
+// keptFormatRune reports a format character text needs: ZWNJ (U+200C) and
+// ZWJ (U+200D), which shape Persian and Indic words and join emoji, and the
+// tag characters of emoji flag sequences (U+E0020-U+E007F).
+func keptFormatRune(r rune) bool {
+	return r == '\u200c' || r == '\u200d' || (r >= 0xE0020 && r <= 0xE007F)
 }
 
 // Truncate returns a truncated version of s with at most maxLen runes.

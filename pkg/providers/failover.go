@@ -13,18 +13,20 @@ import (
 )
 
 // Failover runs a request on its candidates with llmgw-core's execution
-// primitives. Core decides every error's meaning: its classification says
-// whether a failure may be repeated, may move on to the next candidate or
-// ends the request, and what Retry-After the upstream asked for.
+// primitives. Core's classification says whether a failure may be repeated,
+// may move on to the next candidate or ends the request, and what
+// Retry-After the upstream asked for; Classify adjusts it for a few statuses
+// (see there).
 //
 //   - execution.Execute tries the candidates in order. A retryable or
 //     failover failure moves on to the next candidate; a terminal one - an
-//     invalid request, an authentication failure, an unclassified error, or
-//     a failure after output reached the caller - ends the request.
-//   - A shared execution.HealthTracker keeps each instance's health: a streak
-//     of circuit failures opens its circuit, and a Retry-After cools it down.
-//     A candidate whose instance is unavailable is skipped, and when every
-//     candidate is, the request fails with an *execution.UnavailableError.
+//     invalid request, an unclassified error, or a failure after output
+//     reached the caller - ends the request.
+//   - A shared execution.HealthTracker keeps each target's health, a model on
+//     an instance (FallbackCandidate.HealthKey): a streak of circuit failures
+//     opens its circuit, and a Retry-After cools it down. A candidate that is
+//     unavailable is skipped, and when every candidate is, the request fails
+//     with an *execution.UnavailableError.
 //     A request with a single candidate has nowhere else to go, so it is
 //     never held back: its outcome is only recorded, and the caller's retry
 //     honours the failure's Retry-After.
@@ -48,12 +50,13 @@ type Failover struct {
 // response, and the trace of every candidate reached.
 type FailoverResult = execution.Result[FallbackCandidate, *LLMResponse]
 
-// Health policy of every instance, Studio's cooldown expressed as a core
-// HealthPolicy: every circuit failure opens the instance's circuit, for one
-// minute, then 5 and 25 minutes and at most an hour as failures follow each
-// other; a streak whose last failure is a day old is forgotten.
+// Health policy of every target, a model on an instance: a streak of three
+// circuit failures opens its circuit, for one minute, then 5 and 25 minutes
+// and at most an hour as failures follow each other; a streak whose last
+// failure is a day old is forgotten. One failure, such as a single 503 of a
+// busy aggregator, does not hold the target back.
 const (
-	healthFailureThreshold = 1
+	healthFailureThreshold = 3
 	healthOpenDuration     = time.Minute
 	healthMaxOpenDuration  = time.Hour
 	healthFailureWindow    = 24 * time.Hour
@@ -127,7 +130,7 @@ func (f *Failover) Execute(
 		if len(candidates) == 1 {
 			executor.Health = recordOnly{f.health}
 		}
-		executor.Key = FallbackCandidate.InstanceKey
+		executor.Key = FallbackCandidate.HealthKey
 		executor.Now = f.now
 	}
 	last := len(candidates) - 1
@@ -136,8 +139,67 @@ func (f *Failover) Execute(
 		if err := f.admit(ctx, candidate, isLast); err != nil {
 			return nil, err
 		}
-		return run(ctx, candidate)
+		response, err := run(ctx, candidate)
+		if err != nil && ctx.Err() == nil {
+			err = reclassify(err)
+		}
+		return response, err
 	})
+}
+
+// Classify returns err's classification as Compa's routing reads it: core's,
+// except for these statuses:
+//
+//   - 401, 402, 403 and 404 move on to the next target, which may hold a
+//     valid key, a balance, access or the model, without counting against
+//     the instance's health: it answered.
+//   - 529, Anthropic's "overloaded", is transient as a 503 is: it may be
+//     retried and fail over, and counts against the target.
+//
+// 400 and 422, a request every target would reject, stay terminal, and a
+// failure after output reached the caller stays terminal whatever its status.
+func Classify(err error) core.ProviderErrorClassification {
+	classification := core.ClassifyError(err)
+	var afterOutput *execution.AfterOutputError
+	if err == nil || errors.As(err, &afterOutput) ||
+		errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return classification
+	}
+	switch classification.StatusCode {
+	case http.StatusUnauthorized, http.StatusPaymentRequired, http.StatusForbidden, http.StatusNotFound:
+		classification.Retryable, classification.FailoverEligible, classification.CircuitFailure = false, true, false
+	case statusOverloaded:
+		classification.Retryable, classification.FailoverEligible, classification.CircuitFailure = true, true, true
+	}
+	return classification
+}
+
+// statusOverloaded is the status Anthropic answers when it is overloaded.
+const statusOverloaded = 529
+
+// reclassify returns err carrying Classify's classification when it differs
+// from core's, so the executor, health and callers all read the same.
+func reclassify(err error) error {
+	classification := Classify(err)
+	if classification == core.ClassifyError(err) {
+		return err
+	}
+	return &reclassifiedError{err: err, classification: classification}
+}
+
+// reclassifiedError is an error with Compa's classification; it reads as and
+// unwraps to the error it carries.
+type reclassifiedError struct {
+	err            error
+	classification core.ProviderErrorClassification
+}
+
+func (e *reclassifiedError) Error() string { return e.err.Error() }
+
+func (e *reclassifiedError) Unwrap() error { return e.err }
+
+func (e *reclassifiedError) ProviderErrorClassification() core.ProviderErrorClassification {
+	return e.classification
 }
 
 // recordOnly records outcomes without ever holding a candidate back.
@@ -197,7 +259,7 @@ func DescribeFailure(err error) Failure {
 	if err == nil {
 		return Failure{}
 	}
-	failure := Failure{Disposition: core.ClassifyError(err).Disposition()}
+	failure := Failure{Disposition: Classify(err).Disposition()}
 	subject := err
 	var afterOutput *execution.AfterOutputError
 	if errors.As(err, &afterOutput) && afterOutput.Err != nil {
@@ -210,7 +272,7 @@ func DescribeFailure(err error) Failure {
 		failure.RetryAfter = unavailable.RetryAfter
 		return failure
 	}
-	classification := core.ClassifyError(subject)
+	classification := Classify(subject)
 	failure.StatusCode = classification.StatusCode
 	failure.RetryAfter = classification.RetryAfter
 	failure.Class = errorClass(subject, classification)

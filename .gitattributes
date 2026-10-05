@@ -4,7 +4,6 @@
 # Fixtures are the cross-lane contract: their bytes are compared and digested,
 # so a CRLF conversion would change a digest and manufacture false drift.
 testdata/fixtures/** -text
-*.json -text
 
 *.go text eol=lf
 *.md text eol=lf

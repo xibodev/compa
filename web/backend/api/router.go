@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/xibodev/compa/pkg/modelservice"
 	"github.com/xibodev/compa/web/backend/launcherconfig"
@@ -36,6 +37,14 @@ type Handler struct {
 	weixinFlows map[string]*weixinFlow
 	wecomMu     sync.Mutex
 	wecomFlows  map[string]*wecomFlow
+	// liveApplies tracks the background applies of saved changes that
+	// ApplyLiveChanges and a pairing approval schedule, so tests can wait
+	// for them.
+	liveApplies sync.WaitGroup
+	// pendingLiveApplies counts the saves and applies whose live changes
+	// may not have reached the running gateway yet; while it is not zero,
+	// the gateway status leaves the live parts of the config out.
+	pendingLiveApplies atomic.Int32
 	extensionFlowsState
 }
 

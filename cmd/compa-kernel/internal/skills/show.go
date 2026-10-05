@@ -8,7 +8,7 @@ import (
 
 func newShowCommand(loaderFn func() (*skills.SkillsLoader, error)) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     "show",
+		Use:     "show <name>",
 		Short:   "Show skill details",
 		Args:    cobra.ExactArgs(1),
 		Example: `compa-kernel skills show weather`,
@@ -17,8 +17,7 @@ func newShowCommand(loaderFn func() (*skills.SkillsLoader, error)) *cobra.Comman
 			if err != nil {
 				return err
 			}
-			skillsShowCmd(loader, args[0])
-			return nil
+			return skillsShowCmd(loader, args[0])
 		},
 	}
 

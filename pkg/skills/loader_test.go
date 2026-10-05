@@ -1,8 +1,10 @@
 package skills
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -180,14 +182,47 @@ func TestListSkillsGlobalOverridesBuiltin(t *testing.T) {
 	assert.Equal(t, "global version", skills[0].Description)
 }
 
-func TestListSkillsMetadataNameDedup(t *testing.T) {
+func TestListSkillsFolderNameIsIdentity(t *testing.T) {
+	tmp := t.TempDir()
+	ws := filepath.Join(tmp, "workspace")
+	builtin := filepath.Join(tmp, "builtin")
+
+	// An installed third-party folder declaring a built-in skill's name keeps
+	// its folder name: it neither hides nor replaces the built-in skill.
+	createSkillDir(t, filepath.Join(ws, "skills"), "aaa", "github", "impostor")
+	require.NoError(t, os.WriteFile(filepath.Join(ws, "skills", "aaa", ".skill-origin.json"),
+		[]byte(`{"version":1,"origin_kind":"third_party","registry":"github"}`), 0o600))
+	createSkillDir(t, builtin, "github", "github", "real github skill")
+	// A user's skill whose frontmatter name differs from its folder stays
+	// listed under the folder name.
+	createSkillDir(t, filepath.Join(ws, "skills"), "my-notes", "Notes Helper", "my notes")
+
+	sl := NewSkillsLoader(ws, "", builtin)
+	byName := map[string]SkillInfo{}
+	for _, s := range sl.ListSkills() {
+		byName[s.Name] = s
+	}
+
+	require.Len(t, byName, 3)
+	assert.Equal(t, "impostor", byName["aaa"].Description)
+	assert.Equal(t, OriginInstalled, byName["aaa"].Origin)
+	assert.Equal(t, "builtin", byName["github"].Source)
+	assert.Equal(t, "real github skill", byName["github"].Description)
+	assert.Equal(t, "my notes", byName["my-notes"].Description)
+
+	content, ok := sl.LoadSkill("github")
+	require.True(t, ok)
+	assert.Contains(t, content, "# github")
+	assert.NotContains(t, sl.BuildSkillsSummary(), "<name>Notes Helper</name>")
+}
+
+func TestListSkillsSameNameInLowerPriorityRootIsSkipped(t *testing.T) {
 	tmp := t.TempDir()
 	ws := filepath.Join(tmp, "workspace")
 	global := filepath.Join(tmp, "global")
 
-	// Different directory names but same metadata name
-	createSkillDir(t, filepath.Join(ws, "skills"), "dir-a", "shared-name", "workspace version")
-	createSkillDir(t, global, "dir-b", "shared-name", "global version")
+	createSkillDir(t, filepath.Join(ws, "skills"), "shared-name", "shared-name", "workspace version")
+	createSkillDir(t, global, "Shared-Name", "Shared-Name", "global version")
 
 	sl := NewSkillsLoader(ws, global, "")
 	skills := sl.ListSkills()
@@ -195,6 +230,78 @@ func TestListSkillsMetadataNameDedup(t *testing.T) {
 	assert.Len(t, skills, 1)
 	assert.Equal(t, "shared-name", skills[0].Name)
 	assert.Equal(t, "workspace", skills[0].Source)
+}
+
+func TestListSkillsReadsGatingMetadata(t *testing.T) {
+	tmp := t.TempDir()
+	ws := filepath.Join(tmp, "workspace")
+	skillsDir := filepath.Join(ws, "skills")
+
+	otherOS := "plan9"
+	if runtime.GOOS == "plan9" {
+		otherOS = "linux"
+	}
+	write := func(name, metadata string) {
+		dir := filepath.Join(skillsDir, name)
+		require.NoError(t, os.MkdirAll(dir, 0o755))
+		content := "---\nname: " + name + "\ndescription: d\nmetadata: " + metadata + "\n---\n# " + name
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(content), 0o644))
+	}
+	write("other-os", `{"compa":{"os":["`+otherOS+`"]}}`)
+	write("missing-bin", `{"compa":{"requires":{"bins":["definitely-not-installed-bin"]}}}`)
+	write("present-bin", `{"openclaw":{"requires":{"bins":["present-bin"]}}}`)
+	write("this-os", `{"compa":{"os":["`+runtime.GOOS+`"]}}`)
+
+	previous := lookPath
+	lookPath = func(file string) (string, error) {
+		if file == "present-bin" {
+			return "/usr/bin/present-bin", nil
+		}
+		return "", errors.New("not found")
+	}
+	t.Cleanup(func() { lookPath = previous })
+
+	sl := NewSkillsLoader(ws, "", "")
+	byName := map[string]SkillInfo{}
+	for _, s := range sl.ListSkills() {
+		byName[s.Name] = s
+	}
+	require.Len(t, byName, 4, "gated skills stay listed")
+	assert.Contains(t, byName["other-os"].Unavailable, otherOS)
+	assert.Contains(t, byName["missing-bin"].Unavailable, "definitely-not-installed-bin")
+	assert.Empty(t, byName["present-bin"].Unavailable)
+	assert.Empty(t, byName["this-os"].Unavailable)
+
+	summary := sl.BuildSkillsSummary()
+	assert.NotContains(t, summary, "<name>other-os</name>")
+	assert.NotContains(t, summary, "<name>missing-bin</name>")
+	assert.Contains(t, summary, "<name>present-bin</name>")
+	assert.Contains(t, summary, "<name>this-os</name>")
+}
+
+func TestInstalledSkillsShowDistinctSource(t *testing.T) {
+	tmp := t.TempDir()
+	ws := filepath.Join(tmp, "workspace")
+	skillsDir := filepath.Join(ws, "skills")
+	createSkillDir(t, skillsDir, "mine", "mine", "written by the user")
+	createSkillDir(t, skillsDir, "third", "third", "from a registry")
+	require.NoError(t, os.WriteFile(filepath.Join(skillsDir, "third", ".skill-origin.json"),
+		[]byte(`{"version":1,"origin_kind":"third_party","registry":"clawhub"}`), 0o600))
+
+	sl := NewSkillsLoader(ws, "", "")
+	byName := map[string]SkillInfo{}
+	for _, s := range sl.ListSkills() {
+		byName[s.Name] = s
+	}
+	assert.Equal(t, "workspace", byName["mine"].Source)
+	assert.Empty(t, byName["mine"].Origin)
+	assert.Equal(t, "workspace", byName["third"].Source, "Source keeps naming the root")
+	assert.Equal(t, OriginInstalled, byName["third"].Origin)
+
+	summary := sl.BuildSkillsSummary()
+	assert.Contains(t, summary, "<name>third</name>\n    <description>from a registry</description>")
+	assert.Regexp(t, `<name>third</name>[\s\S]*?<source>installed</source>`, summary)
+	assert.Regexp(t, `<name>mine</name>[\s\S]*?<source>workspace</source>`, summary)
 }
 
 func TestListSkillsMultipleDistinctSkills(t *testing.T) {

@@ -1,7 +1,9 @@
 package moduletools
 
 import (
-	"encoding/json"
+	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/xibodev/compa/pkg/contractv2"
@@ -60,11 +62,10 @@ func TestPassingThePinIsNotEnoughToBeReliedUpon(t *testing.T) {
 		t.Fatal("the pin refused a well-formed v2 declaration; this test needs" +
 			" a module that PASSES the pin to be meaningful")
 	}
-	if v.MayRelyOnV2() {
+	if v2Refusal(v) == "" {
 		t.Fatal("a module that passed the pin but weakens its projection was" +
-			" marked reliable. It is now on the v2 path with a gate that reads" +
-			" capability effects, declaring capability effects weaker than its" +
-			" own Operations -- worse than being treated as v1")
+			" accepted. It would be registered with capability effects weaker" +
+			" than its own Operations -- worse than being treated as v1")
 	}
 	if v.Conformance == nil || v.Conformance.Conforms() {
 		t.Fatal("conformance did not run, or reported no findings")
@@ -84,10 +85,10 @@ func TestAV1ModuleIsQuietRatherThanWarnedAbout(t *testing.T) {
 		t.Fatalf("a module declaring no contract version resolved to %v, want v1",
 			v1.Decision.Pin.Outcome)
 	}
-	if w := v2Warnings(v1); len(w) != 0 {
-		t.Errorf("a v1 module produced v2 warnings: %v", w)
+	if r := v2Refusal(v1); r != "" {
+		t.Errorf("a v1 module was refused: %v", r)
 	}
-	if v1.MayRelyOnV2() {
+	if v1.Decision.MayRelyOnV2() {
 		t.Error("a v1 module was marked v2-reliable")
 	}
 	if v1.Conformance != nil {
@@ -104,15 +105,15 @@ func TestAV1ModuleIsQuietRatherThanWarnedAbout(t *testing.T) {
 // then contradicted itself. Collapsing them sends an author to fix the wrong
 // thing, which is what the reason/remedy split exists to prevent.
 func TestARefusalAndANonConformanceAreDistinguishable(t *testing.T) {
-	refused := v2Warnings(evaluateV2([]byte(`{"module":"m","contract_version":"xibodev.module/v3"}`)))
-	nonConforming := v2Warnings(evaluateV2([]byte(`{"module":"m","contract_version":"xibodev.module/v2",
+	refused := v2Refusal(evaluateV2([]byte(`{"module":"m","contract_version":"xibodev.module/v3"}`)))
+	nonConforming := v2Refusal(evaluateV2([]byte(`{"module":"m","contract_version":"xibodev.module/v2",
 	  "operations":[{"id":"op","effects":{"may_charge":true}}],
 	  "capabilities":[{"id":"c","projects":["op"],"effects":{"may_charge":false}}]}`)))
 
-	if len(refused) == 0 || len(nonConforming) == 0 {
-		t.Fatal("one of the two produced no warning at all")
+	if refused == "" || nonConforming == "" {
+		t.Fatal("one of the two produced no refusal at all")
 	}
-	if refused[0] == nonConforming[0] {
+	if refused == nonConforming {
 		t.Fatal("a refused contract and a non-conforming projection produced" +
 			" identical text, so an author cannot tell which mistake they made")
 	}
@@ -126,17 +127,16 @@ func TestARefusalAndANonConformanceAreDistinguishable(t *testing.T) {
 func TestMalformedOutputIsNotReportedAsAContractRefusal(t *testing.T) {
 	v := evaluateV2([]byte(`{not json`))
 
-	if v.MayRelyOnV2() {
+	if v.Decision.MayRelyOnV2() {
 		t.Fatal("malformed output was marked v2-reliable")
 	}
-	for _, w := range v2Warnings(v) {
-		if len(w) > 0 && json.Valid([]byte(`"`+w+`"`)) {
-			// Only the shape matters: it must not be the contract-mismatch
-			// remedy telling them to declare a version.
-			if contains(w, "declare contract_version") {
-				t.Errorf("malformed JSON produced a contract-version remedy: %q", w)
-			}
-		}
+	w := v2Refusal(v)
+	if contains(w, "declare contract_version") {
+		t.Errorf("malformed JSON produced a contract-version remedy: %q", w)
+	}
+	// It used to render the empty refusal of a zero Decision: ". ".
+	if !contains(w, "could not be checked") || !contains(w, "not JSON") {
+		t.Errorf("malformed JSON is not reported as itself: %q", w)
 	}
 }
 
@@ -147,4 +147,30 @@ func contains(h, n string) bool {
 		}
 	}
 	return false
+}
+
+// A module whose declared contract the host refuses is not registered: it is
+// reported as refused, contributes no tools, and cannot be found by its ID.
+// It used to be registered and run, with the refusal only a warning.
+func TestARefusedV2ModuleIsNotRegistered(t *testing.T) {
+	home := t.TempDir()
+	dir := installFakeModule(t, home)
+	if err := os.WriteFile(filepath.Join(dir, "contract_version"), []byte("xibodev.module/v3"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	installed := Discover(context.Background(), home)
+	if len(installed) != 1 {
+		t.Fatalf("discovered %d modules, want 1", len(installed))
+	}
+	in := installed[0]
+	if in.Err == nil || !contains(in.Err.Error(), "refused") || in.Descriptor != nil {
+		t.Fatalf("a refused module was registered: err = %v, descriptor = %v", in.Err, in.Descriptor)
+	}
+	if contains(in.Err.Error(), ": . ") {
+		t.Errorf("the refusal has no reason: %v", in.Err)
+	}
+	if tools, summaries := countRegistered(t, home); tools != 0 || summaries != 0 {
+		t.Fatalf("a refused module contributed %d tools and %d summaries", tools, summaries)
+	}
 }

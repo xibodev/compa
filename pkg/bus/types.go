@@ -26,6 +26,12 @@ type InboundContext struct {
 	SenderID  string `json:"sender_id"`
 	MessageID string `json:"message_id,omitempty"`
 
+	// SenderIsOwner is set by the channel when the sender matches an explicit
+	// allow_from entry, i.e. is the instance's owner rather than someone the
+	// channel admits through an open policy. Internal channels (the web UI,
+	// the terminal) are always the owner and need not set it.
+	SenderIsOwner bool `json:"sender_is_owner,omitempty"`
+
 	Mentioned bool `json:"mentioned,omitempty"`
 
 	ReplyToMessageID string `json:"reply_to_message_id,omitempty"`

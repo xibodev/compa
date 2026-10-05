@@ -11,7 +11,8 @@ import (
 func pathFailureTool(t *testing.T, home string) *CapabilityTool {
 	t.Helper()
 	d := installedModule(t, home, "test.module")
-	d.Permissions.FilesystemWrite = []string{"project_root"}
+	// The workspace is granted only to a module that declares it.
+	d.Permissions.FilesystemWrite = []string{"workspace", "project_root"}
 	return &CapabilityTool{
 		descriptor: d,
 		capability: modproto.Capability{ID: "test.run"},
@@ -199,26 +200,17 @@ func TestIsBrokenRuntimeFailure(t *testing.T) {
 // strips by design, and then reported that the module "wants a stricter consent
 // format".
 //
-// Observed end to end: the user did exactly what the agent asked and still
-// failed, with the blame landing on the module. Approval lives on the Modules
-// page, and the host is the only party that knows that.
-func TestConsentFailureSendsTheUserToTheModulesPage(t *testing.T) {
+// A module's consent refusal means the approval policy let the call run without
+// the owner's approval. The remedy is a tools.approval rule for the tool, and
+// the host is the only party that knows that.
+func TestConsentFailureNamesTheApprovalRule(t *testing.T) {
 	home := t.TempDir()
 	tool := pathFailureTool(t, home)
 
 	got := tool.failureGuidance("consent_required",
 		"tool may incur real cost and requires explicit human consent", "")
 
-	// The page lists CAPABILITIES. An agent that names the tool sends the user
-	// looking for something the page does not show -- observed: "find the
-	// gflow_image capability", which is not a capability at all.
-	if !strings.Contains(got, "test.run") {
-		t.Errorf("guidance does not name the capability the page lists:\n%s", got)
-	}
-	if !strings.Contains(got, "Name the CAPABILITY, not the tool") {
-		t.Errorf("guidance does not warn against naming the tool:\n%s", got)
-	}
-	for _, want := range []string{"CANNOT be given in chat", "Approve and run", "Modules page"} {
+	for _, want := range []string{tool.Name(), "tools.approval", "test.run", "Approve and run"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("guidance does not contain %q:\n%s", want, got)
 		}

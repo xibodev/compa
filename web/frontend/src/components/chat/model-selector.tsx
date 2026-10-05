@@ -92,7 +92,10 @@ export function ModelSelector({
         <span className="truncate">{triggerText}</span>
       </SelectTrigger>
       <SelectContent position="popper" align="start" className="max-h-80">
-        <SelectItem value={CONFIGURED_DEFAULT} title={defaultSelection || undefined}>
+        <SelectItem
+          value={CONFIGURED_DEFAULT}
+          title={defaultSelection || undefined}
+        >
           {defaultLabel}
         </SelectItem>
         {routes.length > 0 && <SelectSeparator />}

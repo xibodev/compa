@@ -8,41 +8,35 @@ import (
 )
 
 // PrintOnboardComplete prints the post-onboard “ready” message and next steps.
-func PrintOnboardComplete(logo string, encrypt bool, configPath string) {
+func PrintOnboardComplete(logo string, configPath string) {
 	if !UseFancyLayout() {
-		printOnboardPlain(logo, encrypt, configPath)
+		printOnboardPlain(logo, configPath)
 		return
 	}
-	printOnboardFancy(logo, encrypt, configPath)
+	printOnboardFancy(logo, configPath)
 }
 
-func printOnboardPlain(logo string, encrypt bool, configPath string) {
+func printOnboardPlain(logo string, configPath string) {
 	fmt.Printf("\n%s Compa is ready!\n", logo)
 	fmt.Println("\nNext steps:")
-	if encrypt {
-		fmt.Println("  1. Set your encryption passphrase before starting Compa:")
-		fmt.Println("       export COMPA_KEY_PASSPHRASE=<your-passphrase>   # Linux/macOS")
-		fmt.Println("       set COMPA_KEY_PASSPHRASE=<your-passphrase>      # Windows cmd")
-		fmt.Println("")
-		fmt.Println("  2. Add your API key to", configPath)
-	} else {
-		fmt.Println("  1. Add your API key to", configPath)
-	}
+	fmt.Println(indentLines(buildOnboardingSteps(configPath), "  "))
 	fmt.Println("")
-	fmt.Println("     Recommended:")
-	fmt.Println("     - OpenRouter: https://openrouter.ai/keys (access 100+ models)")
-	fmt.Println("     - Ollama:     https://ollama.com (local, free)")
+	fmt.Println(indentLines("Recommended:\n"+recommendedBlock(), "     "))
 	fmt.Println("")
-	fmt.Println("     See README.md for 17+ supported providers.")
-	fmt.Println("")
-	if encrypt {
-		fmt.Println("  3. Chat: compa-kernel agent -m \"Hello!\"")
-	} else {
-		fmt.Println("  2. Chat: compa-kernel agent -m \"Hello!\"")
-	}
+	fmt.Println(indentLines(chatStep(), "  "))
 }
 
-func printOnboardFancy(logo string, encrypt bool, configPath string) {
+func indentLines(text, prefix string) string {
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		if line != "" {
+			lines[i] = prefix + line
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
+func printOnboardFancy(logo string, configPath string) {
 	inner := InnerWidth()
 	box := borderStyle().MaxWidth(inner + 8)
 
@@ -51,9 +45,9 @@ func printOnboardFancy(logo string, encrypt bool, configPath string) {
 	fmt.Println(box.Width(inner).Render(strings.TrimSpace(ready)))
 	fmt.Println()
 
-	steps := buildOnboardingSteps(encrypt, configPath)
+	steps := buildOnboardingSteps(configPath)
 	rec := recommendedBlock()
-	chat := chatStep(encrypt)
+	chat := chatStep()
 
 	if UseColumnLayout() {
 		leftW := min(inner/2-2, 52)
@@ -79,32 +73,24 @@ func printOnboardFancy(logo string, encrypt bool, configPath string) {
 	fmt.Println(borderStyle().Width(inner).Render(next))
 }
 
-func buildOnboardingSteps(encrypt bool, configPath string) string {
+// buildOnboardingSteps lists what to do before the first chat. API keys are
+// added with `auth login` (or the dashboard), which keeps them in auth.json.
+func buildOnboardingSteps(configPath string) string {
 	var b strings.Builder
-	if encrypt {
-		b.WriteString("1. Set your encryption passphrase before starting Compa:\n")
-		b.WriteString("   export COMPA_KEY_PASSPHRASE=<your-passphrase>   # Linux/macOS\n")
-		b.WriteString("   set COMPA_KEY_PASSPHRASE=<your-passphrase>      # Windows cmd\n\n")
-		b.WriteString("2. Add your API key to\n   ")
-		b.WriteString(configPath)
-		b.WriteString("\n")
-	} else {
-		b.WriteString("1. Add your API key to\n   ")
-		b.WriteString(configPath)
-		b.WriteString("\n")
-	}
+	b.WriteString("1. Connect a model provider:\n")
+	b.WriteString("   compa-kernel auth login --provider openai   (or anthropic)\n")
+	b.WriteString("   or use the web dashboard.\n")
+	b.WriteString("   Settings: ")
+	b.WriteString(configPath)
+	b.WriteString("\n")
 	return b.String()
 }
 
 func recommendedBlock() string {
 	return "• OpenRouter: https://openrouter.ai/keys\n  (access 100+ models)\n\n" +
-		"• Ollama: https://ollama.com\n  (local, free)\n\n" +
-		"See README.md for 17+ supported providers."
+		"• Ollama: https://ollama.com\n  (local, free)"
 }
 
-func chatStep(encrypt bool) string {
-	if encrypt {
-		return "3. Chat:\n   compa-kernel agent -m \"Hello!\""
-	}
+func chatStep() string {
 	return "2. Chat:\n   compa-kernel agent -m \"Hello!\""
 }

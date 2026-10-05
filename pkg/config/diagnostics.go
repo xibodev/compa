@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -81,6 +82,11 @@ func wrapJSONError(data []byte, err error, label string) error {
 		line, column := lineAndColumnForOffset(data, e.Offset)
 		preview := diagnosticPreviewForOffset(data, e.Offset)
 		field := strings.TrimSpace(e.Field)
+		value := e.Value
+		if isSecretLookingKey(field) {
+			// "number 12345" would print the secret; keep only its kind.
+			value, _, _ = strings.Cut(value, " ")
+		}
 		if field != "" {
 			if preview != "" {
 				return fmt.Errorf(
@@ -90,7 +96,7 @@ func wrapJSONError(data []byte, err error, label string) error {
 					column,
 					field,
 					e.Type.String(),
-					e.Value,
+					value,
 					preview,
 				)
 			}
@@ -101,7 +107,7 @@ func wrapJSONError(data []byte, err error, label string) error {
 				column,
 				field,
 				e.Type.String(),
-				e.Value,
+				value,
 			)
 		}
 		if preview != "" {
@@ -179,6 +185,8 @@ func diagnosticPreviewForOffset(data []byte, offset int64) string {
 	if strings.TrimSpace(line) == "" {
 		return ""
 	}
+	// Previews reach logs and the UI, so secret values never appear in them.
+	line = maskSecretJSONLine(line, insideSecretValue(data[:start]))
 
 	trimmedLine, trimOffset := trimDiagnosticLine(line, column)
 	if trimmedLine == "" {
@@ -214,6 +222,151 @@ func diagnosticPreviewForOffset(data []byte, offset int64) string {
 		caretPrefix,
 		caretPad,
 	)
+}
+
+// secretKeyWords are the last words of the names of secrets, such as
+// "api_key", "api_keys", "bot_token" or "crypto_passphrase". A name that
+// ends in another word, such as "max_tokens", is not a secret.
+var secretKeyWords = map[string]bool{
+	"key": true, "keys": true, "token": true, "secret": true, "password": true, "passphrase": true,
+}
+
+// isSecretLookingKey reports whether a JSON key, or the last segment of a
+// dotted field path, names something secret: its last word is one of
+// secretKeyWords.
+func isSecretLookingKey(key string) bool {
+	if i := strings.LastIndexByte(key, '.'); i >= 0 {
+		key = key[i+1:]
+	}
+	return secretKeyWords[strings.ToLower(lastWord(key))]
+}
+
+// lastWord returns the last word of a snake_case, kebab-case or camelCase
+// name, such as "TOKEN" of "GITHUB_TOKEN" and "Key" of "X-Api-Key".
+func lastWord(name string) string {
+	name = strings.TrimRight(name, "_- ")
+	start := 0
+	for i := 0; i < len(name); i++ {
+		c := name[i]
+		switch {
+		case c == '_' || c == '-' || c == ' ':
+			start = i + 1
+		case i > 0 && 'A' <= c && c <= 'Z' && 'a' <= name[i-1] && name[i-1] <= 'z':
+			start = i
+		}
+	}
+	return name[start:]
+}
+
+var jsonKeyPattern = regexp.MustCompile(`"((?:[^"\\]|\\.)*)"\s*:\s*`)
+
+// maskSecretJSONLine replaces the values of secret-looking keys in one line of
+// JSON with asterisks, byte for byte so the caret under the line still points
+// at the same place. With whole, the line is inside a secret value that began
+// earlier, and everything but its structure is masked.
+func maskSecretJSONLine(line string, whole bool) string {
+	b := []byte(line)
+	if whole {
+		maskSpan(b, 0, len(b))
+		return string(b)
+	}
+	for _, m := range jsonKeyPattern.FindAllStringSubmatchIndex(line, -1) {
+		if !isSecretLookingKey(line[m[2]:m[3]]) {
+			continue
+		}
+		start := m[1]
+		if start < len(b) && b[start] == '"' {
+			end := start + 1
+			for end < len(b) && b[end] != '"' {
+				if b[end] == '\\' {
+					end++
+				}
+				end++
+			}
+			maskSpan(b, start+1, min(end, len(b)))
+			continue
+		}
+		end, depth := start, 0
+		for ; end < len(b); end++ {
+			c := b[end]
+			if c == '[' || c == '{' {
+				depth++
+			} else if c == ']' || c == '}' {
+				if depth == 0 {
+					break
+				}
+				depth--
+			} else if c == ',' && depth == 0 {
+				break
+			}
+		}
+		maskSpan(b, start, end)
+	}
+	return string(b)
+}
+
+// maskSpan masks b[start:end] except whitespace and JSON punctuation.
+func maskSpan(b []byte, start, end int) {
+	for i := start; i < end; i++ {
+		switch b[i] {
+		case ' ', '\t', '"', '[', ']', '{', '}', ',', ':':
+		default:
+			b[i] = '*'
+		}
+	}
+}
+
+// insideSecretValue reports whether the JSON that follows prefix is still
+// part of the value of a secret-looking key: a container such as
+// "api_keys": [ opened on an earlier line, or a key whose value starts on
+// the next line.
+func insideSecretValue(prefix []byte) bool {
+	var stack []string
+	var str []byte
+	var lastString, key string
+	inString, escaped := false, false
+	for _, c := range prefix {
+		if inString {
+			switch {
+			case escaped:
+				escaped = false
+				str = append(str, c)
+			case c == '\\':
+				escaped = true
+			case c == '"':
+				inString = false
+				lastString = string(str)
+			default:
+				str = append(str, c)
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inString, str = true, str[:0]
+		case ':':
+			key, lastString = lastString, ""
+		case '{', '[':
+			stack = append(stack, key)
+			key = ""
+		case '}', ']':
+			if len(stack) > 0 {
+				stack = stack[:len(stack)-1]
+			}
+			key = ""
+		case ',':
+			key = ""
+		}
+	}
+	if isSecretLookingKey(key) {
+		return true
+	}
+	for _, k := range stack {
+		if isSecretLookingKey(k) {
+			return true
+		}
+	}
+	return false
 }
 
 func lineAndColumnForOffset(data []byte, offset int64) (int, int) {

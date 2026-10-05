@@ -1,4 +1,4 @@
-import { launcherFetch } from "@/api/http"
+import { HttpError, launcherFetch } from "@/api/http"
 
 export type ChannelConfig = Record<string, unknown>
 export type AppConfig = Record<string, unknown>
@@ -46,7 +46,7 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
     } catch {
       // Keep default fallback message if response body is not JSON.
     }
-    throw new Error(message)
+    throw new HttpError(message, res.status)
   }
   return res.json() as Promise<T>
 }
@@ -81,6 +81,41 @@ export async function resetAppConfig(): Promise<ConfigActionResponse> {
   return request<ConfigActionResponse>("/api/config/reset", {
     method: "POST",
   })
+}
+
+/** A sender a channel held for the owner's approval. */
+export interface PairingRequest {
+  /** The allow_from entry approving adds, e.g. telegram:123. */
+  sender_id: string
+  platform_id: string
+  display_name: string
+  first_seen: string
+  last_seen: string
+  count: number
+}
+
+export async function getPairingRequests(
+  channelName: string,
+): Promise<PairingRequest[]> {
+  const res = await request<{ requests?: PairingRequest[] }>(
+    `/api/channels/${encodeURIComponent(channelName)}/pairing`,
+  )
+  return res.requests ?? []
+}
+
+export async function decidePairingRequest(
+  channelName: string,
+  senderID: string,
+  decision: "approve" | "deny",
+): Promise<ConfigActionResponse> {
+  return request<ConfigActionResponse>(
+    `/api/channels/${encodeURIComponent(channelName)}/pairing/${decision}`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ sender_id: senderID }),
+    },
+  )
 }
 
 // WeChat QR login flow API

@@ -3,12 +3,15 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/xibodev/compa/pkg/approval"
 	"github.com/xibodev/compa/pkg/bus"
 	"github.com/xibodev/compa/pkg/config"
 	"github.com/xibodev/compa/pkg/cron"
@@ -1289,4 +1292,121 @@ func TestCronTool_ExecuteJobReturnsErrorWithoutPublish(t *testing.T) {
 	if executor.publishedResp != "" {
 		t.Fatalf("unexpected publish on error path: %q", executor.publishedResp)
 	}
+}
+
+// receiveJobOutput returns the report a command job published.
+func receiveJobOutput(t *testing.T, tool *CronTool) string {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	select {
+	case msg := <-tool.msgBus.OutboundChan():
+		return msg.Content
+	case <-ctx.Done():
+		t.Fatal("timeout waiting for outbound message")
+		return ""
+	}
+}
+
+func commandJob(command string) *cron.CronJob {
+	job := &cron.CronJob{ID: "job-cmd", Name: "disk check"}
+	job.Payload.Channel = "cli"
+	job.Payload.To = "direct"
+	job.Payload.Command = command
+	return job
+}
+
+// cronExecPolicy is a policy whose rule for exec from cron jobs is action.
+func cronExecPolicy(action approval.Action) approval.Policy {
+	return approval.Policy{Rules: []approval.Rule{
+		{Tool: "exec", Origin: []approval.Origin{approval.OriginCron}, Action: action},
+	}}
+}
+
+// recordingGate is an approval.Gate that records the calls it decides and
+// answers err.
+type recordingGate struct {
+	err   error
+	calls []approval.Call
+}
+
+func (g *recordingGate) Check(_ context.Context, call approval.Call) error {
+	g.calls = append(g.calls, call)
+	return g.err
+}
+
+func TestCronTool_CommandWithoutAGateFollowsThePolicy(t *testing.T) {
+	for _, tt := range []struct {
+		action approval.Action
+		ran    bool
+		reason string
+	}{
+		{approval.Allow, true, ""},
+		{approval.Deny, false, "Denied by the approval policy."},
+		// Nobody can be asked without a gate.
+		{approval.Ask, false, "no chat to ask the owner in"},
+		{approval.Hide, false, `Tool "exec" is not available.`},
+	} {
+		t.Run(string(tt.action), func(t *testing.T) {
+			cfg := config.DefaultConfig()
+			cfg.Tools.Approval = cronExecPolicy(tt.action)
+			tool := newTestCronToolWithConfig(t, cfg)
+
+			_, err := tool.RunJob(context.Background(), commandJob("echo cron-policy-ran"))
+			out := receiveJobOutput(t, tool)
+			if tt.ran {
+				if err != nil || !strings.Contains(out, "cron-policy-ran") {
+					t.Fatalf("RunJob() error = %v, output = %q; want the command run", err, out)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("RunJob() error = nil, want the refused run recorded as failed")
+			}
+			if !strings.Contains(out, "was not run") || !strings.Contains(out, tt.reason) ||
+				strings.Contains(out, "executed") {
+				t.Fatalf("output = %q, want the command refused: %s", out, tt.reason)
+			}
+		})
+	}
+}
+
+func TestCronTool_CommandRunsOnlyWhenTheGateAllowsIt(t *testing.T) {
+	t.Run("allowed", func(t *testing.T) {
+		tool := newTestCronToolWithConfig(t, config.DefaultConfig())
+		gate := &recordingGate{}
+		tool.SetApprovalGate(gate)
+		if _, err := tool.RunJob(context.Background(), commandJob("echo cron-gate-ok")); err != nil {
+			t.Fatalf("RunJob() error = %v", err)
+		}
+		want := approval.Call{
+			Tool:      "exec",
+			Arguments: map[string]any{"action": "run", "command": "echo cron-gate-ok"},
+			Origin:    approval.OriginCron,
+			Job:       "disk check",
+			Channel:   "cli",
+			ChatID:    "direct",
+		}
+		if len(gate.calls) != 1 || !reflect.DeepEqual(gate.calls[0], want) {
+			t.Fatalf("gate calls = %+v, want %+v", gate.calls, want)
+		}
+		if out := receiveJobOutput(t, tool); !strings.Contains(out, "cron-gate-ok") {
+			t.Fatalf("output = %q, want the command's output", out)
+		}
+	})
+
+	t.Run("refused", func(t *testing.T) {
+		// The gate decides: a policy allowing the command doesn't run it.
+		cfg := config.DefaultConfig()
+		cfg.Tools.Approval = cronExecPolicy(approval.Allow)
+		tool := newTestCronToolWithConfig(t, cfg)
+		tool.SetApprovalGate(&recordingGate{err: errors.New("The owner denied this call.")})
+		if _, err := tool.RunJob(context.Background(), commandJob("echo cron-gate-denied-ran")); err == nil {
+			t.Fatal("RunJob() error = nil, want the refused run recorded as failed")
+		}
+		out := receiveJobOutput(t, tool)
+		if !strings.Contains(out, "was not run: The owner denied this call.") || strings.Contains(out, "executed") {
+			t.Fatalf("output = %q, want the command refused with the gate's reason", out)
+		}
+	})
 }

@@ -140,6 +140,7 @@ func (c *DingTalkChannel) onChatBotMessageReceived(
 	ctx context.Context,
 	data *chatbot.BotCallbackDataModel,
 ) ([]byte, error) {
+	defer channels.RecoverPanic(c.Name(), "message")
 	if data == nil {
 		return nil, nil
 	}
@@ -174,43 +175,6 @@ func (c *DingTalkChannel) onChatBotMessageReceived(
 		return nil, nil
 	}
 
-	// Store the session webhook for this chat so we can reply later
-	c.sessionWebhooks.Store(chatID, data.SessionWebhook)
-
-	metadata := map[string]string{
-		"sender_name":       senderNick,
-		"conversation_id":   data.ConversationId,
-		"conversation_type": data.ConversationType,
-		"platform":          "dingtalk",
-		"session_webhook":   data.SessionWebhook,
-	}
-
-	var (
-		chatType    string
-		isMentioned bool
-	)
-	if data.ConversationType == "1" {
-		chatType = "direct"
-	} else {
-		chatType = "group"
-		isMentioned = data.IsInAtList
-		if isMentioned {
-			content = stripLeadingAtMentions(content)
-		}
-		// In group chats, apply unified group trigger filtering
-		respond, cleaned := c.ShouldRespondInGroup(isMentioned, content)
-		if !respond {
-			return nil, nil
-		}
-		content = cleaned
-	}
-
-	logger.DebugCF("dingtalk", "Received message", map[string]any{
-		"sender_nick": senderNick,
-		"sender_id":   senderID,
-		"preview":     utils.Truncate(content, 50),
-	})
-
 	// Build sender info
 	platformID := senderID
 	if platformID == "" {
@@ -227,24 +191,68 @@ func (c *DingTalkChannel) onChatBotMessageReceived(
 		DisplayName: senderNick,
 	}
 
-	if !c.IsAllowedSender(sender) {
+	// The session webhook is a bearer URL: anyone holding it can post to the
+	// conversation. It stays in this channel's memory for replies and is kept
+	// out of the message's metadata, which sessions may store.
+	metadata := map[string]string{
+		"sender_name":       senderNick,
+		"conversation_id":   data.ConversationId,
+		"conversation_type": data.ConversationType,
+		"platform":          "dingtalk",
+	}
+
+	var (
+		chatType    string
+		isMentioned bool
+	)
+	if data.ConversationType == "1" {
+		chatType = "direct"
+	} else {
+		chatType = "group"
+	}
+	inboundCtx := bus.InboundContext{
+		Channel:  c.Name(),
+		ChatID:   chatID,
+		ChatType: chatType,
+		SenderID: resolvedSenderID,
+		Raw:      metadata,
+	}
+
+	// A direct message the policy rejects still goes to it, so that an
+	// unpaired sender is recorded for the owner to approve; no reply handle
+	// is kept for it.
+	if !c.Admits(chatType, sender, chatID) {
+		if chatType == "direct" {
+			c.HandleInboundContext(ctx, chatID, content, nil, inboundCtx, sender)
+		}
 		return nil, nil
 	}
 
-	inboundCtx := bus.InboundContext{
-		Channel:   "dingtalk",
-		ChatID:    chatID,
-		ChatType:  chatType,
-		SenderID:  resolvedSenderID,
-		Mentioned: isMentioned,
-		Raw:       metadata,
-	}
-	if data.SessionWebhook != "" {
-		inboundCtx.ReplyHandles = map[string]string{
-			"session_webhook": data.SessionWebhook,
+	if chatType == "group" {
+		isMentioned = data.IsInAtList
+		if isMentioned {
+			content = stripLeadingAtMentions(content)
 		}
+		// In group chats, apply unified group trigger filtering
+		respond, cleaned := c.ShouldRespondInGroup(isMentioned, content)
+		if !respond {
+			return nil, nil
+		}
+		content = cleaned
 	}
 
+	// Store the session webhook for this chat so we can reply later
+	if data.SessionWebhook != "" {
+		c.sessionWebhooks.Store(chatID, data.SessionWebhook)
+	}
+
+	logger.DebugCF("dingtalk", "Received message", map[string]any{
+		"sender_nick": senderNick,
+		"sender_id":   senderID,
+		"preview":     utils.Truncate(content, 50),
+	})
+
+	inboundCtx.Mentioned = isMentioned
 	c.HandleInboundContext(ctx, chatID, content, nil, inboundCtx, sender)
 
 	// Return nil to indicate we've handled the message asynchronously

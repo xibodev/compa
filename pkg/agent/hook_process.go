@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -20,9 +21,14 @@ import (
 
 const (
 	processHookJSONRPCVersion = "2.0"
-	processHookReadBufferSize = 1024 * 1024
+	// processHookReadBufferSize bounds one message from a hook. A longer one
+	// ends the hook (see readLoop).
+	processHookReadBufferSize = 16 * 1024 * 1024
 	processHookCloseTimeout   = 2 * time.Second
 )
+
+// processHookHelloTimeout bounds a hook's answer to hello.
+var processHookHelloTimeout = 10 * time.Second
 
 type ProcessHookOptions struct {
 	Command       []string
@@ -144,14 +150,19 @@ func NewProcessHook(ctx context.Context, name string, opts ProcessHookOptions) (
 	go ph.readStderr(stderr)
 	go ph.waitLoop()
 
+	// The hello always has a deadline: a hook that never answers must not
+	// hold up whoever starts it.
 	helloCtx := ctx
 	if helloCtx == nil {
-		var cancel context.CancelFunc
-		helloCtx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
+		helloCtx = context.Background()
 	}
+	helloCtx, cancel := context.WithTimeout(helloCtx, processHookHelloTimeout)
+	defer cancel()
 	if err := ph.hello(helloCtx); err != nil {
 		_ = ph.Close()
+		if errors.Is(err, context.DeadlineExceeded) {
+			return nil, fmt.Errorf("process hook %q did not answer hello within %v", name, processHookHelloTimeout)
+		}
 		return nil, err
 	}
 
@@ -274,7 +285,9 @@ func (ph *ProcessHook) AfterTool(
 
 func (ph *ProcessHook) ApproveTool(ctx context.Context, req *ToolApprovalRequest) (ApprovalDecision, error) {
 	if ph == nil || !ph.opts.ApproveTool {
-		return ApprovalDecision{Approved: true}, nil
+		// Not an approver (approvesTools): approving here would approve
+		// what nobody looked at.
+		return ApprovalDecision{}, fmt.Errorf("process hook does not approve tool calls")
 	}
 
 	var resp ApprovalDecision
@@ -282,6 +295,12 @@ func (ph *ProcessHook) ApproveTool(ctx context.Context, req *ToolApprovalRequest
 		return ApprovalDecision{}, err
 	}
 	return resp, nil
+}
+
+// approvesTools reports whether the hook is an approver: intercept
+// "approve_tool".
+func (ph *ProcessHook) approvesTools() bool {
+	return ph != nil && ph.opts.ApproveTool
 }
 
 func (ph *ProcessHook) hello(ctx context.Context) error {
@@ -430,6 +449,24 @@ func (ph *ProcessHook) readLoop(stdout io.Reader) {
 			close(respCh)
 		}
 	}
+
+	// The hook can no longer answer: a message too long to read, or its
+	// output closed. Calls fail now rather than each waiting out its timeout,
+	// and the process is stopped.
+	cause := scanner.Err()
+	if cause == nil {
+		cause = io.ErrUnexpectedEOF
+	}
+	if ph.closed.CompareAndSwap(false, true) {
+		logger.ErrorCF("hooks", "Process hook stopped answering; stopping it", map[string]any{
+			"hook":  ph.name,
+			"error": cause.Error(),
+		})
+		if ph.cmd != nil && ph.cmd.Process != nil {
+			_ = ph.cmd.Process.Kill()
+		}
+	}
+	ph.failPending(fmt.Errorf("process hook %q stopped answering: %w", ph.name, cause))
 }
 
 func (ph *ProcessHook) readStderr(stderr io.Reader) {
@@ -487,7 +524,7 @@ func (al *AgentLoop) MountProcessHook(ctx context.Context, name string, opts Pro
 	if al == nil {
 		return fmt.Errorf("agent loop is nil")
 	}
-	processHook, err := NewProcessHook(ctx, name, opts)
+	processHook, err := newSupervisedProcessHook(ctx, name, opts)
 	if err != nil {
 		return err
 	}
@@ -500,6 +537,163 @@ func (al *AgentLoop) MountProcessHook(ctx context.Context, name string, opts Pro
 		return err
 	}
 	return nil
+}
+
+// processHookRestartBackoff is how long a process hook that exited on its
+// own waits before its one restart.
+var processHookRestartBackoff = 2 * time.Second
+
+// supervisedProcessHook runs a process hook and restarts it once, after a
+// backoff, when it exits on its own (a crash, or a message it could not
+// read). A hook that exits again stays stopped until the hooks are reloaded,
+// which is logged as an error: its calls then fail, so an interceptor is
+// skipped and an approval denied.
+type supervisedProcessHook struct {
+	name string
+	opts ProcessHookOptions
+	stop chan struct{}
+
+	mu       sync.Mutex
+	current  *ProcessHook
+	restarts int
+	closed   bool
+}
+
+func newSupervisedProcessHook(
+	ctx context.Context,
+	name string,
+	opts ProcessHookOptions,
+) (*supervisedProcessHook, error) {
+	processHook, err := NewProcessHook(ctx, name, opts)
+	if err != nil {
+		return nil, err
+	}
+	h := &supervisedProcessHook{name: name, opts: opts, stop: make(chan struct{}), current: processHook}
+	go h.supervise(processHook)
+	return h, nil
+}
+
+func (h *supervisedProcessHook) supervise(processHook *ProcessHook) {
+	for {
+		select {
+		case <-processHook.done:
+		case <-h.stop:
+			return
+		}
+		fields := map[string]any{"hook": h.name}
+		if exitErr := processHook.exitError(); exitErr != nil {
+			fields["error"] = exitErr.Error()
+		}
+
+		h.mu.Lock()
+		if h.closed {
+			h.mu.Unlock()
+			return
+		}
+		if h.restarts > 0 {
+			h.mu.Unlock()
+			logger.ErrorCF("hooks", "Process hook exited again; it stays stopped until hooks are reloaded", fields)
+			return
+		}
+		h.restarts++
+		h.mu.Unlock()
+
+		fields["backoff"] = processHookRestartBackoff.String()
+		logger.WarnCF("hooks", "Process hook exited; restarting it once", fields)
+		select {
+		case <-time.After(processHookRestartBackoff):
+		case <-h.stop:
+			return
+		}
+		next, err := NewProcessHook(context.Background(), h.name, h.opts)
+		if err != nil {
+			logger.ErrorCF("hooks", "Process hook did not restart; it stays stopped until hooks are reloaded",
+				map[string]any{"hook": h.name, "error": err.Error()})
+			return
+		}
+
+		h.mu.Lock()
+		if h.closed {
+			h.mu.Unlock()
+			_ = next.Close()
+			return
+		}
+		h.current = next
+		h.mu.Unlock()
+		processHook = next
+	}
+}
+
+func (h *supervisedProcessHook) hook() *ProcessHook {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.current
+}
+
+func (h *supervisedProcessHook) restartCount() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.restarts
+}
+
+func (h *supervisedProcessHook) Close() error {
+	h.mu.Lock()
+	if h.closed {
+		h.mu.Unlock()
+		return nil
+	}
+	h.closed = true
+	close(h.stop)
+	current := h.current
+	h.mu.Unlock()
+	return current.Close()
+}
+
+func (h *supervisedProcessHook) OnRuntimeEvent(ctx context.Context, evt runtimeevents.Event) error {
+	return h.hook().OnRuntimeEvent(ctx, evt)
+}
+
+func (h *supervisedProcessHook) BeforeLLM(
+	ctx context.Context,
+	req *LLMHookRequest,
+) (*LLMHookRequest, HookDecision, error) {
+	return h.hook().BeforeLLM(ctx, req)
+}
+
+func (h *supervisedProcessHook) AfterLLM(
+	ctx context.Context,
+	resp *LLMHookResponse,
+) (*LLMHookResponse, HookDecision, error) {
+	return h.hook().AfterLLM(ctx, resp)
+}
+
+func (h *supervisedProcessHook) BeforeTool(
+	ctx context.Context,
+	call *ToolCallHookRequest,
+) (*ToolCallHookRequest, HookDecision, error) {
+	return h.hook().BeforeTool(ctx, call)
+}
+
+func (h *supervisedProcessHook) AfterTool(
+	ctx context.Context,
+	result *ToolResultHookResponse,
+) (*ToolResultHookResponse, HookDecision, error) {
+	return h.hook().AfterTool(ctx, result)
+}
+
+func (h *supervisedProcessHook) ApproveTool(ctx context.Context, req *ToolApprovalRequest) (ApprovalDecision, error) {
+	return h.hook().ApproveTool(ctx, req)
+}
+
+func (h *supervisedProcessHook) approvesTools() bool {
+	return h.opts.ApproveTool
+}
+
+// exitError returns how the hook's process ended, once it has.
+func (ph *ProcessHook) exitError() error {
+	ph.closeMu.Lock()
+	defer ph.closeMu.Unlock()
+	return ph.closeErr
 }
 
 func newProcessHookObserveKinds(kinds []string) map[string]struct{} {

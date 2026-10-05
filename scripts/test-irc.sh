@@ -32,20 +32,26 @@ done
 echo ""
 echo "IRC server ready on localhost:$IRC_PORT"
 echo ""
-echo "Add this to your ~/.compa/config.json under \"channels\":"
+echo "Add this to your ~/.compa/config.json under \"channel_list\":"
 echo ""
 echo '  "irc": {'
 echo '    "enabled": true,'
-echo '    "server": "localhost:6667",'
-echo '    "tls": false,'
-echo '    "nick": "compabot",'
-echo '    "channels": ["#test"],'
+echo '    "type": "irc",'
 echo '    "allow_from": [],'
-echo '    "group_trigger": { "mention_only": true }'
+echo '    "group_policy": "open",'
+echo '    "group_trigger": { "mention_only": true },'
+echo '    "settings": {'
+echo '      "server": "localhost:6667",'
+echo '      "tls": false,'
+echo '      "nick": "compabot",'
+echo '      "channels": ["#test"]'
+echo '    }'
 echo '  }'
 echo ""
-echo "Then run compa:"
-echo "  cd packages/compa && go run ./cmd/compa-kernel gateway"
+echo "\"group_policy\": \"open\" lets anyone in #test talk to the bot; keep it to this test server."
+echo ""
+echo "Then run the gateway from the repository root:"
+echo "  go run -tags goolm,stdjson ./cmd/compa-kernel gateway"
 echo ""
 echo "Connect with an IRC client:"
 echo "  irssi:   /connect localhost $IRC_PORT"

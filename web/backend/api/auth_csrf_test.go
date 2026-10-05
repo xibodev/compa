@@ -13,13 +13,14 @@ func TestLauncherAuthSetupRejectsCrossSiteFirstRun(t *testing.T) {
 	RegisterLauncherAuthRoutes(mux, LauncherAuthRouteOpts{
 		SessionCookie: "session-cookie-value",
 		PasswordStore: store,
+		SetupToken:    testSetupToken,
 	})
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(
 		http.MethodPost,
 		"http://127.0.0.1:18800/api/auth/setup",
-		strings.NewReader(`{"password":"CrossSitePwn123!","confirm":"CrossSitePwn123!"}`),
+		strings.NewReader(`{"password":"CrossSitePwn123!","confirm":"CrossSitePwn123!","setup_token":"`+testSetupToken+`"}`),
 	)
 	req.Header.Set("Origin", "https://evil.example")
 	req.Header.Set("Referer", "https://evil.example/attack")
@@ -41,13 +42,14 @@ func TestLauncherAuthSetupAllowsSameOriginFirstRun(t *testing.T) {
 	RegisterLauncherAuthRoutes(mux, LauncherAuthRouteOpts{
 		SessionCookie: "session-cookie-value",
 		PasswordStore: store,
+		SetupToken:    testSetupToken,
 	})
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(
 		http.MethodPost,
 		"http://127.0.0.1:18800/api/auth/setup",
-		strings.NewReader(`{"password":"LocalSetup123!","confirm":"LocalSetup123!"}`),
+		strings.NewReader(`{"password":"LocalSetup123!","confirm":"LocalSetup123!","setup_token":"`+testSetupToken+`"}`),
 	)
 	req.Header.Set("Origin", "http://127.0.0.1:18800")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")

@@ -1,5 +1,6 @@
 import { useAtomValue } from "jotai"
 import { useEffect, useRef, useState } from "react"
+import { useTranslation } from "react-i18next"
 import { toast } from "sonner"
 
 import { clearGatewayLogs, getGatewayLogs } from "@/api/gateway"
@@ -7,14 +8,27 @@ import { gatewayAtom } from "@/store/gateway"
 
 const MAX_VISIBLE_LOG_LINES = 5000
 
-function retainLatestLogs(logs: string[]) {
+/** A log line with its position in the run, which keys it while it is shown. */
+export interface GatewayLogLine {
+  offset: number
+  text: string
+}
+
+function retainLatestLogs(logs: GatewayLogLine[]) {
   return logs.length > MAX_VISIBLE_LOG_LINES
     ? logs.slice(-MAX_VISIBLE_LOG_LINES)
     : logs
 }
 
+/** Numbers lines that end at total, the run's line count after them. */
+function numberLines(lines: string[], total: number): GatewayLogLine[] {
+  const first = total - lines.length
+  return lines.map((text, index) => ({ offset: first + index, text }))
+}
+
 export function useGatewayLogs() {
-  const [logs, setLogs] = useState<string[]>([])
+  const { t } = useTranslation()
+  const [logs, setLogs] = useState<GatewayLogLine[]>([])
   const [clearing, setClearing] = useState(false)
   const logOffsetRef = useRef(0)
   const logRunIdRef = useRef(-1)
@@ -33,9 +47,8 @@ export function useGatewayLogs() {
         logRunIdRef.current = data.log_run_id
       }
     } catch (cause) {
-      toast.error(
-        cause instanceof Error ? cause.message : "Failed to clear logs",
-      )
+      console.error("Failed to clear logs:", cause)
+      toast.error(t("pages.logs.clear_error"))
     } finally {
       setClearing(false)
     }
@@ -75,14 +88,15 @@ export function useGatewayLogs() {
           logRunIdRef.current = data.log_run_id
           logOffsetRef.current = 0
           if (data.logs) {
-            setLogs(retainLatestLogs(data.logs))
-            logOffsetRef.current = data.log_total || data.logs.length
+            const total = data.log_total || data.logs.length
+            setLogs(retainLatestLogs(numberLines(data.logs, total)))
+            logOffsetRef.current = total
           }
         } else if (data.logs && data.logs.length > 0) {
-          const nextLogs = data.logs
+          const total = data.log_total || requestOffset + data.logs.length
+          const nextLogs = numberLines(data.logs, total)
           setLogs((prev) => retainLatestLogs([...prev, ...nextLogs]))
-          logOffsetRef.current =
-            data.log_total || logOffsetRef.current + nextLogs.length
+          logOffsetRef.current = total
         }
       } catch {
         // Ignore simple fetch errors during polling.

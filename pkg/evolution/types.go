@@ -32,7 +32,13 @@ type DraftStatus string
 const (
 	DraftStatusCandidate   DraftStatus = "candidate"
 	DraftStatusQuarantined DraftStatus = "quarantined"
-	DraftStatusAccepted    DraftStatus = "accepted"
+	// DraftStatusApproved: a human accepted the draft and it waits to be
+	// written (the "apply" mode writes only these).
+	DraftStatusApproved DraftStatus = "approved"
+	// DraftStatusAccepted: the draft was written to the skill.
+	DraftStatusAccepted DraftStatus = "accepted"
+	// DraftStatusRejected: a human rejected the draft; it is never written.
+	DraftStatusRejected DraftStatus = "rejected"
 )
 
 type SkillStatus string
@@ -64,19 +70,22 @@ type ToolExecutionRecord struct {
 }
 
 type LearningRecord struct {
-	ID                   string                `json:"id"`
-	Kind                 RecordKind            `json:"kind"`
-	WorkspaceID          string                `json:"workspace_id"`
-	CreatedAt            time.Time             `json:"created_at"`
-	UpdatedAt            *time.Time            `json:"updated_at,omitempty"`
-	SessionKey           string                `json:"session_key,omitempty"`
-	TaskHash             string                `json:"task_hash,omitempty"`
-	Summary              string                `json:"summary"`
-	UserGoal             string                `json:"user_goal,omitempty"`
-	FinalOutput          string                `json:"final_output,omitempty"`
-	Source               map[string]any        `json:"source,omitempty"`
-	Status               RecordStatus          `json:"status"`
-	Success              *bool                 `json:"success,omitempty"`
+	ID          string         `json:"id"`
+	Kind        RecordKind     `json:"kind"`
+	WorkspaceID string         `json:"workspace_id"`
+	CreatedAt   time.Time      `json:"created_at"`
+	UpdatedAt   *time.Time     `json:"updated_at,omitempty"`
+	SessionKey  string         `json:"session_key,omitempty"`
+	TaskHash    string         `json:"task_hash,omitempty"`
+	Summary     string         `json:"summary"`
+	UserGoal    string         `json:"user_goal,omitempty"`
+	FinalOutput string         `json:"final_output,omitempty"`
+	Source      map[string]any `json:"source,omitempty"`
+	Status      RecordStatus   `json:"status"`
+	Success     *bool          `json:"success,omitempty"`
+	// JudgedSuccess is the success judge's decision, saved so the record is
+	// judged (one LLM call) only once.
+	JudgedSuccess        *bool                 `json:"judged_success,omitempty"`
 	ToolKinds            []string              `json:"tool_kinds,omitempty"`
 	ToolExecutions       []ToolExecutionRecord `json:"tool_executions,omitempty"`
 	InitialSkillNames    []string              `json:"initial_skill_names,omitempty"`

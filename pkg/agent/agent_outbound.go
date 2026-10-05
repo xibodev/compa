@@ -10,44 +10,90 @@ import (
 	"time"
 
 	"github.com/xibodev/compa/pkg/bus"
+	"github.com/xibodev/compa/pkg/config"
+	"github.com/xibodev/compa/pkg/constants"
 	"github.com/xibodev/compa/pkg/logger"
 	"github.com/xibodev/compa/pkg/providers"
 	"github.com/xibodev/compa/pkg/tools"
 	"github.com/xibodev/compa/pkg/utils"
 )
 
-func (al *AgentLoop) maybePublishError(ctx context.Context, channel, chatID, sessionKey string, err error) bool {
+// maybePublishErrorTo tells target's chat that its message failed, unless
+// the turn was canceled, and reports whether it did. The details go to the
+// log; see processingErrorReply for what the chat is told.
+func (al *AgentLoop) maybePublishErrorTo(ctx context.Context, target *continuationTarget, err error) bool {
 	if errors.Is(err, context.Canceled) {
 		return false
 	}
-	al.PublishResponseIfNeeded(ctx, channel, chatID, sessionKey, formatProcessingError(err))
+	if target == nil {
+		target = &continuationTarget{}
+	}
+	logger.ErrorCF("agent", "Failed to process message", map[string]any{
+		"channel":     target.Channel,
+		"chat_id":     target.ChatID,
+		"session_key": target.SessionKey,
+		"error":       err.Error(),
+	})
+	al.publishTargetResponse(ctx, target, processingErrorReply(target.Channel, err))
 	return true
 }
 
-func (al *AgentLoop) publishResponseOrError(
-	ctx context.Context,
-	channel, chatID, sessionKey string,
-	response string,
-	err error,
-) {
-	if err != nil {
-		if !al.maybePublishError(ctx, channel, chatID, sessionKey, err) {
-			return
-		}
-		response = ""
+// processingErrorReply is what a chat is told when its message fails. The
+// web UI and the terminal, which the owner uses on this machine, get the
+// details. Other chats, which other people may read, get a short message
+// without endpoints or paths: the details are in the log.
+func processingErrorReply(channel string, err error) string {
+	channel = strings.TrimSpace(channel)
+	if channel == "" || channel == config.ChannelWeb || constants.IsInternalChannel(channel) {
+		return formatProcessingError(err)
 	}
-	al.PublishResponseIfNeeded(ctx, channel, chatID, sessionKey, response)
+	if friendly := providerFailureMessage(err); friendly != "" {
+		return "Sorry, I couldn't answer: " + friendly
+	}
+	var noModel *noModelError
+	if errors.As(err, &noModel) {
+		return "Sorry, I couldn't answer: no model is set up for me yet."
+	}
+	return remoteProcessingErrorReply
 }
 
+// remoteProcessingErrorReply answers a failed message in a chat other people
+// may read.
+const remoteProcessingErrorReply = "Sorry, something went wrong while answering. The details are in Compa's log."
+
+// PublishResponseIfNeeded sends response to the chat, unless the session's
+// agent already wrote to it with its message tool: the cron tool's reply.
 func (al *AgentLoop) PublishResponseIfNeeded(ctx context.Context, channel, chatID, sessionKey, response string) {
-	if response == "" {
+	al.publishTargetResponse(ctx, &continuationTarget{SessionKey: sessionKey, Channel: channel, ChatID: chatID}, response)
+}
+
+// publishTargetResponse sends a turn's final reply to target's chat, keeping
+// the account, topic and the message it answers from target's context. It
+// sends nothing when the agent's message tool already wrote to that chat in
+// this round.
+func (al *AgentLoop) publishTargetResponse(ctx context.Context, target *continuationTarget, response string) {
+	if response == "" || target == nil {
 		return
 	}
+	channel, chatID, sessionKey := target.Channel, target.ChatID, target.SessionKey
 
+	var agent *AgentInstance
+	if target.AgentID != "" {
+		if registry := al.GetRegistry(); registry != nil {
+			agent, _ = registry.GetAgent(target.AgentID)
+		}
+	}
+	if agent == nil && sessionKey != "" {
+		agent = al.agentForSession(sessionKey)
+	}
+	if agent == nil {
+		agent = al.GetRegistry().GetDefaultAgent()
+	}
+
+	// The message tool of the agent that ran the turn knows what it sent.
 	alreadySentToSameChat := false
-	defaultAgent := al.GetRegistry().GetDefaultAgent()
-	if defaultAgent != nil {
-		if tool, ok := defaultAgent.Tools.Get("message"); ok {
+	if agent != nil {
+		if tool, ok := agent.Tools.Get("message"); ok {
 			if mt, ok := tool.(*tools.MessageTool); ok {
 				alreadySentToSameChat = mt.HasSentTo(sessionKey, channel, chatID)
 			}
@@ -55,9 +101,9 @@ func (al *AgentLoop) PublishResponseIfNeeded(ctx context.Context, channel, chatI
 	}
 
 	if alreadySentToSameChat {
-		if al.channelManager != nil && channel != "" && chatID != "" {
+		if cm := al.currentChannelManager(); cm != nil && channel != "" && chatID != "" {
 			dismissCtx, dismissCancel := context.WithTimeout(ctx, 5*time.Second)
-			al.channelManager.DismissToolFeedback(
+			cm.DismissToolFeedback(
 				dismissCtx,
 				channel,
 				chatID,
@@ -73,12 +119,17 @@ func (al *AgentLoop) PublishResponseIfNeeded(ctx context.Context, channel, chatI
 		return
 	}
 
+	replyTo := ""
+	if target.Inbound != nil {
+		replyTo = target.Inbound.ReplyToMessageID
+	}
 	msg := bus.OutboundMessage{
-		Context:    bus.NewOutboundContext(channel, chatID, ""),
+		Context:    outboundContextFromInbound(target.Inbound, channel, chatID, replyTo),
 		SessionKey: sessionKey,
 		Content:    response,
 	}
-	if agent := al.agentForSession(sessionKey); agent != nil && agent.Sessions != nil {
+	if agent != nil && agent.Sessions != nil && sessionKey != "" {
+		msg.AgentID = agent.ID
 		history := agent.Sessions.GetHistory(sessionKey)
 		for index := len(history) - 1; index >= 0; index-- {
 			assistant := history[index]
@@ -100,12 +151,16 @@ func (al *AgentLoop) PublishResponseIfNeeded(ctx context.Context, channel, chatI
 			}
 			break
 		}
-	}
-	if sessionKey != "" {
-		msg.ContextUsage = computeContextUsage(al.agentForSession(sessionKey), sessionKey)
+		msg.ContextUsage = computeContextUsage(agent, sessionKey)
 	}
 	markFinalOutbound(&msg)
-	al.bus.PublishOutbound(ctx, msg)
+	pubCtx, pubCancel := context.WithTimeout(ctx, outboundPublishTimeout)
+	defer pubCancel()
+	if err := al.bus.PublishOutbound(pubCtx, msg); err != nil {
+		logger.WarnCF("agent", "Failed to publish outbound response",
+			map[string]any{"channel": channel, "chat_id": chatID, "error": err.Error()})
+		return
+	}
 	logger.InfoCF("agent", "Published outbound response",
 		map[string]any{
 			"channel":     channel,
@@ -114,11 +169,15 @@ func (al *AgentLoop) PublishResponseIfNeeded(ctx context.Context, channel, chatI
 		})
 }
 
+// outboundPublishTimeout bounds how long a final reply waits for room on the
+// outbound bus.
+const outboundPublishTimeout = 30 * time.Second
+
 func (al *AgentLoop) targetReasoningChannelID(channelName string) (chatID string) {
-	if al.channelManager == nil {
+	if al.currentChannelManager() == nil {
 		return ""
 	}
-	if ch, ok := al.channelManager.GetChannel(channelName); ok {
+	if ch, ok := al.currentChannelManager().GetChannel(channelName); ok {
 		return ch.ReasoningChannelID()
 	}
 	return ""
@@ -211,7 +270,7 @@ func (al *AgentLoop) publishWebToolCallInterim(
 
 	visibleToolCalls := utils.BuildVisibleToolCalls(
 		toolCalls,
-		al.cfg.Agents.Defaults.GetToolFeedbackMaxArgsLength(),
+		al.GetConfig().Agents.Defaults.GetToolFeedbackMaxArgsLength(),
 	)
 	duplicateToolCallContent := len(visibleToolCalls) > 0 &&
 		utils.ToolCallExplanationDuplicatesContent(content, toolCalls)

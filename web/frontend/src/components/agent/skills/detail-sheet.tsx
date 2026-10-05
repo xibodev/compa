@@ -7,16 +7,14 @@ import {
 import type { ReactNode } from "react"
 import { useTranslation } from "react-i18next"
 import ReactMarkdown from "react-markdown"
-import rehypeHighlight from "rehype-highlight"
-import rehypeRaw from "rehype-raw"
-import rehypeSanitize from "rehype-sanitize"
-import remarkGfm from "remark-gfm"
 
 import type { SkillDetailResponse, SkillSupportItem } from "@/api/skills"
 import {
-  MarkdownCodeBlock,
-  MessageCodeBlock,
-} from "@/components/chat/message-code-block"
+  MARKDOWN_COMPONENTS,
+  MARKDOWN_REHYPE_PLUGINS,
+  MARKDOWN_REMARK_PLUGINS,
+} from "@/components/chat/markdown"
+import { MessageCodeBlock } from "@/components/chat/message-code-block"
 import {
   Sheet,
   SheetContent,
@@ -25,6 +23,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet"
 import { Skeleton } from "@/components/ui/skeleton"
+import { safeExternalURL } from "@/lib/safe-url"
 import { cn } from "@/lib/utils"
 
 import { OriginBadge } from "./origin-badge"
@@ -68,6 +67,7 @@ export function DetailSheet({
     ? selectedSkillDetail.content.split("\n").length
     : 0
   const detailCharacterCount = selectedSkillDetail?.content.length ?? 0
+  const registryURL = safeExternalURL(selectedSkillDetail?.registry_url)
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
@@ -141,14 +141,18 @@ export function DetailSheet({
                       <MetadataItem
                         label={t("pages.agent.skills.metadata.url")}
                         value={
-                          <a
-                            href={selectedSkillDetail.registry_url}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="text-primary hover:text-primary/80 inline break-all underline-offset-4 hover:underline"
-                          >
-                            {selectedSkillDetail.registry_url}
-                          </a>
+                          registryURL ? (
+                            <a
+                              href={registryURL}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-primary hover:text-primary/80 inline break-all underline-offset-4 hover:underline"
+                            >
+                              {selectedSkillDetail.registry_url}
+                            </a>
+                          ) : (
+                            selectedSkillDetail.registry_url
+                          )
                         }
                         mono
                       />
@@ -178,11 +182,9 @@ export function DetailSheet({
               {detailView === "preview" ? (
                 <div className="prose prose-zinc dark:prose-invert prose-sm sm:prose-base prose-pre:rounded-xl prose-pre:border prose-pre:border-border/40 prose-pre:bg-zinc-100 prose-pre:p-0 prose-pre:shadow-sm dark:prose-pre:bg-zinc-950/90 prose-headings:tracking-tight prose-a:text-primary prose-a:no-underline hover:prose-a:underline max-w-none">
                   <ReactMarkdown
-                    remarkPlugins={[remarkGfm]}
-                    rehypePlugins={[rehypeRaw, rehypeSanitize, rehypeHighlight]}
-                    components={{
-                      pre: MarkdownCodeBlock,
-                    }}
+                    remarkPlugins={MARKDOWN_REMARK_PLUGINS}
+                    rehypePlugins={MARKDOWN_REHYPE_PLUGINS}
+                    components={MARKDOWN_COMPONENTS}
                   >
                     {selectedSkillDetail.content}
                   </ReactMarkdown>

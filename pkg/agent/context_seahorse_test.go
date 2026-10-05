@@ -1185,3 +1185,24 @@ func TestSeahorseSummarizeSkipsCondensedWhenBelowThreshold(t *testing.T) {
 		t.Errorf("BUG: condensed created when tokens (%d) < threshold (%d)", tokensBefore, threshold)
 	}
 }
+
+// A stored tool call without Function (only the top-level name) must not
+// crash the startup bootstrap.
+func TestProviderToSeahorseMessageToolCallWithoutFunction(t *testing.T) {
+	msg := protocoltypes.Message{
+		Role: "assistant",
+		ToolCalls: []protocoltypes.ToolCall{{
+			ID:        "call-1",
+			Name:      "lookup",
+			Arguments: map[string]any{"q": "x"},
+		}},
+	}
+	result := providerToSeahorseMessage(msg)
+	if len(result.Parts) != 1 {
+		t.Fatalf("parts = %+v, want one tool_use part", result.Parts)
+	}
+	part := result.Parts[0]
+	if part.Name != "lookup" || part.ToolCallID != "call-1" || part.Arguments != `{"q":"x"}` {
+		t.Fatalf("part = %+v", part)
+	}
+}

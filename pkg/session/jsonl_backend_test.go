@@ -234,3 +234,41 @@ func TestJSONLBackend_GetSessionScopeWithoutMetadata(t *testing.T) {
 		t.Fatalf("GetSessionScope() = %+v, want nil for a session without scope", scope)
 	}
 }
+
+func TestCommitSummaryDropsOnlyTheSummarizedPrefix(t *testing.T) {
+	stores := map[string]session.SessionStore{
+		"jsonl backend":  newBackend(t),
+		"store in steps": &stepStore{SessionStore: newBackend(t)},
+	}
+	for name, store := range stores {
+		t.Run(name, func(t *testing.T) {
+			for _, content := range []string{"q1", "a1", "q2", "a2"} {
+				store.AddMessage("s", "user", content)
+			}
+			summarized := store.GetHistory("s")[:2]
+			store.AddMessage("s", "user", "appended while summarizing")
+
+			if !session.CommitSummary(store, "s", summarized, "q1 and a1") {
+				t.Fatal("CommitSummary refused an unchanged prefix")
+			}
+			history := store.GetHistory("s")
+			if len(history) != 3 || history[0].Content != "q2" || history[2].Content != "appended while summarizing" {
+				t.Fatalf("history = %+v", history)
+			}
+			if got := store.GetSummary("s"); got != "q1 and a1" {
+				t.Fatalf("summary = %q", got)
+			}
+
+			store.SetHistory("s", []providers.Message{{Role: "user", Content: "cleared"}})
+			if session.CommitSummary(store, "s", history[:1], "stale") {
+				t.Fatal("CommitSummary accepted a prefix that is gone")
+			}
+		})
+	}
+}
+
+// stepStore hides the backend's one-step commit, so CommitSummary takes the
+// generic path.
+type stepStore struct {
+	session.SessionStore
+}

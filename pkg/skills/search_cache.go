@@ -2,9 +2,11 @@ package skills
 
 import (
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // SearchCache provides lightweight caching for search results.
@@ -20,6 +22,7 @@ type SearchCache struct {
 
 type cacheEntry struct {
 	query     string
+	limit     int
 	trigrams  []uint32
 	results   []SearchResult
 	createdAt time.Time
@@ -27,6 +30,10 @@ type cacheEntry struct {
 
 // similarityThreshold is the minimum trigram Jaccard similarity for a cache hit.
 const similarityThreshold = 0.7
+
+// minSimilarQueryLen is the shortest query that can match a different cached
+// query: shorter ones ("go", "ai", "db") have too few trigrams to compare.
+const minSimilarQueryLen = 4
 
 // NewSearchCache creates a new search cache.
 // maxEntries is the maximum number of cached queries (excess evicts LRU).
@@ -49,20 +56,30 @@ func NewSearchCache(maxEntries int, ttl time.Duration) *SearchCache {
 // Get looks up results for a query. Returns cached results and true if found
 // (either exact or similar match above threshold). Returns nil, false on miss.
 func (sc *SearchCache) Get(query string) ([]SearchResult, bool) {
+	return sc.GetLimited(query, 0)
+}
+
+// GetLimited is Get for results fetched with the given result limit; entries
+// cached under another limit don't match.
+func (sc *SearchCache) GetLimited(query string, limit int) ([]SearchResult, bool) {
 	normalized := normalizeQuery(query)
 	if normalized == "" {
 		return nil, false
 	}
+	key := cacheKey(normalized, limit)
 
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
 
 	// Exact match first.
-	if entry, ok := sc.entries[normalized]; ok {
+	if entry, ok := sc.entries[key]; ok {
 		if time.Since(entry.createdAt) < sc.ttl {
-			sc.moveToEndLocked(normalized)
+			sc.moveToEndLocked(key)
 			return copyResults(entry.results), true
 		}
+	}
+	if utf8.RuneCountInString(normalized) < minSimilarQueryLen {
+		return nil, false
 	}
 
 	// Similarity match.
@@ -74,6 +91,9 @@ func (sc *SearchCache) Get(query string) ([]SearchResult, bool) {
 		if time.Since(entry.createdAt) >= sc.ttl {
 			continue // Skip expired.
 		}
+		if entry.limit != limit || utf8.RuneCountInString(entry.query) < minSimilarQueryLen {
+			continue
+		}
 		sim := jaccardSimilarity(queryTrigrams, entry.trigrams)
 		if sim > bestSim {
 			bestSim = sim
@@ -82,7 +102,8 @@ func (sc *SearchCache) Get(query string) ([]SearchResult, bool) {
 	}
 
 	if bestSim >= similarityThreshold && bestEntry != nil {
-		sc.moveToEndLocked(bestEntry.query)
+		bestKey := cacheKey(bestEntry.query, bestEntry.limit)
+		sc.moveToEndLocked(bestKey)
 		return copyResults(bestEntry.results), true
 	}
 
@@ -91,10 +112,16 @@ func (sc *SearchCache) Get(query string) ([]SearchResult, bool) {
 
 // Put stores results for a query. Evicts the oldest entry if at capacity.
 func (sc *SearchCache) Put(query string, results []SearchResult) {
+	sc.PutLimited(query, 0, results)
+}
+
+// PutLimited is Put for results fetched with the given result limit.
+func (sc *SearchCache) PutLimited(query string, limit int, results []SearchResult) {
 	normalized := normalizeQuery(query)
 	if normalized == "" {
 		return
 	}
+	key := cacheKey(normalized, limit)
 
 	sc.mu.Lock()
 	defer sc.mu.Unlock()
@@ -102,16 +129,19 @@ func (sc *SearchCache) Put(query string, results []SearchResult) {
 	// Evict expired entries first.
 	sc.evictExpiredLocked()
 
+	entry := &cacheEntry{
+		query:     normalized,
+		limit:     limit,
+		trigrams:  buildTrigrams(normalized),
+		results:   copyResults(results),
+		createdAt: time.Now(),
+	}
+
 	// If already exists, update.
-	if _, ok := sc.entries[normalized]; ok {
-		sc.entries[normalized] = &cacheEntry{
-			query:     normalized,
-			trigrams:  buildTrigrams(normalized),
-			results:   copyResults(results),
-			createdAt: time.Now(),
-		}
+	if _, ok := sc.entries[key]; ok {
+		sc.entries[key] = entry
 		// Move to end of LRU order.
-		sc.moveToEndLocked(normalized)
+		sc.moveToEndLocked(key)
 		return
 	}
 
@@ -123,13 +153,12 @@ func (sc *SearchCache) Put(query string, results []SearchResult) {
 	}
 
 	// Insert new entry.
-	sc.entries[normalized] = &cacheEntry{
-		query:     normalized,
-		trigrams:  buildTrigrams(normalized),
-		results:   copyResults(results),
-		createdAt: time.Now(),
-	}
-	sc.order = append(sc.order, normalized)
+	sc.entries[key] = entry
+	sc.order = append(sc.order, key)
+}
+
+func cacheKey(normalizedQuery string, limit int) string {
+	return strconv.Itoa(limit) + "\x00" + normalizedQuery
 }
 
 // Len returns the number of entries (for testing).

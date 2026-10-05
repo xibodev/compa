@@ -2,15 +2,14 @@ package cron
 
 import "github.com/spf13/cobra"
 
-func newDisableCommand(storePath func() string) *cobra.Command {
+func newDisableCommand(open openStore) *cobra.Command {
 	return &cobra.Command{
-		Use:     "disable",
+		Use:     "disable <job-id>",
 		Short:   "Disable a job",
 		Args:    cobra.ExactArgs(1),
-		Example: `compa-kernel cron disable 1`,
-		RunE: func(_ *cobra.Command, args []string) error {
-			cronSetJobEnabled(storePath(), args[0], false)
-			return nil
+		Example: `compa-kernel cron disable ` + exampleJobID,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return cronSetJobEnabled(cmd.OutOrStdout(), open, args[0], false)
 		},
 	}
 }

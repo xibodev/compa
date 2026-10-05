@@ -163,6 +163,10 @@ type Descriptor struct {
 type Capability struct {
 	// ID is the capability identifier passed to `module invoke`. It is
 	// namespaced by module, e.g. "creative.tools.run", "sessions.assay".
+	//
+	// It travels on the module's command line, so it may not start with '-'
+	// (a flag parser would read it as an option) or contain whitespace or
+	// control characters.
 	ID string `json:"id"`
 
 	// Title and Summary are cockpit-facing copy. Summary should be one line:
@@ -226,8 +230,9 @@ type Effects struct {
 	// network TRUE and requires no consent at all.
 	//
 	// SEPARATELY, and as a HOST POLICY rather than a property of this field:
-	// Compa currently refuses a capability with cost_known false unless
-	// the operator approved it (internal/moduletools.NeedsApproval). That is
+	// by default Compa asks the operator before a capability with cost_known
+	// false runs, and also one that writes outside the host or reaches the
+	// network (tools.approval; pkg/approval.DefaultPolicy). That is
 	// this host over-gating on the only signal v1 carries, not a guarantee the
 	// protocol makes. Another host may gate differently; one sibling does.
 	//
@@ -511,10 +516,9 @@ type Artifact struct {
 	//
 	// Root names are therefore scoped to one invocation and are not portable
 	// between modules: a seed that one module writes under its own rw root
-	// cannot be named by a root another module was given. Cross-module handoff
-	// is resolved by the host STAGING the artifact into its own artifact store
-	// and supplying that as a read-only root to the consumer. Modules never
-	// learn each other's layout, and the host keeps a single enforcement point.
+	// cannot be named by a root another module was given. Passing an artifact
+	// on is ordinary tool calling: the agent hands the path it received to the
+	// next capability, inside a root that capability is granted.
 	Path string `json:"path"`
 	Root string `json:"root"`
 	// Presentation names the rendering primitive the host should use, when the
@@ -566,4 +570,7 @@ const (
 	ErrHostTimeout           = "host.timeout"
 	ErrHostSpawnFailed       = "host.spawn_failed"
 	ErrHostInvalidJSON       = "host.invalid_json"
+	// ErrHostModuleChanged means the installed binary no longer matches the
+	// digest recorded when it was installed, so the host does not run it.
+	ErrHostModuleChanged = "host.module_changed"
 )

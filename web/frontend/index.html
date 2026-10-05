@@ -6,12 +6,35 @@
          browser requests at /favicon.ico whether it is declared or not, so it
          must carry the same mark rather than whatever shipped before. -->
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <link rel="icon" type="image/x-icon" href="/favicon.ico" sizes="16x16 32x32 48x48" />
+    <link
+      rel="icon"
+      type="image/x-icon"
+      href="/favicon.ico"
+      sizes="16x16 32x32 48x48"
+    />
     <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
     <link rel="manifest" href="/site.webmanifest" />
     <meta name="theme-color" content="#3D63D8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Compa</title>
+    <!-- Applies the saved theme, or the system's, before the first paint so a
+         dark page does not flash light. Mirrors src/hooks/use-theme.ts. -->
+    <script>
+      ;(function () {
+        var theme = null
+        try {
+          theme = localStorage.getItem("theme")
+        } catch (e) {}
+        if (theme !== "light" && theme !== "dark") {
+          theme =
+            window.matchMedia &&
+            !window.matchMedia("(prefers-color-scheme: dark)").matches
+              ? "light"
+              : "dark"
+        }
+        if (theme === "dark") document.documentElement.classList.add("dark")
+      })()
+    </script>
   </head>
 
   <body>

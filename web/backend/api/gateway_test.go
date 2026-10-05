@@ -117,8 +117,7 @@ func resetGatewayTestState(t *testing.T) {
 		gateway.pidData = nil
 		gateway.owned = false
 		gateway.bootDefaultModel = ""
-		gateway.bootConfigSignature = ""
-		gateway.bootModelSignature = ""
+		gateway.bootConfig = nil
 		setGatewayRuntimeStatusLocked("stopped")
 		gateway.mu.Unlock()
 	})
@@ -225,7 +224,7 @@ func captureGatewayStarts(t *testing.T) *gatewayStartCapture {
 			if gateway.cmd == cmd {
 				gateway.cmd = nil
 				gateway.bootDefaultModel = ""
-				gateway.bootConfigSignature = ""
+				gateway.bootConfig = nil
 			}
 		}
 		gateway.mu.Unlock()
@@ -269,62 +268,56 @@ func newGatewayStartTestHandler(t *testing.T) *Handler {
 	return h
 }
 
-func startGatewayAndCaptureEnv(t *testing.T, h *Handler) gatewayStartEnvSnapshot {
+func startGatewayAndCaptureCmd(t *testing.T, h *Handler) (gatewayStartEnvSnapshot, *exec.Cmd) {
 	t.Helper()
 
 	unsetGatewayStartEnvForTest(t, config.EnvGatewayHost)
 
 	capture := captureGatewayStarts(t)
 
+	gateway.mu.Lock()
 	pid, err := h.startGatewayLocked("starting", 0)
+	gateway.mu.Unlock()
 	if err != nil {
 		t.Fatalf("startGatewayLocked() error = %v", err)
 	}
 	if pid <= 0 {
 		t.Fatalf("startGatewayLocked() pid = %d, want > 0", pid)
 	}
-	return capture.snapshot(t)
+	capture.mu.Lock()
+	cmd := capture.cmds[len(capture.cmds)-1]
+	capture.mu.Unlock()
+	return capture.snapshot(t), cmd
 }
 
-func TestStartGatewayLocked_ForwardsLauncherHostOverrideToGatewayEnv(t *testing.T) {
-	h := newGatewayStartTestHandler(t)
-	h.SetServerBindHost("127.0.0.1,::1", true)
+// The launcher's listen host is the dashboard's, LAN mode included: the
+// kernel keeps the host its own config names (loopback by default), so its
+// port never opens to the network, and the dashboard proxies what browsers
+// need. The kernel runs in the Compa home, wherever the launcher started.
+func TestStartGatewayLocked_KeepsTheKernelOnItsConfiguredHost(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		launch func(h *Handler)
+	}{
+		{name: "explicit multi host", launch: func(h *Handler) { h.SetServerBindHost("127.0.0.1,::1", true) }},
+		{name: "host from the environment", launch: func(h *Handler) { h.SetServerBindHost("::", true) }},
+		{name: "public launcher", launch: func(h *Handler) { h.SetServerOptions(18800, true, true, nil) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newGatewayStartTestHandler(t)
+			tc.launch(h)
 
-	snapshot := startGatewayAndCaptureEnv(t, h)
-	if !snapshot.GatewayHostSet {
-		t.Fatal("gateway host env was not set")
-	}
-	if snapshot.GatewayHost != "127.0.0.1,::1" {
-		t.Fatalf("gateway host env = %q, want %q", snapshot.GatewayHost, "127.0.0.1,::1")
-	}
-	if snapshot.ConfigPath != h.configPath {
-		t.Fatalf("config env = %q, want %q", snapshot.ConfigPath, h.configPath)
-	}
-}
-
-func TestStartGatewayLocked_ForwardsLauncherHostFromEnvironmentToGatewayEnv(t *testing.T) {
-	h := newGatewayStartTestHandler(t)
-	h.SetServerBindHost("::", true)
-
-	snapshot := startGatewayAndCaptureEnv(t, h)
-	if !snapshot.GatewayHostSet {
-		t.Fatal("gateway host env was not set")
-	}
-	if snapshot.GatewayHost != "::" {
-		t.Fatalf("gateway host env = %q, want %q", snapshot.GatewayHost, "::")
-	}
-}
-
-func TestStartGatewayLocked_ForwardsWildcardHostForPublicLauncher(t *testing.T) {
-	h := newGatewayStartTestHandler(t)
-	h.SetServerOptions(18800, true, true, nil)
-
-	snapshot := startGatewayAndCaptureEnv(t, h)
-	if !snapshot.GatewayHostSet {
-		t.Fatal("gateway host env was not set")
-	}
-	if snapshot.GatewayHost != "*" {
-		t.Fatalf("gateway host env = %q, want %q", snapshot.GatewayHost, "*")
+			snapshot, cmd := startGatewayAndCaptureCmd(t, h)
+			if snapshot.GatewayHostSet {
+				t.Fatalf("gateway host env = %q, want none: the kernel binds its config's host", snapshot.GatewayHost)
+			}
+			if snapshot.ConfigPath != h.configPath {
+				t.Fatalf("config env = %q, want %q", snapshot.ConfigPath, h.configPath)
+			}
+			if cmd.Dir != globalConfigDir() {
+				t.Fatalf("kernel working directory = %q, want the Compa home %q", cmd.Dir, globalConfigDir())
+			}
+		})
 	}
 }
 
@@ -352,7 +345,7 @@ func TestStartGatewayLocked_UsesReloadedConfigForBootSignature(t *testing.T) {
 	}
 
 	gateway.mu.Lock()
-	bootSignature := gateway.bootConfigSignature
+	bootSignature := gateway.bootConfig
 	gateway.mu.Unlock()
 
 	updatedCfg, err := config.LoadConfig(configPath)
@@ -360,11 +353,11 @@ func TestStartGatewayLocked_UsesReloadedConfigForBootSignature(t *testing.T) {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
 	expectedSignature := computeConfigSignature(updatedCfg)
-	if expectedSignature == originalSignature {
+	if expectedSignature.equal(originalSignature) {
 		t.Fatal("expected EnsureWebChatChannel() to change the config signature during gateway start")
 	}
-	if bootSignature != expectedSignature {
-		t.Fatalf("bootConfigSignature = %q, want %q", bootSignature, expectedSignature)
+	if !bootSignature.equal(expectedSignature) {
+		t.Fatalf("bootConfig = %q, want %q", bootSignature, expectedSignature)
 	}
 }
 
@@ -966,7 +959,7 @@ func runAsTrackedGateway(t *testing.T, cfg *config.Config) {
 	gateway.mu.Lock()
 	gateway.cmd = &exec.Cmd{Process: process}
 	gateway.bootDefaultModel = strings.TrimSpace(cfg.Agents.Defaults.GetModelName())
-	gateway.bootConfigSignature = computeConfigSignature(cfg)
+	gateway.bootConfig = computeConfigSignature(cfg)
 	setGatewayRuntimeStatusLocked("running")
 	gateway.mu.Unlock()
 }
@@ -1059,7 +1052,7 @@ func TestConfigSignatureTracksModelSelections(t *testing.T) {
 	for name, change := range changes {
 		cfg := base()
 		change(cfg)
-		if computeConfigSignature(cfg) == boot {
+		if computeConfigSignature(cfg).equal(boot) {
 			t.Errorf("changing the %s left the config signature unchanged", name)
 		}
 	}
@@ -1068,8 +1061,33 @@ func TestConfigSignatureTracksModelSelections(t *testing.T) {
 	same.Agents.Defaults.ModelName = "  owned/chat  "
 	same.ProviderInstances = []*config.ProviderInstanceConfig{providerInstanceFixture("owned", "https://owned.example.test/v1")}
 	same.ModelRoutes = []*config.ModelRouteConfig{{Name: "fast", Targets: []string{"owned/chat"}}}
-	if computeConfigSignature(same) != boot {
+	if !computeConfigSignature(same).equal(boot) {
 		t.Error("provider instances, routes or selection whitespace changed the config signature")
+	}
+}
+
+// A channel's secrets are in its signature; its access lists and policies
+// are its live part, and nothing else.
+func TestConfigSignatureTracksChannelSecretsAndAccess(t *testing.T) {
+	withToken := func(token string) *config.Config {
+		cfg := config.DefaultConfig()
+		decoded, err := cfg.Channels["web"].GetDecoded()
+		if err != nil {
+			t.Fatalf("GetDecoded() error = %v", err)
+		}
+		decoded.(*config.WebChatSettings).Token = *config.NewSecureString(token)
+		return cfg
+	}
+	boot := computeConfigSignature(withToken("old-token"))
+
+	if computeConfigSignature(withToken("new-token")).equalBesidesLive(boot) {
+		t.Error("changing a channel's secret left the config signature unchanged")
+	}
+
+	access := withToken("old-token")
+	access.Channels["web"].AllowFrom = config.FlexibleStringSlice{"web:1"}
+	if signature := computeConfigSignature(access); signature.liveEqual(boot) || !signature.equalBesidesLive(boot) {
+		t.Error("changing a channel's allow_from changed other than the live part of the config signature")
 	}
 }
 
@@ -1097,7 +1115,7 @@ func TestGatewayStatusRequiresRestartAfterToolChange(t *testing.T) {
 	gateway.mu.Lock()
 	gateway.cmd = &exec.Cmd{Process: process}
 	gateway.bootDefaultModel = cfg.Agents.Defaults.ModelName
-	gateway.bootConfigSignature = bootSignature
+	gateway.bootConfig = bootSignature
 	setGatewayRuntimeStatusLocked("running")
 	gateway.mu.Unlock()
 
@@ -1158,7 +1176,7 @@ func TestGatewayStatusRequiresRestartAfterChannelChange(t *testing.T) {
 	gateway.mu.Lock()
 	gateway.cmd = &exec.Cmd{Process: process}
 	gateway.bootDefaultModel = cfg.Agents.Defaults.ModelName
-	gateway.bootConfigSignature = bootSignature
+	gateway.bootConfig = bootSignature
 	setGatewayRuntimeStatusLocked("running")
 	gateway.mu.Unlock()
 
@@ -1225,7 +1243,7 @@ func TestGatewayStatusRequiresRestartAfterWebSearchConfigChange(t *testing.T) {
 	gateway.mu.Lock()
 	gateway.cmd = &exec.Cmd{Process: process}
 	gateway.bootDefaultModel = cfg.Agents.Defaults.ModelName
-	gateway.bootConfigSignature = bootSignature
+	gateway.bootConfig = bootSignature
 	setGatewayRuntimeStatusLocked("running")
 	gateway.mu.Unlock()
 
@@ -1287,7 +1305,7 @@ func TestGatewayStatusNoRestartRequiredForNonSensitiveChanges(t *testing.T) {
 	gateway.mu.Lock()
 	gateway.cmd = &exec.Cmd{Process: process}
 	gateway.bootDefaultModel = cfg.Agents.Defaults.ModelName
-	gateway.bootConfigSignature = bootSignature
+	gateway.bootConfig = bootSignature
 	setGatewayRuntimeStatusLocked("running")
 	gateway.mu.Unlock()
 
@@ -1342,7 +1360,7 @@ func TestGatewayStatusNoRestartRequiredWhenNotRunning(t *testing.T) {
 	gateway.mu.Lock()
 	gateway.cmd = nil
 	gateway.bootDefaultModel = ""
-	gateway.bootConfigSignature = ""
+	gateway.bootConfig = nil
 	setGatewayRuntimeStatusLocked("stopped")
 	gateway.mu.Unlock()
 

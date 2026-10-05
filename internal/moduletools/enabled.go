@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/xibodev/compa/internal/module"
 )
 
 // disabledMarker is the file that makes an installed module inert.
@@ -13,7 +15,7 @@ import (
 // is a file on disk and not a registry row: there is nothing to drift out of
 // sync with what is actually installed. Removing a module directory removes its
 // state with it, and the marker is visible to anyone who looks.
-const disabledMarker = ".disabled"
+const disabledMarker = module.DisabledMarker
 
 // Disabled reports whether the module installed at dir has been turned off.
 //

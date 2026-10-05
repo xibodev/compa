@@ -10,6 +10,7 @@ import (
 	runtimeevents "github.com/xibodev/compa/pkg/events"
 	"github.com/xibodev/compa/pkg/logger"
 	"github.com/xibodev/compa/pkg/providers"
+	"github.com/xibodev/compa/pkg/session"
 )
 
 // defaultContextManagerName selects the built-in context manager in config.
@@ -24,12 +25,26 @@ type defaultContextManager struct {
 	summarizing sync.Map // dedup for async Compact (post-turn)
 }
 
+// agentFor returns the agent whose session store holds a session: the
+// agent of the turn that asks, else the agent that owns the session. A routed
+// agent keeps its history in its own store, never in the default agent's.
+func (m *defaultContextManager) agentFor(agentID, sessionKey string) *AgentInstance {
+	if strings.TrimSpace(agentID) != "" {
+		if registry := m.al.GetRegistry(); registry != nil {
+			if agent, ok := registry.GetAgent(agentID); ok && agent != nil {
+				return agent
+			}
+		}
+	}
+	return m.al.agentForSession(sessionKey)
+}
+
 func (m *defaultContextManager) Assemble(_ context.Context, req *AssembleRequest) (*AssembleResponse, error) {
 	// Read history from the session store and return it as-is.
 	// Budget enforcement happens in BuildMessagesFromPrompt caller via
 	// isOverContextBudget + forceCompression.
-	agent := m.al.registry.GetDefaultAgent()
-	if agent == nil {
+	agent := m.agentFor(req.AgentID, req.SessionKey)
+	if agent == nil || agent.Sessions == nil {
 		return &AssembleResponse{}, nil
 	}
 	history := agent.Sessions.GetHistory(req.SessionKey)
@@ -44,7 +59,7 @@ func (m *defaultContextManager) Compact(_ context.Context, req *CompactRequest) 
 	switch req.Reason {
 	case ContextCompressReasonProactive, ContextCompressReasonRetry:
 		// Sync emergency compression — budget exceeded.
-		if result, ok := m.forceCompression(req.SessionKey); ok {
+		if result, ok := m.forceCompression(req.AgentID, req.SessionKey); ok {
 			m.al.emitEvent(
 				runtimeevents.KindAgentContextCompress,
 				m.al.newTurnEventScope("", req.SessionKey, nil).meta(0, "forceCompression", "turn.context.compress"),
@@ -56,7 +71,7 @@ func (m *defaultContextManager) Compact(_ context.Context, req *CompactRequest) 
 			)
 		}
 	case ContextCompressReasonSummarize:
-		m.maybeSummarize(req.SessionKey)
+		m.maybeSummarize(req.AgentID, req.SessionKey)
 	}
 	return nil
 }
@@ -80,9 +95,9 @@ func (m *defaultContextManager) Clear(_ context.Context, sessionKey string) erro
 
 // maybeSummarize triggers summarization if the session history exceeds thresholds.
 // It runs asynchronously in a goroutine.
-func (m *defaultContextManager) maybeSummarize(sessionKey string) {
-	agent := m.al.registry.GetDefaultAgent()
-	if agent == nil {
+func (m *defaultContextManager) maybeSummarize(agentID, sessionKey string) {
+	agent := m.agentFor(agentID, sessionKey)
+	if agent == nil || agent.Sessions == nil {
 		return
 	}
 
@@ -117,10 +132,12 @@ type compressionResult struct {
 
 // forceCompression aggressively reduces context when the limit is hit.
 // It drops the oldest ~50% of Turns (a Turn is a complete user→LLM→response
-// cycle, as defined in #1316), so tool-call sequences are never split.
-func (m *defaultContextManager) forceCompression(sessionKey string) (compressionResult, bool) {
-	agent := m.al.registry.GetDefaultAgent()
-	if agent == nil {
+// cycle, as defined in #1316), so tool-call sequences are never split. The
+// messages the active turn of the session has persisted — its prompt, tool
+// calls and tool results — are never dropped: only what precedes them is.
+func (m *defaultContextManager) forceCompression(agentID, sessionKey string) (compressionResult, bool) {
+	agent := m.agentFor(agentID, sessionKey)
+	if agent == nil || agent.Sessions == nil {
 		return compressionResult{}, false
 	}
 
@@ -129,26 +146,40 @@ func (m *defaultContextManager) forceCompression(sessionKey string) (compression
 		return compressionResult{}, false
 	}
 
-	turns := parseTurnBoundaries(history)
+	var persisted []providers.Message
+	if ts := m.al.getActiveTurnState(sessionKey); ts != nil && ts.agentID == agent.ID {
+		persisted = ts.persistedMessagesSnapshot()
+	}
+	stable, activeTurn := splitHistoryForActiveTurn(history, persisted)
+	if len(stable) == 0 {
+		return compressionResult{}, false
+	}
+
+	turns := parseTurnBoundaries(stable)
 	var mid int
 	if len(turns) >= 2 {
 		mid = turns[len(turns)/2]
 	} else {
-		mid = findSafeBoundary(history, len(history)/2)
+		mid = findSafeBoundary(stable, len(stable)/2)
 	}
 	var keptHistory []providers.Message
-	if mid <= 0 {
-		for i := len(history) - 1; i >= 0; i-- {
-			if history[i].Role == "user" {
-				keptHistory = []providers.Message{history[i]}
+	switch {
+	case mid > 0:
+		keptHistory = append([]providers.Message(nil), stable[mid:]...)
+	case len(activeTurn) == 0:
+		for i := len(stable) - 1; i >= 0; i-- {
+			if stable[i].Role == "user" {
+				keptHistory = []providers.Message{stable[i]}
 				break
 			}
 		}
-	} else {
-		keptHistory = history[mid:]
 	}
+	keptHistory = append(keptHistory, activeTurn...)
 
 	droppedCount := len(history) - len(keptHistory)
+	if droppedCount <= 0 {
+		return compressionResult{}, false
+	}
 
 	existingSummary := agent.Sessions.GetSummary(sessionKey)
 	compressionNote := fmt.Sprintf(
@@ -229,51 +260,87 @@ func (m *defaultContextManager) summarizeSession(agent *AgentInstance, sessionKe
 		llmMaxRetries            = 3
 	)
 
+	// The new summary replaces the existing one, so every path folds the
+	// existing summary in. When the model fails, nothing is committed: the
+	// history stays whole (bounded by emergency compression) rather than being
+	// truncated behind an excerpt of itself.
 	var finalSummary string
+	mid := 0
 	if len(validMessages) > maxSummarizationMessages {
-		mid := len(validMessages) / 2
-		mid = m.findNearestUserMessage(validMessages, mid)
+		mid = m.findNearestUserMessage(validMessages, len(validMessages)/2)
+	}
+	if mid > 0 && mid < len(validMessages) {
+		s1, err := m.summarizeBatch(ctx, agent, validMessages[:mid], summary)
+		if err != nil {
+			logSummarizationFailure(agent, sessionKey, err)
+			return
+		}
+		s2, err := m.summarizeBatch(ctx, agent, validMessages[mid:], "")
+		if err != nil {
+			logSummarizationFailure(agent, sessionKey, err)
+			return
+		}
 
-		part1 := validMessages[:mid]
-		part2 := validMessages[mid:]
-
-		s1, _ := m.summarizeBatch(ctx, agent, part1, "")
-		s2, _ := m.summarizeBatch(ctx, agent, part2, "")
-
-		mergePrompt := fmt.Sprintf(
-			"Merge these two conversation summaries into one cohesive summary:\n\n1: %s\n\n2: %s",
-			s1, s2,
-		)
-
-		resp, err := m.retryLLMCall(ctx, agent, mergePrompt, llmMaxRetries)
-		if err == nil && resp.Content != "" {
-			finalSummary = resp.Content
+		var merge strings.Builder
+		merge.WriteString("Merge these conversation summaries, oldest first, into one cohesive summary. " +
+			"Keep every fact the later ones do not replace.\n")
+		if summary != "" {
+			fmt.Fprintf(&merge, "\nEarlier summary: %s\n", summary)
+		}
+		fmt.Fprintf(&merge, "\n1: %s\n\n2: %s", s1, s2)
+		resp, err := m.retryLLMCall(ctx, agent, merge.String(), llmMaxRetries)
+		if err == nil && resp != nil && strings.TrimSpace(resp.Content) != "" {
+			finalSummary = strings.TrimSpace(resp.Content)
 		} else {
-			finalSummary = s1 + " " + s2
+			// Both parts are the model's summaries, and s1 already carries
+			// the earlier summary forward.
+			finalSummary = s1 + "\n\n" + s2
 		}
 	} else {
-		finalSummary, _ = m.summarizeBatch(ctx, agent, validMessages, summary)
+		var err error
+		finalSummary, err = m.summarizeBatch(ctx, agent, validMessages, summary)
+		if err != nil {
+			logSummarizationFailure(agent, sessionKey, err)
+			return
+		}
 	}
 
 	if omitted && finalSummary != "" {
 		finalSummary += "\n[Note: Some oversized messages were omitted from this summary for efficiency.]"
 	}
 
-	if finalSummary != "" {
-		agent.Sessions.SetSummary(sessionKey, finalSummary)
-		agent.Sessions.TruncateHistory(sessionKey, keepCount)
-		agent.Sessions.Save(sessionKey)
-		m.al.emitEvent(
-			runtimeevents.KindAgentSessionSummarize,
-			m.al.newTurnEventScope(agent.ID, sessionKey, nil).meta(0, "summarizeSession", "turn.session.summarize"),
-			SessionSummarizePayload{
-				SummarizedMessages: len(validMessages),
-				KeptMessages:       keepCount,
-				SummaryLen:         len(finalSummary),
-				OmittedOversized:   omitted,
-			},
-		)
+	if finalSummary == "" {
+		return
 	}
+	// Messages appended while the model wrote the summary are kept: the
+	// commit drops exactly the summarized messages, and nothing when they are
+	// no longer the oldest of the session (it was cleared or compacted).
+	if !session.CommitSummary(agent.Sessions, sessionKey, toSummarize, finalSummary) {
+		logger.InfoCF("agent", "Summary discarded: the session changed while it was written", map[string]any{
+			"agent_id":    agent.ID,
+			"session_key": sessionKey,
+		})
+		return
+	}
+	agent.Sessions.Save(sessionKey)
+	m.al.emitEvent(
+		runtimeevents.KindAgentSessionSummarize,
+		m.al.newTurnEventScope(agent.ID, sessionKey, nil).meta(0, "summarizeSession", "turn.session.summarize"),
+		SessionSummarizePayload{
+			SummarizedMessages: len(validMessages),
+			KeptMessages:       keepCount,
+			SummaryLen:         len(finalSummary),
+			OmittedOversized:   omitted,
+		},
+	)
+}
+
+func logSummarizationFailure(agent *AgentInstance, sessionKey string, err error) {
+	logger.WarnCF("agent", "Summarization failed; history kept as it is", map[string]any{
+		"agent_id":    agent.ID,
+		"session_key": sessionKey,
+		"error":       err.Error(),
+	})
 }
 
 func (m *defaultContextManager) findNearestUserMessage(messages []providers.Message, mid int) int {
@@ -345,22 +412,22 @@ func (m *defaultContextManager) retryLLMCall(
 	return resp, err
 }
 
+// summarizeBatch asks the model for a summary of batch that folds in
+// existingSummary. It fails when the model gives none: an excerpt of the
+// messages is no summary, and committing one would truncate the history
+// behind it.
 func (m *defaultContextManager) summarizeBatch(
 	ctx context.Context,
 	agent *AgentInstance,
 	batch []providers.Message,
 	existingSummary string,
 ) (string, error) {
-	const (
-		llmMaxRetries             = 3
-		fallbackMinContentLength  = 200
-		fallbackMaxContentPercent = 10
-	)
+	const llmMaxRetries = 3
 
 	var sb strings.Builder
 	sb.WriteString("Provide a concise summary of this conversation segment, preserving core context and key points.\n")
 	if existingSummary != "" {
-		sb.WriteString("Existing context: ")
+		sb.WriteString("Existing context (fold it into the summary): ")
 		sb.WriteString(existingSummary)
 		sb.WriteString("\n")
 	}
@@ -371,38 +438,13 @@ func (m *defaultContextManager) summarizeBatch(
 	prompt := sb.String()
 
 	response, err := m.retryLLMCall(ctx, agent, prompt, llmMaxRetries)
-	if err == nil && response.Content != "" {
-		return strings.TrimSpace(response.Content), nil
+	if err != nil {
+		return "", err
 	}
-
-	var fallback strings.Builder
-	fallback.WriteString("Conversation summary: ")
-	for i, msg := range batch {
-		if i > 0 {
-			fallback.WriteString(" | ")
-		}
-		content := strings.TrimSpace(msg.Content)
-		runes := []rune(content)
-		if len(runes) == 0 {
-			fallback.WriteString(fmt.Sprintf("%s: ", msg.Role))
-			continue
-		}
-
-		keepLength := len(runes) * fallbackMaxContentPercent / 100
-		if keepLength < fallbackMinContentLength {
-			keepLength = fallbackMinContentLength
-		}
-		if keepLength > len(runes) {
-			keepLength = len(runes)
-		}
-
-		content = string(runes[:keepLength])
-		if keepLength < len(runes) {
-			content += "..."
-		}
-		fallback.WriteString(fmt.Sprintf("%s: %s", msg.Role, content))
+	if response == nil || strings.TrimSpace(response.Content) == "" {
+		return "", fmt.Errorf("the model returned an empty summary")
 	}
-	return fallback.String(), nil
+	return strings.TrimSpace(response.Content), nil
 }
 
 func (m *defaultContextManager) estimateTokens(messages []providers.Message) int {

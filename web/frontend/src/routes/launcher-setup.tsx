@@ -18,6 +18,10 @@ import {
 
 function LauncherSetupPage() {
   const { t } = useTranslation()
+  // The launcher opens or prints this page with its one-time setup token.
+  const [setupToken] = React.useState(
+    () => new URLSearchParams(globalThis.location?.search).get("token") ?? "",
+  )
   const [password, setPassword] = React.useState("")
   const [confirm, setConfirm] = React.useState("")
   // Field errors show once a submit was attempted, then follow the edits.
@@ -56,9 +60,17 @@ function LauncherSetupPage() {
     }
     setSubmitting(true)
     try {
-      const result = await postLauncherDashboardSetup(password, confirm)
+      const result = await postLauncherDashboardSetup(password, confirm, {
+        setupToken,
+      })
       if (!result.ok) {
-        setError(result.error)
+        setError(
+          result.status === 403
+            ? t("launcherSetup.errorToken")
+            : result.status === 409
+              ? t("launcherSetup.errorAlreadySet")
+              : result.error,
+        )
         setSubmitting(false)
         return
       }

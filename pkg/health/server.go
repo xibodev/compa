@@ -14,13 +14,14 @@ import (
 )
 
 type Server struct {
-	server     *http.Server
-	mu         sync.RWMutex
-	ready      bool
-	checks     map[string]Check
-	startTime  time.Time
-	reloadFunc func() error
-	authToken  string // optional bearer token for protected endpoints
+	server       *http.Server
+	mu           sync.RWMutex
+	ready        bool
+	checks       map[string]Check
+	startTime    time.Time
+	reloadFunc   func() error
+	shutdownFunc func()
+	authToken    string // optional bearer token for protected endpoints
 }
 
 type Check struct {
@@ -49,6 +50,7 @@ func NewServer(host string, port int, token string) *Server {
 	mux.HandleFunc("/health", s.healthHandler)
 	mux.HandleFunc("/ready", s.readyHandler)
 	mux.HandleFunc("/reload", s.reloadHandler)
+	mux.HandleFunc("/shutdown", s.shutdownHandler)
 
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	s.server = &http.Server{
@@ -165,6 +167,53 @@ func (s *Server) reloadHandler(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "reload triggered"})
 }
 
+// SetShutdownFunc sets the callback POST /shutdown runs: the same graceful
+// shutdown a SIGTERM starts. Windows has no SIGTERM to send a process, so the
+// launcher asks through this endpoint before it resorts to killing.
+func (s *Server) SetShutdownFunc(fn func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.shutdownFunc = fn
+}
+
+// shutdownHandler answers POST /shutdown, then starts the shutdown. Unlike
+// /reload it always requires the bearer token: without one configured it
+// refuses.
+func (s *Server) shutdownHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "method not allowed, use POST"})
+		return
+	}
+
+	s.mu.RLock()
+	requiredToken := s.authToken
+	shutdownFunc := s.shutdownFunc
+	s.mu.RUnlock()
+
+	given := extractBearerToken(r.Header.Get("Authorization"))
+	if requiredToken == "" || given == "" || subtle.ConstantTimeCompare([]byte(given), []byte(requiredToken)) != 1 {
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "unauthorized"})
+		return
+	}
+	if shutdownFunc == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "shutdown not configured"})
+		return
+	}
+
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "shutting down"})
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+	// The shutdown stops this server, which waits for this request, so it
+	// must not run inside the handler.
+	go shutdownFunc()
+}
+
 func (s *Server) healthHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -225,12 +274,14 @@ type HandlerMux interface {
 	HandleFunc(pattern string, handler func(http.ResponseWriter, *http.Request))
 }
 
-// RegisterOnMux registers /health, /ready and /reload handlers onto the given mux.
-// This allows the health endpoints to be served by a shared HTTP server.
+// RegisterOnMux registers /health, /ready, /reload and /shutdown handlers onto
+// the given mux. This allows the health endpoints to be served by a shared
+// HTTP server.
 func (s *Server) RegisterOnMux(mux HandlerMux) {
 	mux.HandleFunc("/health", s.healthHandler)
 	mux.HandleFunc("/ready", s.readyHandler)
 	mux.HandleFunc("/reload", s.reloadHandler)
+	mux.HandleFunc("/shutdown", s.shutdownHandler)
 }
 
 func statusString(ok bool) string {

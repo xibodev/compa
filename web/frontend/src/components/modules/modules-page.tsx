@@ -1,5 +1,5 @@
 import * as React from "react"
-import { useTranslation } from "react-i18next"
+import { Trans, useTranslation } from "react-i18next"
 
 import {
   type CapabilityView,
@@ -40,8 +40,8 @@ import { Input } from "@/components/ui/input"
  *     different approval decisions, and collapsing them is how an unpriced
  *     provider call looks safe.
  *   - what a module DECLARED it may need is shown as a request, not a grant.
- *     Installing a module grants it nothing; the host authorizes per
- *     invocation.
+ *     A module runs under the user's account; the host names roots per
+ *     invocation but does not confine the process to them.
  */
 export function ModulesPage() {
   const { t } = useTranslation()
@@ -122,16 +122,14 @@ export function ModulesPage() {
       <div className="flex flex-col gap-6 p-4 md:p-6">
         <section className="flex flex-col gap-2">
           <p className="text-muted-foreground text-sm">
-            Modules are separate programs that add capabilities to the agent.
-            Installing one grants it nothing by itself — the host supplies
-            filesystem access and executables for each call, and anything with
-            an unknown cost needs your approval before it runs.
+            {t("pages.agent.modules.intro")}
           </p>
           <div className="flex gap-2">
             <Input
               value={installPath}
               onChange={(e) => setInstallPath(e.target.value)}
-              placeholder="Path to a module executable"
+              placeholder={t("pages.agent.modules.install_placeholder")}
+              aria-label={t("pages.agent.modules.install_placeholder")}
               disabled={busy}
               onKeyDown={(e) => {
                 if (e.key === "Enter") void handleInstall()
@@ -141,14 +139,14 @@ export function ModulesPage() {
               onClick={() => void handleInstall()}
               disabled={busy || !installPath.trim()}
             >
-              Install
+              {t("pages.agent.modules.install")}
             </Button>
             <Button
               variant="outline"
               onClick={() => void refresh()}
               disabled={busy}
             >
-              Refresh
+              {t("pages.agent.modules.refresh")}
             </Button>
           </div>
           {error && (
@@ -159,26 +157,23 @@ export function ModulesPage() {
         </section>
 
         {loading && (
-          <p className="text-muted-foreground text-sm">Discovering modules…</p>
+          <p className="text-muted-foreground text-sm">
+            {t("pages.agent.modules.discovering")}
+          </p>
         )}
 
         {!loading && modules.length === 0 && (
           <div className="text-muted-foreground flex flex-col gap-1 text-sm">
+            <p>{t("pages.agent.modules.empty")}</p>
             <p>
-              No modules installed. Compa is a local agent on its own — modules
-              are what let it mine past sessions or produce video.
-            </p>
-            <p>
-              Install one by giving the path to its executable above, or by
-              dropping the executable into
               {modulesDir ? (
-                <>
-                  {" "}
-                  <span className="font-mono text-xs">{modulesDir}</span> and
-                  pressing Refresh.
-                </>
+                <Trans
+                  i18nKey="pages.agent.modules.empty_install_dir"
+                  values={{ dir: modulesDir }}
+                  components={{ dir: <span className="font-mono text-xs" /> }}
+                />
               ) : (
-                " the host's modules directory and pressing Refresh."
+                t("pages.agent.modules.empty_install")
               )}
             </p>
           </div>
@@ -202,14 +197,17 @@ export function ModulesPage() {
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Remove module?</AlertDialogTitle>
+            <AlertDialogTitle>
+              {t("pages.agent.modules.remove_title")}
+            </AlertDialogTitle>
             <AlertDialogDescription>
-              Remove “{pendingRemoval}” from Compa? Its stored state is left
-              intact, but its capabilities will no longer be available.
+              {t("pages.agent.modules.remove_description", {
+                id: pendingRemoval,
+              })}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
               onClick={() => {
@@ -218,7 +216,7 @@ export function ModulesPage() {
                 void handleRemove(id)
               }}
             >
-              Remove module
+              {t("pages.agent.modules.remove_confirm")}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -238,6 +236,8 @@ function ModuleCard({
   onSetEnabled: (id: string, enabled: boolean) => void
   busy: boolean
 }) {
+  const { t } = useTranslation()
+
   if (m.error) {
     // A broken module is reported, never hidden: one bad install must not
     // quietly disappear from the list.
@@ -257,9 +257,9 @@ function ModuleCard({
               size="sm"
               onClick={() => onRemove(m.dir!)}
               disabled={busy}
-              title="Remove this broken module. Its stored state is left intact."
+              title={t("pages.agent.modules.remove_broken_hint")}
             >
-              Remove
+              {t("pages.agent.modules.remove")}
             </Button>
           )}
         </header>
@@ -282,14 +282,16 @@ function ModuleCard({
         <div>
           <h2 className="font-mono text-sm font-semibold">{m.module}</h2>
           <p className="text-muted-foreground text-xs">
-            {m.name} · v{m.version} · {m.capabilities.length} capabilities
-            {m.overlays > 0 && ` · ${m.overlays} overlay`}
-            {m.skills > 0 && ` · ${m.skills} skills`}
+            {m.name} · v{m.version} ·{" "}
+            {t("chat.module.capabilities", { count: m.capabilities.length })}
+            {m.overlays > 0 &&
+              ` · ${t("pages.agent.modules.overlays", { count: m.overlays })}`}
+            {m.skills > 0 &&
+              ` · ${t("pages.agent.modules.skills", { count: m.skills })}`}
           </p>
           {m.enabled === false && (
             <p className="text-muted-foreground mt-1 text-xs">
-              Disabled — these capabilities are not offered to the agent.
-              Nothing has been removed.
+              {t("pages.agent.modules.disabled_note")}
             </p>
           )}
         </div>
@@ -304,20 +306,22 @@ function ModuleCard({
             disabled={busy}
             title={
               m.enabled === false
-                ? "Offer this module's capabilities to the agent again."
-                : "Stop offering these capabilities to the agent. Nothing is removed."
+                ? t("pages.agent.modules.enable_hint")
+                : t("pages.agent.modules.disable_hint")
             }
           >
-            {m.enabled === false ? "Enable" : "Disable"}
+            {m.enabled === false
+              ? t("pages.agent.modules.enable")
+              : t("pages.agent.modules.disable")}
           </Button>
           <Button
             variant="outline"
             size="sm"
             onClick={() => onRemove(m.module)}
             disabled={busy}
-            title="Remove the module. Its stored state is left intact."
+            title={t("pages.agent.modules.remove_hint")}
           >
-            Remove
+            {t("pages.agent.modules.remove")}
           </Button>
         </div>
       </header>
@@ -329,22 +333,31 @@ function ModuleCard({
       {diagnosticCount > 0 && (
         <details className="border-border/60 bg-muted/20 rounded-lg border px-3 py-2">
           <summary className="text-muted-foreground hover:text-foreground cursor-pointer text-xs font-medium">
-            {diagnosticCount} setup {diagnosticCount === 1 ? "issue" : "issues"}
+            {t("pages.agent.modules.setup_issues", { count: diagnosticCount })}
           </summary>
           <div className="mt-3 space-y-2">
             {(m.host_warnings ?? []).map((w, i) => (
               <p key={`host-${i}`} className="text-xs text-amber-500">
-                <span className="font-medium">Host:</span> {w}
+                <span className="font-medium">
+                  {t("pages.agent.modules.host_label")}
+                </span>{" "}
+                {w}
               </p>
             ))}
             {m.warnings.map((w, i) => (
               <p key={i} className="text-muted-foreground text-xs">
-                <span className="font-medium">Module:</span> {w}
+                <span className="font-medium">
+                  {t("pages.agent.modules.module_label")}
+                </span>{" "}
+                {w}
               </p>
             ))}
             {unavailableRequirements.map((r, i) => (
               <p key={i} className="text-xs text-amber-500">
-                Missing {r.kind} <span className="font-mono">{r.name}</span>
+                {t("pages.agent.modules.missing_requirement", {
+                  kind: r.kind,
+                })}{" "}
+                <span className="font-mono">{r.name}</span>
                 {r.detail ? ` — ${r.detail}` : ""}
               </p>
             ))}
@@ -354,7 +367,7 @@ function ModuleCard({
 
       <details className="border-border/50 rounded-lg border px-3 py-2">
         <summary className="text-muted-foreground hover:text-foreground cursor-pointer text-xs font-medium">
-          Declared permissions
+          {t("pages.agent.modules.declared_permissions")}
         </summary>
         <div className="mt-2">
           <Declared permissions={m.permissions} />
@@ -376,16 +389,38 @@ function Declared({
 }: {
   permissions: ModuleView["permissions"]
 }) {
+  const { t } = useTranslation()
   const rows: Array<[string, string]> = []
   if (p.filesystem_read.length)
-    rows.push(["reads", p.filesystem_read.join(" ")])
+    rows.push([
+      t("pages.agent.modules.permission_reads"),
+      p.filesystem_read.join(" "),
+    ])
   if (p.filesystem_write.length)
-    rows.push(["writes", p.filesystem_write.join(" ")])
-  if (p.network.length) rows.push(["network", p.network.join(" ")])
-  if (p.credentials.length) rows.push(["credentials", p.credentials.join(" ")])
+    rows.push([
+      t("pages.agent.modules.permission_writes"),
+      p.filesystem_write.join(" "),
+    ])
+  if (p.network.length)
+    rows.push([
+      t("pages.agent.modules.permission_network"),
+      p.network.join(" "),
+    ])
+  if (p.credentials.length)
+    rows.push([
+      t("pages.agent.modules.permission_credentials"),
+      p.credentials.join(" "),
+    ])
   if (p.paid_providers.length)
-    rows.push(["paid providers", p.paid_providers.join(" ")])
-  if (p.publish) rows.push(["publish", "yes"])
+    rows.push([
+      t("pages.agent.modules.permission_paid_providers"),
+      p.paid_providers.join(" "),
+    ])
+  if (p.publish)
+    rows.push([
+      t("pages.agent.modules.permission_publish"),
+      t("pages.agent.modules.permission_yes"),
+    ])
 
   const unresolved = p.subprocess.filter((b) => !b.resolved)
 
@@ -394,7 +429,7 @@ function Declared({
   return (
     <div className="bg-muted/30 rounded-md p-3 text-xs">
       <p className="text-muted-foreground mb-1.5">
-        Declared — what this module may ask for, granted per call:
+        {t("pages.agent.modules.declared_intro")}
       </p>
       <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 font-mono">
         {rows.map(([k, v]) => (
@@ -405,14 +440,20 @@ function Declared({
         ))}
         {p.subprocess.length > 0 && (
           <>
-            <dt className="text-muted-foreground">binaries</dt>
+            <dt className="text-muted-foreground">
+              {t("pages.agent.modules.permission_binaries")}
+            </dt>
             <dd>
-              {p.subprocess.length - unresolved.length}/{p.subprocess.length}{" "}
-              resolved
+              {t("pages.agent.modules.binaries_resolved", {
+                resolved: p.subprocess.length - unresolved.length,
+                total: p.subprocess.length,
+              })}
               {unresolved.length > 0 && (
                 <span className="text-destructive">
-                  {" "}
-                  — missing {unresolved.map((b) => b.name).join(" ")}
+                  {" — "}
+                  {t("pages.agent.modules.binaries_missing", {
+                    names: unresolved.map((b) => b.name).join(" "),
+                  })}
                 </span>
               )}
               {/* Naming them matters: the module picks from this list, and the
@@ -422,18 +463,20 @@ function Declared({
                   for. */}
               {p.subprocess.length - unresolved.length > 0 && (
                 <div className="text-muted-foreground mt-1 text-[11px]">
-                  {p.subprocess
-                    .filter((b) => b.resolved)
-                    .map((b) => b.name)
-                    .join(", ")}
-                  {" — found on this machine. Being found is not being signed"}
-                  {" in: the host cannot check that, so a module may reach for"}
-                  {" one you have not authenticated. Set"}
-                  <code className="bg-muted mx-1 rounded px-1 py-0.5 font-mono">
-                    COMPA_SUBPROCESS_ALLOW
-                  </code>
-                  {"to name the ones you are, and the host will authorize only"}
-                  {" those."}
+                  <Trans
+                    i18nKey="pages.agent.modules.binaries_note"
+                    values={{
+                      names: p.subprocess
+                        .filter((b) => b.resolved)
+                        .map((b) => b.name)
+                        .join(", "),
+                    }}
+                    components={{
+                      code: (
+                        <code className="bg-muted mx-1 rounded px-1 py-0.5 font-mono" />
+                      ),
+                    }}
+                  />
                 </div>
               )}
             </dd>
@@ -451,12 +494,13 @@ function Capability({
   moduleId: string
   capability: CapabilityView
 }) {
+  const { t } = useTranslation()
   const [open, setOpen] = React.useState(false)
   const [input, setInput] = React.useState("{}")
   const [result, setResult] = React.useState<InvokeResult | null>(null)
   const [running, setRunning] = React.useState(false)
 
-  const effects = describeEffects(c)
+  const effects = describeEffects(c, t)
 
   const run = async () => {
     let parsed: unknown
@@ -464,16 +508,19 @@ function Capability({
       parsed = JSON.parse(input || "{}")
     } catch (err) {
       window.alert(
-        `Input is not valid JSON: ${err instanceof Error ? err.message : err}`,
+        t("pages.agent.modules.invalid_input", {
+          error: err instanceof Error ? err.message : String(err),
+        }),
       )
       return
     }
     setRunning(true)
     try {
-      // Running a capability that declares an effect IS the approval, and the
-      // page said so before the click. That is a person acting on what they
-      // were shown -- unlike an approval claim arriving through the agent,
-      // which the host strips.
+      // The approval policy (tools.approval) decides whether this capability
+      // needs approval. When it asks, pressing "Approve and run" IS the
+      // answer, and the page said so before the click. That is a person
+      // acting on what they were shown -- unlike an approval claim arriving
+      // through the agent, which the host strips.
       setResult(
         await invokeCapability(moduleId, c.id, parsed, c.needs_approval),
       )
@@ -488,6 +535,7 @@ function Capability({
     <div className="py-2.5">
       <button
         type="button"
+        aria-expanded={open}
         className="flex w-full items-start justify-between gap-3 text-left"
         onClick={() => setOpen(!open)}
       >
@@ -509,28 +557,34 @@ function Capability({
 
       {open && (
         <div className="mt-2 flex flex-col gap-2">
-          {/* This is the only place a real approval can be given.
-              
-              The host strips approval claims arriving through the agent -- the
-              model was observed minting one from a chat sentence -- so pressing
-              this button is what records consent against the declared effects
-              below. Saying only "running this is your approval" understated it
-              once the click began authorizing a paid provider call. */}
+          {/* Pressing this button is what records consent against the
+              declared effects below; consent claims the model writes itself
+              are stripped by the host. Saying only "running this is your
+              approval" understated it once the click began authorizing a paid
+              provider call. */}
           {c.needs_approval && (
             <div className="rounded border border-amber-500/60 bg-amber-500/5 p-2 text-xs text-amber-500">
-              <p>Declared effects: {effects.join("; ")}.</p>
+              <p>
+                {t("pages.agent.modules.declared_effects", {
+                  effects: effects.join("; "),
+                })}
+              </p>
               <p className="mt-1">
-                Pressing <span className="font-medium">Approve and run</span>{" "}
-                records your approval for this call
-                {!c.cost_known && " and permits it to spend money"}. Approval
-                cannot be given in chat — the agent cannot approve on your
-                behalf.
+                <Trans
+                  i18nKey={
+                    c.cost_known
+                      ? "pages.agent.modules.approval_note"
+                      : "pages.agent.modules.approval_note_cost"
+                  }
+                  components={{ b: <span className="font-medium" /> }}
+                />
               </p>
             </div>
           )}
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
+            aria-label={c.id}
             spellCheck={false}
             rows={4}
             className="border-border/60 bg-muted/20 w-full rounded-md border p-2 font-mono text-xs"
@@ -538,10 +592,10 @@ function Capability({
           <div>
             <Button size="sm" onClick={() => void run()} disabled={running}>
               {running
-                ? "Running…"
+                ? t("pages.agent.modules.running")
                 : c.needs_approval
-                  ? "Approve and run"
-                  : "Run"}
+                  ? t("pages.agent.modules.approve_and_run")
+                  : t("pages.agent.modules.run")}
             </Button>
           </div>
           {result && <Result result={result} />}
@@ -552,6 +606,7 @@ function Capability({
 }
 
 function Result({ result: r }: { result: InvokeResult }) {
+  const { t } = useTranslation()
   const x = r.execution
   return (
     <div
@@ -560,7 +615,10 @@ function Result({ result: r }: { result: InvokeResult }) {
       }`}
     >
       <p className="font-mono">
-        {r.ok ? "OK" : "FAILED"} · {r.duration_ms}ms
+        {r.ok
+          ? t("pages.agent.modules.result_ok")
+          : t("pages.agent.modules.result_failed")}{" "}
+        · {r.duration_ms}ms
       </p>
       {r.error && (
         <p className="text-destructive mt-1 font-mono">
@@ -575,20 +633,20 @@ function Result({ result: r }: { result: InvokeResult }) {
       <p className="mt-0.5 font-mono">
         <span className="text-muted-foreground">cost </span>
         <span className={x.estimated_cost === null ? "text-destructive" : ""}>
-          estimated={formatCost(x.estimated_cost)}
+          estimated={formatCost(x.estimated_cost, t)}
         </span>{" "}
         <span className={x.actual_cost === null ? "text-destructive" : ""}>
-          actual={formatCost(x.actual_cost)}
+          actual={formatCost(x.actual_cost, t)}
         </span>
       </p>
       {r.warnings.map((w, i) => (
         <p key={i} className="mt-0.5 text-amber-500">
-          warning {w}
+          {t("pages.agent.modules.result_warning")} {w}
         </p>
       ))}
       {r.host_warnings.map((w, i) => (
         <p key={i} className="text-destructive mt-0.5">
-          host {w}
+          {t("pages.agent.modules.result_host")} {w}
         </p>
       ))}
       {x.artifacts.map((a) => (
@@ -600,7 +658,11 @@ function Result({ result: r }: { result: InvokeResult }) {
             {a.id} · {a.kind}
           </p>
           <p className="text-muted-foreground break-all">
-            {a.path} (root {a.root}) · {a.bytes} bytes
+            {t("pages.agent.modules.artifact_location", {
+              path: a.path,
+              root: a.root,
+              bytes: a.bytes,
+            })}
           </p>
           <p className="text-muted-foreground break-all">{a.digest}</p>
         </div>
@@ -608,7 +670,7 @@ function Result({ result: r }: { result: InvokeResult }) {
       {r.result !== undefined && r.result !== null && (
         <details className="mt-2">
           <summary className="text-muted-foreground cursor-pointer">
-            result
+            {t("pages.agent.modules.result")}
           </summary>
           <pre className="bg-muted/30 mt-1 max-h-64 overflow-auto rounded p-2 font-mono text-[11px] whitespace-pre-wrap">
             {JSON.stringify(r.result, null, 2).slice(0, 6000)}
@@ -618,7 +680,7 @@ function Result({ result: r }: { result: InvokeResult }) {
       {r.stderr && (
         <details className="mt-1">
           <summary className="text-muted-foreground cursor-pointer">
-            module diagnostics
+            {t("pages.agent.modules.diagnostics")}
           </summary>
           <pre className="bg-muted/30 mt-1 max-h-48 overflow-auto rounded p-2 font-mono text-[11px] whitespace-pre-wrap">
             {r.stderr.slice(0, 4000)}

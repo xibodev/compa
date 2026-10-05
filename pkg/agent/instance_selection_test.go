@@ -147,13 +147,15 @@ func TestProcessInstanceSelectionSkipsAnInstanceWhoseCircuitIsOpen(t *testing.T)
 		{Provider: "openai", Model: "shared", DisplayName: "second/shared", IdentityKey: "provider_instance:second", ConfigKey: "instance_target:second/shared"},
 	}
 	loop := newInstanceSelectionTestLoop(instanceSelectionResolution(candidates, primary, fallback))
-	for range 2 {
+	// A streak of three circuit failures opens the target's circuit; one
+	// failure alone does not hold it back.
+	for range 4 {
 		if _, err := loop.ProcessInstanceSelection(context.Background(), "route", nil, nil, nil, nil); err != nil {
 			t.Fatalf("ProcessInstanceSelection() error = %v", err)
 		}
 	}
-	if primary.chatCalls != 1 || fallback.chatCalls != 2 {
-		t.Fatalf("calls = primary %d, fallback %d; want the failed instance skipped while its circuit is open", primary.chatCalls, fallback.chatCalls)
+	if primary.chatCalls != 3 || fallback.chatCalls != 4 {
+		t.Fatalf("calls = primary %d, fallback %d; want the failed target skipped once its circuit is open", primary.chatCalls, fallback.chatCalls)
 	}
 }
 

@@ -1,5 +1,9 @@
 import * as React from "react"
+import { useTranslation } from "react-i18next"
 
+import { launcherFetch } from "@/api/http"
+
+import type { Artifact } from "./artifact-lines"
 import { parseDelimited } from "./parse-delimited"
 
 /**
@@ -14,26 +18,6 @@ import { parseDelimited } from "./parse-delimited"
  * disagree with what the model was told -- and a card describing something the
  * agent never saw is worse than no card.
  */
-
-const ARTIFACT_MARKER = "@artifact "
-
-export interface Artifact {
-  id: string
-  kind: string
-  path: string
-  root: string
-  media_type: string
-  /** The primitive the module asked for. Advisory only: the host resolves it
-   *  and sends its decision as `primitive`. Kept for provenance. */
-  presentation?: string
-  /** How the HOST decided this renders, resolved through internal/view. This
-   *  is the field the cockpit draws from. */
-  primitive?: string
-  bytes: number
-  digest: string
-  title?: string
-  module: string
-}
 
 /**
  * Primitives the host knows how to draw, mirroring internal/view.
@@ -59,8 +43,19 @@ type Primitive =
   | "download"
 
 const KNOWN: ReadonlySet<string> = new Set([
-  "video", "audio", "image", "image_grid", "timeline", "document",
-  "diagram", "slides", "table", "markdown", "text", "json", "download",
+  "video",
+  "audio",
+  "image",
+  "image_grid",
+  "timeline",
+  "document",
+  "diagram",
+  "slides",
+  "table",
+  "markdown",
+  "text",
+  "json",
+  "download",
 ])
 
 /**
@@ -80,35 +75,6 @@ function resolvePrimitive(a: Artifact): Primitive {
   return "download"
 }
 
-/** Extracts artefact lines from assistant text, returning the cleaned text. */
-export function extractArtifacts(content: string): {
-  text: string
-  artifacts: Artifact[]
-} {
-  if (!content.includes(ARTIFACT_MARKER)) {
-    return { text: content, artifacts: [] }
-  }
-
-  const artifacts: Artifact[] = []
-  const kept: string[] = []
-
-  for (const line of content.split("\n")) {
-    const trimmed = line.trim()
-    if (trimmed.startsWith(ARTIFACT_MARKER)) {
-      try {
-        artifacts.push(JSON.parse(trimmed.slice(ARTIFACT_MARKER.length)))
-        continue
-      } catch {
-        // A malformed line stays in the text rather than vanishing: showing
-        // something odd beats silently dropping what a module reported.
-      }
-    }
-    kept.push(line)
-  }
-
-  return { text: kept.join("\n").trim(), artifacts }
-}
-
 function artifactURL(a: Artifact): string {
   const params = new URLSearchParams({
     module: a.module,
@@ -125,6 +91,7 @@ function formatBytes(n: number): string {
 }
 
 export function ArtifactCard({ artifact: a }: { artifact: Artifact }) {
+  const { t } = useTranslation()
   const primitive = resolvePrimitive(a)
   const url = artifactURL(a)
   const [showText, setShowText] = React.useState(false)
@@ -144,7 +111,7 @@ export function ArtifactCard({ artifact: a }: { artifact: Artifact }) {
   // A card whose artefact the host refuses says so instead of looking verified.
   React.useEffect(() => {
     let cancelled = false
-    fetch(url, { method: "HEAD" })
+    launcherFetch(url, { method: "HEAD" })
       .then((res) => {
         if (!cancelled) setReachable(res.ok)
       })
@@ -162,11 +129,17 @@ export function ArtifactCard({ artifact: a }: { artifact: Artifact }) {
       return
     }
     try {
-      const res = await fetch(url)
+      const res = await launcherFetch(url)
+      // An error page is not the artefact's contents.
+      if (!res.ok) throw new Error(String(res.status))
       setText(await res.text())
       setShowText(true)
     } catch (err) {
-      setText(`could not read artefact: ${err instanceof Error ? err.message : err}`)
+      setText(
+        t("chat.artifact.readFailed", {
+          error: err instanceof Error ? err.message : String(err),
+        }),
+      )
       setShowText(true)
     }
   }
@@ -176,8 +149,7 @@ export function ArtifactCard({ artifact: a }: { artifact: Artifact }) {
       <div className="border-destructive/60 bg-destructive/5 my-2 rounded-lg border p-3">
         <p className="text-sm font-medium">{a.title || a.id}</p>
         <p className="text-muted-foreground mt-1 text-xs">
-          The host will not serve this artefact. It was described in the reply but
-          is not something this host produced or can vouch for.
+          {t("chat.artifact.notServed")}
         </p>
       </div>
     )
@@ -197,7 +169,7 @@ export function ArtifactCard({ artifact: a }: { artifact: Artifact }) {
           download
           className="text-muted-foreground hover:text-foreground shrink-0 text-xs underline"
         >
-          Download
+          {t("chat.artifact.download")}
         </a>
       </div>
 
@@ -205,7 +177,9 @@ export function ArtifactCard({ artifact: a }: { artifact: Artifact }) {
         {primitive === "video" && (
           <video src={url} controls className="max-h-96 w-full rounded" />
         )}
-        {primitive === "audio" && <audio src={url} controls className="w-full" />}
+        {primitive === "audio" && (
+          <audio src={url} controls className="w-full" />
+        )}
         {primitive === "image" && (
           <img src={url} alt={a.title || a.id} className="max-h-96 rounded" />
         )}
@@ -214,7 +188,11 @@ export function ArtifactCard({ artifact: a }: { artifact: Artifact }) {
             rendered as what it is. */}
         {primitive === "diagram" &&
           (isDrawableImage(a.media_type) ? (
-            <img src={url} alt={a.title || a.id} className="max-h-96 rounded bg-white p-2" />
+            <img
+              src={url}
+              alt={a.title || a.id}
+              className="max-h-96 rounded bg-white p-2"
+            />
           ) : (
             <>
               <button
@@ -222,7 +200,9 @@ export function ArtifactCard({ artifact: a }: { artifact: Artifact }) {
                 onClick={() => void loadText()}
                 className="text-muted-foreground hover:text-foreground text-xs underline"
               >
-                {showText ? "Hide" : "Show"} diagram source
+                {showText
+                  ? t("chat.artifact.hideDiagramSource")
+                  : t("chat.artifact.showDiagramSource")}
               </button>
               {showText && (
                 <pre className="bg-muted/40 mt-1.5 max-h-72 overflow-auto rounded p-2 font-mono text-[11px] whitespace-pre-wrap">
@@ -231,20 +211,23 @@ export function ArtifactCard({ artifact: a }: { artifact: Artifact }) {
               )}
             </>
           ))}
-        {/* PDF renders inline; the office document formats do not, whatever
-            type is supplied. The media_type here is the MODULE's claim, and an
-            <object> built on a claim the bytes do not match renders nothing
-            with no error -- so the inline viewer is used only where it works. */}
+        {/* A PDF opens in its own tab. The host serves artefacts under a
+            sandboxing CSP, which keeps an embedded <object> from showing it;
+            the office document formats have no browser viewer at all. The
+            media_type here is the MODULE's claim, so only PDF gets the link. */}
         {primitive === "document" &&
           (isInlineDocument(a.media_type) ? (
-            <object data={url} type={a.media_type} className="h-96 w-full rounded">
-              <a href={url} className="text-xs underline">
-                Open document
-              </a>
-            </object>
+            <a
+              href={url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-muted-foreground hover:text-foreground text-xs underline"
+            >
+              {t("chat.artifact.openDocument")}
+            </a>
           ) : (
             <p className="text-muted-foreground text-xs">
-              This document format has no inline viewer. Use Download to open it.
+              {t("chat.artifact.noDocumentViewer")}
             </p>
           ))}
         {(primitive === "json" ||
@@ -256,7 +239,9 @@ export function ArtifactCard({ artifact: a }: { artifact: Artifact }) {
               onClick={() => void loadText()}
               className="text-muted-foreground hover:text-foreground text-xs underline"
             >
-              {showText ? "Hide" : "Show"} contents
+              {showText
+                ? t("chat.artifact.hideContents")
+                : t("chat.artifact.showContents")}
             </button>
             {showText && (
               <pre className="bg-muted/40 mt-1.5 max-h-72 overflow-auto rounded p-2 font-mono text-[11px] whitespace-pre-wrap">
@@ -274,7 +259,9 @@ export function ArtifactCard({ artifact: a }: { artifact: Artifact }) {
               onClick={() => void loadText()}
               className="text-muted-foreground hover:text-foreground text-xs underline"
             >
-              {showText ? "Hide" : "Show"} table
+              {showText
+                ? t("chat.artifact.hideTable")
+                : t("chat.artifact.showTable")}
             </button>
             {showText && <DelimitedTable source={text} />}
           </>
@@ -287,7 +274,7 @@ export function ArtifactCard({ artifact: a }: { artifact: Artifact }) {
             so and keep the file reachable. */}
         {primitive === "slides" && (
           <p className="text-muted-foreground text-xs">
-            Slide decks have no inline viewer yet. Use Download to open this one.
+            {t("chat.artifact.noSlidesViewer")}
           </p>
         )}
         {/* The toggle loads the artefact and renders its time ranges. */}
@@ -298,14 +285,16 @@ export function ArtifactCard({ artifact: a }: { artifact: Artifact }) {
               onClick={() => void loadText()}
               className="text-muted-foreground hover:text-foreground text-xs underline"
             >
-              {showText ? "Hide" : "Show"} time ranges
+              {showText
+                ? t("chat.artifact.hideTimeRanges")
+                : t("chat.artifact.showTimeRanges")}
             </button>
             {showText && <Timeline source={text} />}
           </>
         )}
         {primitive === "download" && (
           <p className="text-muted-foreground text-xs">
-            This file type has no inline viewer. Use Download to open it.
+            {t("chat.artifact.noViewer")}
           </p>
         )}
       </div>
@@ -322,7 +311,10 @@ export function ArtifactCard({ artifact: a }: { artifact: Artifact }) {
           
           So the exposure is presentation, not access, and the honest fix is to
           stop the card implying a verification it cannot perform. */}
-      <p className="text-muted-foreground mt-2 truncate font-mono text-[10px]" title={a.digest}>
+      <p
+        className="text-muted-foreground mt-2 truncate font-mono text-[10px]"
+        title={a.digest}
+      >
         {a.digest}
       </p>
     </div>
@@ -453,7 +445,9 @@ function numberOf(row: Record<string, unknown>, keys: string[]): number | null {
 
 /** SVG is the one diagram format a browser can draw directly. */
 function isDrawableImage(mediaType: string): boolean {
-  return (mediaType || "").toLowerCase().split(";")[0].trim() === "image/svg+xml"
+  return (
+    (mediaType || "").toLowerCase().split(";")[0].trim() === "image/svg+xml"
+  )
 }
 
 /** Formats a browser renders inline in an <object>. Office formats do not. */

@@ -24,6 +24,14 @@ func (al *AgentLoop) handleCommand(
 	if !commands.HasCommandPrefix(msg.Content) {
 		return "", false
 	}
+	// The owner's answer to an approval request; only the owner's counts.
+	if reply, handled := al.approvalReply(ctx, msg); handled {
+		return reply, true
+	}
+	if !al.commandsAllowed(ctx, msg) {
+		logCommandRefused(ctx, msg)
+		return "", false
+	}
 
 	if matched, handled, reply := al.applyExplicitSkillCommand(msg.Content, agent, opts); matched {
 		return reply, handled
@@ -244,10 +252,10 @@ func (al *AgentLoop) buildCommandsRuntime(
 			return toolInfos, nil
 		},
 		GetEnabledChannels: func() []string {
-			if al.channelManager == nil {
+			if al.currentChannelManager() == nil {
 				return nil
 			}
-			return al.channelManager.GetEnabledChannels()
+			return al.currentChannelManager().GetEnabledChannels()
 		},
 		GetActiveTurn: func() any {
 			if opts == nil {
@@ -259,11 +267,11 @@ func (al *AgentLoop) buildCommandsRuntime(
 			}
 			return info
 		},
-		SwitchChannel: func(value string) error {
-			if al.channelManager == nil {
+		CheckChannel: func(value string) error {
+			if al.currentChannelManager() == nil {
 				return fmt.Errorf("channel manager not initialized")
 			}
-			if _, exists := al.channelManager.GetChannel(value); !exists && value != "cli" {
+			if _, exists := al.currentChannelManager().GetChannel(value); !exists && value != "cli" {
 				return fmt.Errorf("channel '%s' not found or not enabled", value)
 			}
 			return nil
@@ -298,7 +306,7 @@ func (al *AgentLoop) buildCommandsRuntime(
 			// metadata (runAgentLoop records it per turn), so record it here to
 			// let the ContextManager resolve which agent owns the session.
 			ensureSessionMetadata(agent.Sessions, opts.Dispatch.SessionKey, opts.Dispatch.SessionScope)
-			return al.contextManager.Clear(ctx, opts.Dispatch.SessionKey)
+			return al.currentContextManager().Clear(ctx, opts.Dispatch.SessionKey)
 		}
 
 		rt.AskSideQuestion = func(ctx context.Context, question string) (string, error) {

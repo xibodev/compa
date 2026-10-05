@@ -93,13 +93,9 @@ func TestTheSameModuleDeclaredHonestlyConforms(t *testing.T) {
 	}
 }
 
-// A conforming module's gate then answers per invocation, using the same
-// declaration that just passed conformance.
-//
-// The two halves are tested together here because they are only sound as a
-// pair: conformance guarantees the capability is no weaker than its Operation,
-// which is what makes it safe for the gate to read capability effects alone.
-func TestConformanceAndTheGateComposeOnOneRealDeclaration(t *testing.T) {
+// A conforming real-world declaration passes conformance, so discovery
+// registers it.
+func TestAConformingDeclarationIsAccepted(t *testing.T) {
 	raw := []byte(`{
 	  "protocol": "xibodev.module/v2",
 	  "contract_version": "xibodev.module/v2",
@@ -121,18 +117,10 @@ func TestConformanceAndTheGateComposeOnOneRealDeclaration(t *testing.T) {
 		t.Fatal(err)
 	}
 	if conf := CheckHostConformance(*dec.V2); !conf.Conforms() {
-		t.Fatalf("setup module does not conform:\n%s", conf.Refusal())
+		t.Fatalf("a conforming module was refused:\n%s", conf.Refusal())
 	}
-
-	d := dec.V2.Descriptor()
-	c := &d.Capabilities[0]
-
-	if !NeedsApprovalV2(d, c, map[string]any{"kind": "tutorial"}).Required {
-		t.Error("a charging invocation was not gated")
-	}
-	if NeedsApprovalV2(d, c, map[string]any{"kind": "retrieval_pack"}).Required {
-		t.Error("a free invocation was gated, so section 3a's benefit does not" +
-			" survive to the host")
+	if refusal := v2Refusal(evaluateV2(raw)); refusal != "" {
+		t.Fatalf("a conforming module would not be registered: %s", refusal)
 	}
 }
 

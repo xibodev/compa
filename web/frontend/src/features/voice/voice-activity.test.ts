@@ -5,7 +5,8 @@ import { createVoiceActivityDetector } from "./voice-activity"
 describe("voice activity detector", () => {
   it("completes after sustained speech followed by silence", () => {
     const update = createVoiceActivityDetector()
-    for (let elapsed = 0; elapsed < 600; elapsed += 50) update(0.003, elapsed, 50)
+    for (let elapsed = 0; elapsed < 600; elapsed += 50)
+      update(0.003, elapsed, 50)
     for (let elapsed = 600; elapsed < 1200; elapsed += 50)
       update(0.08, elapsed, 50)
     let state = "waiting"

@@ -30,22 +30,10 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
+import { safeExternalURL } from "@/lib/safe-url"
 
 const errorText = (cause: unknown, fallback: string) =>
   cause instanceof Error && cause.message ? cause.message : fallback
-
-/** Returns url if it is an http(s) address, so a link from the daemon can never run script. */
-function safeExternalURL(url: string | undefined): string | undefined {
-  if (!url) return undefined
-  try {
-    const parsed = new URL(url)
-    return parsed.protocol === "https:" || parsed.protocol === "http:"
-      ? parsed.href
-      : undefined
-  } catch {
-    return undefined
-  }
-}
 
 interface ExtensionProviderActionsProps {
   provider: ExtensionProvider

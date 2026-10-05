@@ -11,7 +11,9 @@
 // body's Read with that error. The client unwraps the *url.Error http.Client
 // adds, so errors.As finds the core error. Once the request's context ends,
 // the error is the context's, so cancellation stays distinct from a provider
-// failure.
+// failure. A stream that sends nothing within FirstFrameTimeout fails as a
+// transport timeout, and closing a stream's body interrupts a Read waiting
+// on it.
 package coretransport
 
 import (
@@ -24,6 +26,7 @@ import (
 	"net/http"
 	"strconv"
 	"sync"
+	"time"
 
 	core "github.com/xibodev/llmgw-core"
 	"github.com/xibodev/llmgw-core/translation"
@@ -34,12 +37,40 @@ import (
 // is always current.
 type CredentialSource func(ctx context.Context) (*core.Credential, error)
 
+// CredentialRefresher returns the credential to use instead of rejected,
+// which the upstream refused with 401, such as a refreshed OAuth token.
+type CredentialRefresher func(ctx context.Context, rejected *core.Credential) (*core.Credential, error)
+
 // Transport sends surface requests to one core provider.
 type Transport struct {
 	// Provider serves the requests.
 	Provider core.Provider
 	// Credential returns each request's credential. Nil sends none.
 	Credential CredentialSource
+	// Refresh, when set, replaces a credential other than an API key that
+	// the upstream rejected with 401, and the request is sent once more
+	// with the new one. A stream is sent again only while none of it has
+	// been delivered.
+	Refresh CredentialRefresher
+	// FirstFrameTimeout bounds the wait for a stream's first frame; zero
+	// uses DefaultFirstFrameTimeout.
+	FirstFrameTimeout time.Duration
+	// CloseIdle, when set, closes the idle connections of the provider's
+	// HTTP client (see CloseIdleConnections).
+	CloseIdle func()
+}
+
+// DefaultFirstFrameTimeout is how long a stream may take to send its first
+// frame before the request fails.
+const DefaultFirstFrameTimeout = 2 * time.Minute
+
+// CloseIdleConnections closes the idle connections of the provider's HTTP
+// client, so a client of t that is no longer used holds none open.
+// http.Client.CloseIdleConnections calls it.
+func (t *Transport) CloseIdleConnections() {
+	if t.CloseIdle != nil {
+		t.CloseIdle()
+	}
 }
 
 // maxRequestBody bounds how much of a surface request the transport buffers.
@@ -95,6 +126,10 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 	if !probe.Stream {
 		response, err := t.Provider.Invoke(ctx, request)
+		if retry, ok := t.refreshed(ctx, request, err); ok {
+			request = retry
+			response, err = t.Provider.Invoke(ctx, request)
+		}
 		if err != nil {
 			return nil, failure(ctx, err)
 		}
@@ -105,9 +140,13 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return newResponse(req, http.StatusOK, contentType, io.NopCloser(bytes.NewReader(response.Body))), nil
 	}
 
-	stream, err := t.Provider.Stream(ctx, request)
+	stream, replay, err := t.openStream(ctx, request)
+	if retry, ok := t.refreshed(ctx, request, err); ok {
+		request = retry
+		stream, replay, err = t.openStream(ctx, request)
+	}
 	if err != nil {
-		if surface != core.ModelSurfaceChatCompletions || !replayable(t.Provider, request.Model, err) {
+		if !replay {
 			return nil, failure(ctx, err)
 		}
 		// The provider serves Chat Completions but does not stream it, as
@@ -115,12 +154,59 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		// Responses: answer once and replay it as one chunk.
 		return t.replayAsStream(req, request)
 	}
-	first, err := stream.Next()
-	if err != nil && !errors.Is(err, io.EOF) {
-		_ = stream.Close()
-		return nil, failure(ctx, err)
+	return newResponse(req, http.StatusOK, "text/event-stream", stream), nil
+}
+
+// openStream opens request's stream and waits for its first frame, at most
+// FirstFrameTimeout, so a stream that stalls before sending anything fails
+// the request instead of holding it, and the request's context ends the wait.
+// replay reports a Chat Completions stream the provider refused to open that
+// one non-streamed answer can stand in for.
+func (t *Transport) openStream(ctx context.Context, request core.Request) (*frameBody, bool, error) {
+	stream, err := t.Provider.Stream(ctx, request)
+	if err != nil {
+		return nil, request.Surface == core.ModelSurfaceChatCompletions && replayable(t.Provider, request.Model, err), err
 	}
-	return newResponse(req, http.StatusOK, "text/event-stream", &frameBody{ctx: ctx, stream: stream, pending: first, done: errors.Is(err, io.EOF)}), nil
+	body := newFrameBody(ctx, stream)
+	timeout := t.FirstFrameTimeout
+	if timeout <= 0 {
+		timeout = DefaultFirstFrameTimeout
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	first, err := body.next(timer.C, timeout)
+	switch {
+	case err == nil:
+		body.pending = first
+	case errors.Is(err, io.EOF):
+		body.done = true
+	case ctx.Err() != nil || isStall(err):
+		// The stream may still be blocked in Next: close it without
+		// waiting for it.
+		go func() { _ = body.Close() }()
+		return nil, false, err
+	default:
+		_ = body.Close()
+		return nil, false, err
+	}
+	return body, false, nil
+}
+
+// refreshed returns request carrying a replacement for its credential when
+// err is the upstream's 401 for a credential Refresh can replace: one that
+// is not an API key.
+func (t *Transport) refreshed(ctx context.Context, request core.Request, err error) (core.Request, bool) {
+	if t.Refresh == nil || err == nil || ctx.Err() != nil || request.Credential == nil ||
+		request.Credential.TokenType == core.TokenTypeAPIKey ||
+		core.ClassifyError(err).StatusCode != http.StatusUnauthorized {
+		return request, false
+	}
+	credential, refreshErr := t.Refresh(ctx, request.Credential)
+	if refreshErr != nil || credential == nil {
+		return request, false
+	}
+	request.Credential = credential
+	return request, true
 }
 
 // replayAsStream invokes request without streaming and returns its Chat
@@ -138,6 +224,9 @@ func (t *Transport) replayAsStream(req *http.Request, request core.Request) (*ht
 	}
 	request.Body = body
 	response, err := t.Provider.Invoke(req.Context(), request)
+	if retry, ok := t.refreshed(req.Context(), request, err); ok {
+		response, err = t.Provider.Invoke(req.Context(), retry)
+	}
 	if err != nil {
 		return nil, failure(req.Context(), err)
 	}
@@ -229,22 +318,45 @@ func unsupported(err error) bool {
 // frameBody is an SSE response body read from a provider stream. Each frame
 // is one complete SSE record; a frame that does not end its record with a
 // blank line gets one, so records never run together.
+//
+// The stream's Next runs on a goroutine of its own, so neither Close nor the
+// end of the request's context waits for a stalled stream: a Read blocked on
+// one returns at once, and Close, which never takes the Read lock, closes the
+// stream, which unblocks its Next.
 type frameBody struct {
-	mu      sync.Mutex
-	ctx     context.Context
-	stream  core.StreamIter
-	pending []byte
-	buffer  []byte
-	done    bool
-	closed  bool
+	ctx    context.Context
+	stream core.StreamIter
+
+	// mu serializes Reads and guards the fields below.
+	mu       sync.Mutex
+	pending  []byte
+	buffer   []byte
+	done     bool
+	err      error            // the error every later Read returns
+	inflight chan frameResult // the Next a Read started, until it returns
+
+	closeOnce sync.Once
+	closed    chan struct{}
+}
+
+type frameResult struct {
+	frame []byte
+	err   error
+}
+
+func newFrameBody(ctx context.Context, stream core.StreamIter) *frameBody {
+	return &frameBody{ctx: ctx, stream: stream, closed: make(chan struct{})}
 }
 
 func (b *frameBody) Read(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	for len(b.buffer) == 0 {
-		if b.closed {
+		if b.isClosed() {
 			return 0, io.ErrClosedPipe
+		}
+		if b.err != nil {
+			return 0, b.err
 		}
 		if b.pending != nil {
 			b.buffer = terminateRecord(b.pending)
@@ -254,14 +366,17 @@ func (b *frameBody) Read(p []byte) (int, error) {
 		if b.done {
 			return 0, io.EOF
 		}
-		frame, err := b.stream.Next()
+		frame, err := b.next(nil, 0)
 		if errors.Is(err, io.EOF) {
 			b.done = true
 			continue
 		}
+		if errors.Is(err, io.ErrClosedPipe) && b.isClosed() {
+			return 0, err
+		}
 		if err != nil {
-			b.done = true
-			return 0, failure(b.ctx, err)
+			b.err = failure(b.ctx, err)
+			return 0, b.err
 		}
 		b.buffer = terminateRecord(frame)
 	}
@@ -270,14 +385,82 @@ func (b *frameBody) Read(p []byte) (int, error) {
 	return n, nil
 }
 
+// next returns the stream's next frame, or an error once the body is closed,
+// the request's context ends, or timeout fires, whichever comes first. A
+// Next still running then is picked up by the following call. mu is held.
+func (b *frameBody) next(timeout <-chan time.Time, after time.Duration) ([]byte, error) {
+	if b.inflight == nil {
+		result := make(chan frameResult, 1)
+		b.inflight = result
+		go func() {
+			frame, err := b.stream.Next()
+			result <- frameResult{frame: frame, err: err}
+		}()
+	}
+	select {
+	case result := <-b.inflight:
+		b.inflight = nil
+		return result.frame, result.err
+	case <-b.closed:
+		return nil, io.ErrClosedPipe
+	case <-b.ctx.Done():
+		return nil, b.ctx.Err()
+	case <-timeout:
+		return nil, stallFailure(after)
+	}
+}
+
+func (b *frameBody) isClosed() bool {
+	select {
+	case <-b.closed:
+		return true
+	default:
+		return false
+	}
+}
+
+// Close closes the stream. Only the first call does, and only it waits for
+// the stream to close: a later one returns at once.
 func (b *frameBody) Close() error {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	if b.closed {
+	first := false
+	b.closeOnce.Do(func() {
+		close(b.closed)
+		first = true
+	})
+	if !first {
 		return nil
 	}
-	b.closed = true
 	return b.stream.Close()
+}
+
+// stallError is the cause of a stream that sent nothing in time. It is a
+// timeout, as a net.Error reports one.
+type stallError struct{ after time.Duration }
+
+func (e *stallError) Error() string {
+	return fmt.Sprintf("the provider sent nothing within %s", e.after)
+}
+
+func (e *stallError) Timeout() bool   { return true }
+func (e *stallError) Temporary() bool { return true }
+
+// stallFailure is the failure of a stream that sent nothing within after:
+// a transport failure another try or target may get past.
+func stallFailure(after time.Duration) error {
+	cause := &stallError{after: after}
+	return &core.ProviderError{
+		Message: cause.Error(),
+		Class:   core.ProviderErrorTransport,
+		Classification: core.ProviderErrorClassification{
+			Retryable: true, FailoverEligible: true, CircuitFailure: true,
+		},
+		Cause: cause,
+	}
+}
+
+func isStall(err error) bool {
+	var stall *stallError
+	return errors.As(err, &stall)
 }
 
 func terminateRecord(frame []byte) []byte {

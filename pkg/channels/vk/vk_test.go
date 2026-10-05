@@ -242,11 +242,12 @@ func TestVKChannel_VoiceCapabilities(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
+	// The channel handles neither voice messages nor audio uploads.
 	caps := ch.VoiceCapabilities()
-	if !caps.ASR {
-		t.Error("VoiceCapabilities().ASR should be true")
+	if caps.ASR {
+		t.Error("VoiceCapabilities().ASR should be false")
 	}
-	if !caps.TTS {
-		t.Error("VoiceCapabilities().TTS should be true")
+	if caps.TTS {
+		t.Error("VoiceCapabilities().TTS should be false")
 	}
 }

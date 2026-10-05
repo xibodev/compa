@@ -34,13 +34,6 @@ func switchCommand() Definition {
 					return req.Reply(fmt.Sprintf("Switched model from %s to %s", previous, value))
 				},
 			},
-			{
-				Name:        "channel",
-				Description: "Moved to /check channel",
-				Handler: func(_ context.Context, req Request, _ *Runtime) error {
-					return req.Reply("This command has moved. Please use: /check channel <name>")
-				},
-			},
 		},
 	}
 }

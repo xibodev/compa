@@ -78,6 +78,9 @@ type CompactionEngine struct {
 	condensing     sync.Map // map[int64]struct{} — dedup for async condensed goroutines
 	shutdownCtx    context.Context
 	shutdownCancel context.CancelFunc
+	bgMu           sync.Mutex // guards closed and bg.Add
+	closed         bool
+	bg             sync.WaitGroup // async condensed goroutines
 }
 
 // Assembler handles budget-aware context assembly (defined in short_assembler.go).
@@ -106,23 +109,14 @@ func NewEngine(config Config, completeFn CompleteFn) (*Engine, error) {
 		}
 	}
 
-	db, err := sql.Open("sqlite", config.DBPath)
+	db, err := sql.Open("sqlite", sqliteDSN(config.DBPath))
 	if err != nil {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
-
-	// Configure SQLite for concurrent access
-	if _, err := db.Exec("PRAGMA journal_mode = WAL;"); err != nil {
+	// Ping opens the first connection, so a bad path or pragma fails here.
+	if err := db.Ping(); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("enable WAL: %w", err)
-	}
-	if _, err := db.Exec("PRAGMA busy_timeout = 5000;"); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("set busy_timeout: %w", err)
-	}
-	if _, err := db.Exec("PRAGMA synchronous = NORMAL;"); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("set synchronous: %w", err)
+		return nil, fmt.Errorf("open db: %w", err)
 	}
 
 	if err := runSchema(db); err != nil {
@@ -149,6 +143,21 @@ func NewEngine(config Config, completeFn CompleteFn) (*Engine, error) {
 		ignorePatterns:    compileSessionPatterns(ignorePatterns),
 		statelessPatterns: compileSessionPatterns(config.StatelessSessionPatterns),
 	}, nil
+}
+
+// sqliteDSN adds the connection settings to the database path. database/sql
+// pools connections, and a PRAGMA run with db.Exec reaches only one of them,
+// so the settings go in the DSN, which the driver applies to every new
+// connection. _txlock=immediate makes each transaction take the write lock
+// up front: transactions here read and then write, and a deferred one fails
+// with SQLITE_BUSY (which busy_timeout cannot wait out) when another
+// connection commits in between.
+func sqliteDSN(path string) string {
+	return path + "?_pragma=busy_timeout(5000)" +
+		"&_pragma=journal_mode(WAL)" +
+		"&_pragma=synchronous(NORMAL)" +
+		"&_pragma=foreign_keys(1)" +
+		"&_txlock=immediate"
 }
 
 // compileSessionPattern converts a glob pattern to a compiled regex.
@@ -301,9 +310,13 @@ func (e *Engine) Ingest(ctx context.Context, sessionKey string, messages []Messa
 
 // Close releases resources.
 func (e *Engine) Close() error {
-	// Signal compaction goroutines to stop
-	if e.compaction != nil {
-		e.compaction.Close()
+	// Stop compaction goroutines and wait for them, so none of them uses the
+	// database after it is closed.
+	e.compactionMu.Lock()
+	compaction := e.compaction
+	e.compactionMu.Unlock()
+	if compaction != nil {
+		compaction.Close()
 	}
 	if e.store != nil && e.store.db != nil {
 		return e.store.db.Close()

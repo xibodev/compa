@@ -69,6 +69,9 @@ func (m *USBMonitor) Start(ctx context.Context) (<-chan *events.DeviceEvent, err
 
 	go func() {
 		defer close(eventCh)
+		// Reap udevadm on every way out, also when ctx ends the loop early
+		// (CommandContext kills it then), so no zombie process is left.
+		defer func() { _ = cmd.Wait() }()
 		scanner := bufio.NewScanner(stdout)
 		var props map[string]string
 		var action string
@@ -116,7 +119,6 @@ func (m *USBMonitor) Start(ctx context.Context) (<-chan *events.DeviceEvent, err
 		if err := scanner.Err(); err != nil {
 			logger.ErrorCF("devices", "udevadm scan error", map[string]any{"error": err.Error()})
 		}
-		cmd.Wait()
 	}()
 
 	return eventCh, nil

@@ -8,6 +8,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
@@ -71,6 +72,13 @@ type AgentLoop struct {
 
 	// workerSem limits concurrent turn processing workers.
 	workerSem chan struct{}
+	// intake orders a session's messages waiting for transcription.
+	intake sessionIntake
+	// deferred holds other senders' messages waiting for a session's turn.
+	deferred deferredTurns
+	// sessionWork holds each session's context for the sub-agents its turns
+	// start: /stop cancels it.
+	sessionWork sessionWorkContexts
 
 	// activeTurnStates tracks active turns per session to prevent duplicates.
 	activeTurnStates sync.Map
@@ -96,6 +104,55 @@ type AgentLoop struct {
 	// both are replaced together on reload, failover keeping its instance
 	// health.
 	rateLimits *candidateRateLimits
+
+	// lifetime is the context of work the loop starts on its own, such as
+	// connecting MCP servers: it outlives any caller's context, and Close
+	// ends it.
+	lifetime    context.Context
+	endLifetime context.CancelFunc
+
+	// approvals holds the tool calls waiting for the owner's /approve.
+	approvals *ownerApprovals
+	// approvalSeq numbers the asks of the approval policy, for the ids of
+	// their approval events.
+	approvalSeq atomic.Uint64
+	// terminalChat is set when the terminal shows what the loop posts in its
+	// chat (SetTerminalChat).
+	terminalChat atomic.Bool
+}
+
+// lifetimeContext returns the loop's own context (see lifetime).
+func (al *AgentLoop) lifetimeContext() context.Context {
+	if al == nil || al.lifetime == nil {
+		return context.Background()
+	}
+	return al.lifetime
+}
+
+// reportInitError logs a hook or MCP startup failure.
+func (al *AgentLoop) reportInitError(what string, err error) {
+	if err == nil {
+		return
+	}
+	logger.ErrorCF("agent", what+" failed to start; continuing without them",
+		map[string]any{"error": err.Error()})
+}
+
+// initializeExtensions starts the configured hooks and, in the background,
+// the MCP servers. Neither failure stops the loop: a hook or server that
+// fails is logged (see reportInitError) and left out -- an approval hook
+// fails closed -- and MCP tools appear once their servers connect.
+func (al *AgentLoop) initializeExtensions(ctx context.Context) {
+	_ = al.ensureHooksInitialized(ctx)
+	al.startMCPInitialization()
+}
+
+// prepareExtensions makes sure hooks are mounted and MCP servers connected
+// before a turn that does not come through Run, such as a CLI or cron turn.
+// Failures were logged when they happened and don't stop the turn.
+func (al *AgentLoop) prepareExtensions(ctx context.Context) {
+	_ = al.ensureHooksInitialized(ctx)
+	_ = al.ensureMCPInitialized(ctx)
 }
 
 // processOptions configures how a message is processed. Addressing, session
@@ -125,6 +182,11 @@ type continuationTarget struct {
 	SessionKey string
 	Channel    string
 	ChatID     string
+	// AgentID is the agent the session's turns run as, when known.
+	AgentID string
+	// Inbound is the context of the message the session's turn answers:
+	// replies keep its account, topic and the message they answer.
+	Inbound *bus.InboundContext
 }
 
 const (
@@ -148,15 +210,17 @@ const (
 	metadataKeyParentPeerID    = "parent_peer_id"
 )
 
+// Run processes inbound messages until ctx ends or Stop is called, and then
+// returns nil. It returns an error only when it cannot process messages at
+// all. Hooks and MCP servers that fail to start do not stop it: their
+// failures are logged.
 func (al *AgentLoop) Run(ctx context.Context) error {
+	if al.bus == nil {
+		return errors.New("agent loop has no message bus")
+	}
 	al.running.Store(true)
 
-	if err := al.ensureHooksInitialized(ctx); err != nil {
-		return err
-	}
-	if err := al.ensureMCPInitialized(ctx); err != nil {
-		return err
-	}
+	al.initializeExtensions(ctx)
 
 	idleTicker := time.NewTicker(100 * time.Millisecond)
 	defer idleTicker.Stop()
@@ -173,145 +237,7 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 			if !ok {
 				return nil
 			}
-
-			// Resolve the session key for this message
-			sessionKey, agentID, ok := al.resolveSteeringTarget(msg)
-			if !ok {
-				// Non-routable message (e.g., system) — process immediately.
-				// Note: system messages are processed in the main goroutine,
-				// so they block the receive loop but guarantee session serialization.
-				al.processMessageSync(ctx, msg)
-				continue
-			}
-
-			// Atomically claim the session key with a unique placeholder sentinel
-			// to prevent a TOCTOU race where multiple messages for the same session
-			// pass the Load check before either registers.
-			// The placeholder ensures GetActiveTurnBySession() never returns nil
-			// during turn setup. Each placeholder has a unique turnID to prevent
-			// cross-worker cleanup issues.
-			placeholder := &turnState{
-				turnID: makePendingTurnID(sessionKey, al.turnSeq.Add(1)),
-				phase:  TurnPhaseSetup,
-			}
-			if _, loaded := al.activeTurnStates.LoadOrStore(sessionKey, placeholder); loaded {
-				if al.tryHandleStopCommand(ctx, msg, sessionKey) {
-					continue
-				}
-
-				msg = al.prepareInboundMessageForAgent(ctx, msg)
-
-				// Another turn is already active (or reserved) for this session — enqueue
-				// it, keeping the model the message selected for a continuation turn.
-				if err := al.enqueueSteeringMessage(sessionKey, agentID, providers.Message{
-					Role:               "user",
-					Content:            msg.Content,
-					Media:              append([]string(nil), msg.Media...),
-					RequestedSelection: strings.TrimSpace(msg.Context.Raw[bus.MetadataKeyModelSelection]),
-				}); err != nil {
-					logger.WarnCF("agent", "Failed to enqueue steering message",
-						map[string]any{
-							"error":       err.Error(),
-							"channel":     msg.Channel,
-							"chat_id":     msg.ChatID,
-							"session_key": sessionKey,
-						})
-				}
-				continue
-			}
-
-			// Session claimed — spawn a worker goroutine that acquires a semaphore
-			// slot. The goroutine is spawned immediately so the main loop keeps
-			// draining the inbound channel. The goroutine blocks on the semaphore.
-			go func(m bus.InboundMessage, ph *turnState) {
-				var releaseSession bool
-				// Acquire semaphore slot (blocks if at capacity)
-				select {
-				case al.workerSem <- struct{}{}:
-					// Got slot, start worker
-				case <-ctx.Done():
-					// Context canceled while waiting for a slot — clean up the
-					// placeholder to prevent session-level deadlock.
-					al.releaseSessionTurnState(sessionKey, nil)
-					return
-				}
-
-				// Safety-net cleanup: if the placeholder was never replaced by a real
-				// turnState (e.g., error before runTurn), delete it here. When runTurn
-				// completes normally, clearActiveTurn deletes the real turnState and
-				// this becomes a no-op (the key is already gone).
-				defer func() {
-					if releaseSession {
-						// Conditional delete: only remove the entry if it still points
-						// to our placeholder. A new message may have claimed the slot
-						// between the panic and this defer.
-						if actual, ok := al.activeTurnStates.Load(sessionKey); ok {
-							if ts, ok := actual.(*turnState); ok && ts == ph {
-								al.releaseSessionTurnState(sessionKey, ts)
-							}
-						}
-						return
-					}
-					if actual, ok := al.activeTurnStates.Load(sessionKey); ok {
-						if ts, ok := actual.(*turnState); ok && strings.HasPrefix(ts.turnID, pendingTurnPrefix) {
-							// Placeholder still present — runTurn never replaced it.
-							al.releaseSessionTurnState(sessionKey, ts)
-						}
-					}
-				}()
-
-				defer func() {
-					if r := recover(); r != nil {
-						releaseSession = true
-						logger.RecoverPanicNoExit(r)
-						logger.ErrorCF("agent", "Worker goroutine panicked",
-							map[string]any{
-								"session_key": sessionKey,
-								"channel":     m.Channel,
-								"chat_id":     m.ChatID,
-								"panic":       fmt.Sprintf("%v", r),
-							})
-					}
-				}()
-				defer func() { <-al.workerSem }() // Release slot
-
-				if al.channelManager != nil {
-					defer al.channelManager.InvokeTypingStop(m.Channel, m.ChatID)
-				}
-
-				if al.takePendingStop(sessionKey) {
-					al.releaseSessionTurnState(sessionKey, nil)
-					target := &continuationTarget{
-						SessionKey: sessionKey,
-						Channel:    m.Channel,
-						ChatID:     m.ChatID,
-					}
-					continued, continueErr := al.drainQueuedSteeringContinuations(ctx, target)
-					if continueErr != nil {
-						al.maybePublishError(ctx, m.Channel, m.ChatID, sessionKey, continueErr)
-						return
-					}
-					if continued != "" {
-						al.PublishResponseIfNeeded(ctx, target.Channel, target.ChatID, target.SessionKey, continued)
-					}
-					return
-				}
-
-				al.runTurnWithSteering(ctx, m)
-			}(msg, placeholder)
-
-			// TODO: Re-enable media cleanup after inbound media is properly consumed by the agent.
-			// Currently disabled because files are deleted before the LLM can access their content.
-			// defer func() {
-			// 	if al.mediaStore != nil && msg.MediaScope != "" {
-			// 		if releaseErr := al.mediaStore.ReleaseAll(msg.MediaScope); releaseErr != nil {
-			// 			logger.WarnCF("agent", "Failed to release media", map[string]any{
-			// 				"scope": msg.MediaScope,
-			// 				"error": releaseErr.Error(),
-			// 			})
-			// 		}
-			// 	}
-			// }()
+			al.dispatchInbound(ctx, msg)
 		}
 	}
 }
@@ -322,7 +248,12 @@ func (al *AgentLoop) Stop() {
 
 // Close releases resources held by agent session stores. Call after Stop.
 func (al *AgentLoop) Close() {
-	mcpManager := al.mcp.takeManager()
+	// Ending the lifetime aborts MCP servers still connecting, and the new
+	// generation makes such a connection close what it started.
+	if al.endLifetime != nil {
+		al.endLifetime()
+	}
+	mcpManager := al.mcp.reset()
 
 	if mcpManager != nil {
 		if err := mcpManager.Close(); err != nil {
@@ -349,14 +280,7 @@ func (al *AgentLoop) Close() {
 	//
 	// Not every manager holds one: the default manager is a view over the loop
 	// and has nothing to release, so this asks rather than requires.
-	if closer, ok := al.contextManager.(interface{ Close() error }); ok && closer != nil {
-		if err := closer.Close(); err != nil {
-			logger.ErrorCF("agent", "Failed to close context manager",
-				map[string]any{
-					"error": err.Error(),
-				})
-		}
-	}
+	closeContextManager(al.currentContextManager())
 
 	al.GetRegistry().Close()
 	if al.hooks != nil {
@@ -445,6 +369,7 @@ func (al *AgentLoop) ReloadProviderAndConfig(
 	al.mu.Lock()
 	oldRegistry := al.registry
 	oldEvolution := al.evolution
+	oldCfg := al.cfg
 
 	// Store new values
 	al.cfg = cfg
@@ -456,14 +381,14 @@ func (al *AgentLoop) ReloadProviderAndConfig(
 
 	al.mu.Unlock()
 	al.refreshRuntimeEventLogger(cfg)
+	// The new agents need the context manager's tools, and changed context
+	// manager settings a new manager.
+	replacedContextManager := al.reloadContextManager(oldCfg, cfg)
 
 	oldMCPManager := al.mcp.reset()
 	al.hookRuntime.reset(al)
 	configureHookManagerFromConfig(al.hooks, cfg)
-	if err := al.ensureHooksInitialized(ctx); err != nil {
-		logger.WarnCF("agent", "Configured hooks failed to reinitialize after reload",
-			map[string]any{"error": err.Error()})
-	}
+	_ = al.ensureHooksInitialized(ctx)
 	if oldMCPManager != nil {
 		if err := oldMCPManager.Close(); err != nil {
 			logger.WarnCF("agent", "Failed to close previous MCP manager during reload",
@@ -476,15 +401,21 @@ func (al *AgentLoop) ReloadProviderAndConfig(
 				map[string]any{"error": err.Error()})
 		}
 	}
-	if err := al.ensureMCPInitialized(ctx); err != nil {
-		logger.WarnCF("agent", "MCP failed to reinitialize after reload",
-			map[string]any{"error": err.Error()})
-	}
+	// The new config's MCP servers connect in the background, on the loop's
+	// lifetime: ctx ends as soon as the reload returns.
+	al.startMCPInitialization()
 
 	// Close the previous agents' providers the new ones do not share, after
 	// releasing the lock (so readers are not blocked) and once in-flight
 	// requests drain.
 	al.closeReloadedProviders(ctx, oldRegistry.providerMap(), registry.providerMap())
+	// Turns that started before the reload had the replaced manager; one
+	// that holds resources closes once their requests drain, like the
+	// providers above.
+	if _, holds := replacedContextManager.(interface{ Close() error }); holds {
+		al.waitForActiveRequests(ctx, providerReloadGracePeriod)
+		closeContextManager(replacedContextManager)
+	}
 
 	fields := map[string]any{"model": cfg.Agents.Defaults.GetModelName()}
 	if agent := registry.GetDefaultAgent(); agent != nil && !agent.hasModel() {
@@ -522,8 +453,14 @@ func (al *AgentLoop) runAgentLoop(
 			)
 		}
 	}
+	al.recordOwnerChat(ctx, opts.Dispatch.InboundContext)
 
 	ensureSessionMetadata(agent.Sessions, opts.Dispatch.SessionKey, opts.Dispatch.SessionScope)
+
+	// The turn runs on the agent's model as it is now; a /switch model takes
+	// effect on the next turn.
+	agent, releaseModel, _ := agent.turnSnapshot()
+	defer releaseModel()
 
 	turnScope := al.newTurnEventScope(
 		agent.ID,
@@ -531,6 +468,10 @@ func (al *AgentLoop) runAgentLoop(
 		newTurnContext(opts.Dispatch.InboundContext, opts.Dispatch.RouteResult, opts.Dispatch.SessionScope),
 	)
 	ts := newTurnState(agent, opts, turnScope)
+	// The turn's sub-agents run at most max_concurrent at once, and a hard
+	// abort of the turn stops them (see Finish).
+	ts.concurrencySem = make(chan struct{}, al.getSubTurnConfig().maxConcurrent)
+	ts.al = al
 	pipeline := NewPipeline(al)
 	result, err := al.runTurn(ctx, ts, pipeline)
 	if err != nil {
@@ -538,16 +479,6 @@ func (al *AgentLoop) runAgentLoop(
 	}
 	if result.status == TurnEndStatusAborted {
 		return "", nil
-	}
-
-	for _, followUp := range result.followUps {
-		if pubErr := al.bus.PublishInbound(ctx, followUp); pubErr != nil {
-			logger.WarnCF("agent", "Failed to publish follow-up after turn",
-				map[string]any{
-					"turn_id": ts.turnID,
-					"error":   pubErr.Error(),
-				})
-		}
 	}
 
 	if opts.SendResponse && result.finalContent != "" {
@@ -588,14 +519,16 @@ func (al *AgentLoop) runAgentLoop(
 	}
 
 	if result.finalContent != "" {
-		responsePreview := utils.Truncate(result.finalContent, 120)
-		logger.InfoCF("agent", fmt.Sprintf("Response: %s", responsePreview),
+		// Replies hold what people read: INFO records only their size.
+		logger.InfoCF("agent", "Response ready",
 			map[string]any{
 				"agent_id":     agent.ID,
 				"session_key":  opts.Dispatch.SessionKey,
 				"iterations":   ts.currentIteration(),
 				"final_length": len(result.finalContent),
 			})
+		logger.DebugCF("agent", "Response preview",
+			map[string]any{"preview": utils.Truncate(result.finalContent, 120)})
 	}
 
 	return result.finalContent, nil

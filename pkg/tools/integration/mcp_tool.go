@@ -8,13 +8,16 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/xibodev/compa/pkg/approval"
 	runtimeevents "github.com/xibodev/compa/pkg/events"
 	"github.com/xibodev/compa/pkg/logger"
+	mcpclient "github.com/xibodev/compa/pkg/mcp"
 	"github.com/xibodev/compa/pkg/media"
 	toolshared "github.com/xibodev/compa/pkg/tools/shared"
 )
@@ -22,6 +25,8 @@ import (
 // MCPManager defines the interface for MCP manager operations
 // This allows for easier testing with mock implementations
 type MCPManager interface {
+	// CallTool calls a tool. A manager reports the call's progress to the
+	// function mcpclient.WithProgress put in ctx.
 	CallTool(
 		ctx context.Context,
 		serverName, toolName string,
@@ -38,6 +43,12 @@ type MCPTool struct {
 	workspace          string
 	maxInlineTextRunes int
 	runtimeEvents      runtimeevents.Bus
+	// hashedName gives the tool its name with the hash suffix, as for a
+	// name another tool already holds.
+	hashedName bool
+	// trusted is the server's trusted setting: only then do its annotations
+	// count as the tool's hints.
+	trusted bool
 }
 
 // MCPToolCallPayload describes MCP tool execution runtime events.
@@ -48,6 +59,20 @@ type MCPToolCallPayload struct {
 	IsError    bool   `json:"is_error,omitempty"`
 	Error      string `json:"error,omitempty"`
 }
+
+// MCPToolCallProgressPayload describes the progress a server reports for an
+// MCP tool call (runtimeevents.KindMCPToolCallProgress).
+type MCPToolCallProgressPayload struct {
+	Server   string  `json:"server"`
+	Tool     string  `json:"tool"`
+	Progress float64 `json:"progress"`
+	Total    float64 `json:"total,omitempty"`
+	Message  string  `json:"message,omitempty"`
+}
+
+// mcpProgressInterval is the least time between two progress events of one
+// call.
+const mcpProgressInterval = time.Second
 
 // NewMCPTool creates a new MCP tool wrapper
 func NewMCPTool(manager MCPManager, serverName string, tool *mcp.Tool) *MCPTool {
@@ -78,27 +103,59 @@ func (t *MCPTool) SetEventPublisher(eventBus runtimeevents.Bus) {
 	t.runtimeEvents = eventBus
 }
 
+// SetTrusted says whether the tool's server is trusted (its trusted setting).
+func (t *MCPTool) SetTrusted(trusted bool) {
+	t.trusted = trusted
+}
+
+// ApprovalInfo tells the approval policy the tool's server, its name there
+// and its annotations, which are its hints only when the server is trusted.
+func (t *MCPTool) ApprovalInfo() approval.Info {
+	info := approval.Info{
+		Source:  approval.MCPSource(t.serverName),
+		Name:    t.tool.Name,
+		Trusted: t.trusted,
+		Meta:    t.tool.Meta,
+	}
+	var declared approval.MCPAnnotations
+	if a := t.tool.Annotations; a != nil {
+		declared = approval.MCPAnnotations{
+			ReadOnly:    a.ReadOnlyHint,
+			Destructive: a.DestructiveHint,
+			Idempotent:  a.IdempotentHint,
+			OpenWorld:   a.OpenWorldHint,
+		}
+		info.Annotations = a
+	}
+	info.Hints = approval.MCPHints(declared, t.trusted)
+	return info
+}
+
 const maxMCPInlineTextRunes = 16 * 1024
 
-// sanitizeIdentifierComponent normalizes a string so it can be safely used
-// as part of a tool/function identifier for downstream providers.
-// It:
-//   - lowercases the string
-//   - replaces any character not in [a-z0-9_-] with '_'
+// sanitizeIdentifierComponent normalizes a string for file names and
+// sources: sanitizeNameComponent, lowercased.
+func sanitizeIdentifierComponent(s string) string {
+	return sanitizeNameComponent(strings.ToLower(s))
+}
+
+// sanitizeNameComponent normalizes a string so it can be safely used as part
+// of a tool/function identifier for downstream providers. It:
+//   - replaces any character not in [A-Za-z0-9_-] with '_'
 //   - collapses multiple consecutive '_' into a single '_'
 //   - trims leading/trailing '_'
 //   - falls back to "unnamed" if the result is empty
 //   - truncates overly long components to a reasonable length
-func sanitizeIdentifierComponent(s string) string {
+func sanitizeNameComponent(s string) string {
 	const maxLen = 64
 
-	s = strings.ToLower(s)
 	var b strings.Builder
 	b.Grow(len(s))
 
 	prevUnderscore := false
 	for _, r := range s {
 		isAllowed := (r >= 'a' && r <= 'z') ||
+			(r >= 'A' && r <= 'Z') ||
 			(r >= '0' && r <= '9') ||
 			r == '_' || r == '-'
 
@@ -135,28 +192,30 @@ func sanitizeIdentifierComponent(s string) string {
 	return result
 }
 
-// Name returns the tool name, prefixed with the server name.
-// The total length is capped at 64 characters (OpenAI-compatible API limit).
-// A short hash of the original (unsanitized) server and tool names is appended
-// whenever sanitization is lossy or the name is truncated, ensuring that two
-// names which differ only in disallowed characters remain distinct after sanitization.
+// UseHashedName gives the tool its name with the hash suffix, for a plain
+// name another tool already holds.
+func (t *MCPTool) UseHashedName() {
+	t.hashedName = true
+}
+
+// Name returns mcp_<server>_<tool>, sanitized. A short hash of the original
+// server and tool names is appended when sanitizing changed either of them,
+// when the name would exceed 64 characters (the OpenAI-compatible limit), or
+// after UseHashedName: two different originals never share a name through
+// sanitizing, and a name another tool holds is told apart.
 func (t *MCPTool) Name() string {
-	// Prefix with server name to avoid conflicts, and sanitize components
-	sanitizedServer := sanitizeIdentifierComponent(t.serverName)
-	sanitizedTool := sanitizeIdentifierComponent(t.tool.Name)
+	sanitizedServer := sanitizeNameComponent(t.serverName)
+	sanitizedTool := sanitizeNameComponent(t.tool.Name)
 	full := fmt.Sprintf("mcp_%s_%s", sanitizedServer, sanitizedTool)
 
-	// Check if sanitization was lossless (only lowercasing, no char replacement/truncation)
-	lossless := strings.ToLower(t.serverName) == sanitizedServer &&
-		strings.ToLower(t.tool.Name) == sanitizedTool
-
 	const maxTotal = 64
-	if lossless && len(full) <= maxTotal {
+	unchanged := sanitizedServer == t.serverName && sanitizedTool == t.tool.Name
+	if unchanged && !t.hashedName && len(full) <= maxTotal {
 		return full
 	}
 
-	// Sanitization was lossy or name too long: append hash of the ORIGINAL names
-	// (not the sanitized names) so different originals always yield different hashes.
+	// Hash the ORIGINAL names (not the sanitized names) so different
+	// originals always yield different hashes.
 	h := fnv.New32a()
 	_, _ = h.Write([]byte(t.serverName + "\x00" + t.tool.Name))
 	suffix := fmt.Sprintf("%08x", h.Sum32()) // 8 chars
@@ -174,9 +233,19 @@ func (t *MCPTool) Description() string {
 	if desc == "" {
 		desc = fmt.Sprintf("MCP tool from %s server", t.serverName)
 	}
+	// The server controls this text and it goes into every request.
+	if cut, _, truncated := truncateRunes(desc, maxMCPDescriptionRunes); truncated {
+		desc = cut + "…"
+	}
 	// Add server info to description
 	return fmt.Sprintf("[MCP:%s] %s", t.serverName, desc)
 }
+
+// Caps on what one MCP server can add to every request through a tool.
+const (
+	maxMCPDescriptionRunes = 2000
+	maxMCPSchemaBytes      = 32 * 1024
+)
 
 func (t *MCPTool) PromptMetadata() toolshared.PromptMetadata {
 	return toolshared.PromptMetadata{
@@ -186,8 +255,46 @@ func (t *MCPTool) PromptMetadata() toolshared.PromptMetadata {
 	}
 }
 
-// Parameters returns the tool parameters schema
+// Parameters returns the tool parameters schema. An oversized schema is
+// reduced to its top-level arguments.
 func (t *MCPTool) Parameters() map[string]any {
+	schema := t.inputSchema()
+	if encoded, err := json.Marshal(schema); err == nil && len(encoded) <= maxMCPSchemaBytes {
+		return schema
+	}
+	return shallowMCPSchema(schema)
+}
+
+// shallowMCPSchema keeps the argument names, types, short descriptions and
+// the required list, and drops nested definitions. The server still
+// validates the full schema.
+func shallowMCPSchema(schema map[string]any) map[string]any {
+	props := map[string]any{}
+	if in, ok := schema["properties"].(map[string]any); ok {
+		for name, raw := range in {
+			prop := map[string]any{}
+			if def, ok := raw.(map[string]any); ok {
+				if typ, ok := def["type"]; ok {
+					prop["type"] = typ
+				}
+				if desc, ok := def["description"].(string); ok {
+					prop["description"], _, _ = truncateRunes(desc, 200)
+				}
+			}
+			props[name] = prop
+		}
+	}
+	out := map[string]any{"type": "object", "properties": props, "additionalProperties": true}
+	if required, ok := schema["required"]; ok {
+		out["required"] = required
+	}
+	if encoded, err := json.Marshal(out); err != nil || len(encoded) > maxMCPSchemaBytes {
+		return map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": true}
+	}
+	return out
+}
+
+func (t *MCPTool) inputSchema() map[string]any {
 	// The InputSchema is already a JSON Schema object
 	schema := t.tool.InputSchema
 
@@ -256,7 +363,7 @@ func (t *MCPTool) Execute(ctx context.Context, args map[string]any) *ToolResult 
 	startedAt := time.Now()
 	t.publishRuntimeEvent(ctx, runtimeevents.KindMCPToolCallStart, startedAt, false, "")
 
-	result, err := t.manager.CallTool(ctx, t.serverName, t.tool.Name, args)
+	result, err := t.manager.CallTool(mcpclient.WithProgress(ctx, t.progressPublisher(ctx)), t.serverName, t.tool.Name, args)
 	if err != nil {
 		t.publishRuntimeEvent(ctx, runtimeevents.KindMCPToolCallEnd, startedAt, true, err.Error())
 		return ErrorResult(fmt.Sprintf("MCP tool execution failed: %v", err)).WithError(err)
@@ -291,13 +398,6 @@ func (t *MCPTool) publishRuntimeEvent(
 		return
 	}
 
-	scope := runtimeevents.Scope{
-		AgentID:    toolshared.ToolAgentID(ctx),
-		SessionKey: toolshared.ToolSessionKey(ctx),
-		Channel:    toolshared.ToolChannel(ctx),
-		ChatID:     toolshared.ToolChatID(ctx),
-		MessageID:  toolshared.ToolMessageID(ctx),
-	}
 	payload := MCPToolCallPayload{
 		Server:     t.serverName,
 		Tool:       t.tool.Name,
@@ -313,11 +413,72 @@ func (t *MCPTool) publishRuntimeEvent(
 	t.runtimeEvents.PublishNonBlocking(runtimeevents.Event{
 		Kind:     kind,
 		Source:   runtimeevents.Source{Component: "mcp", Name: t.serverName},
-		Scope:    scope,
+		Scope:    mcpToolEventScope(ctx),
 		Severity: severity,
 		Payload:  payload,
 		Attrs:    mcpToolCallEventAttrs(payload),
 	})
+}
+
+func mcpToolEventScope(ctx context.Context) runtimeevents.Scope {
+	return runtimeevents.Scope{
+		AgentID:    toolshared.ToolAgentID(ctx),
+		SessionKey: toolshared.ToolSessionKey(ctx),
+		Channel:    toolshared.ToolChannel(ctx),
+		ChatID:     toolshared.ToolChatID(ctx),
+		MessageID:  toolshared.ToolMessageID(ctx),
+	}
+}
+
+// progressPublisher returns the function that publishes the progress the
+// server reports for one call, at most once per mcpProgressInterval; nil
+// when no one listens.
+func (t *MCPTool) progressPublisher(ctx context.Context) mcpclient.ProgressFunc {
+	if t.runtimeEvents == nil {
+		return nil
+	}
+	scope := mcpToolEventScope(ctx)
+	var (
+		mu   sync.Mutex
+		last time.Time
+	)
+	return func(params *mcp.ProgressNotificationParams) {
+		mu.Lock()
+		now := time.Now()
+		if !last.IsZero() && now.Sub(last) < mcpProgressInterval {
+			mu.Unlock()
+			return
+		}
+		last = now
+		mu.Unlock()
+
+		payload := MCPToolCallProgressPayload{
+			Server:   t.serverName,
+			Tool:     t.tool.Name,
+			Progress: params.Progress,
+			Total:    params.Total,
+			Message:  params.Message,
+		}
+		attrs := map[string]any{
+			"server":   payload.Server,
+			"tool":     payload.Tool,
+			"progress": payload.Progress,
+		}
+		if payload.Total > 0 {
+			attrs["total"] = payload.Total
+		}
+		if payload.Message != "" {
+			attrs["message"] = payload.Message
+		}
+		t.runtimeEvents.PublishNonBlocking(runtimeevents.Event{
+			Kind:     runtimeevents.KindMCPToolCallProgress,
+			Source:   runtimeevents.Source{Component: "mcp", Name: t.serverName},
+			Scope:    scope,
+			Severity: runtimeevents.SeverityInfo,
+			Payload:  payload,
+			Attrs:    attrs,
+		})
+	}
 }
 
 func mcpToolCallEventAttrs(payload MCPToolCallPayload) map[string]any {

@@ -42,15 +42,23 @@ func (dm *dynamicServeMux) Unhandle(pattern string) {
 // the request URL path. It supports both exact path matches and subtree
 // (trailing-slash) prefix matches, choosing the longest prefix on collision.
 func (dm *dynamicServeMux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if h := dm.handler(r.URL.Path); h != nil {
+		h.ServeHTTP(w, r)
+		return
+	}
+	http.NotFound(w, r)
+}
+
+// handler returns the handler for path, or nil. The lock covers only the
+// lookup: a long request, such as a webhook or a stream, must not stall
+// Handle and Unhandle.
+func (dm *dynamicServeMux) handler(path string) http.Handler {
 	dm.mu.RLock()
 	defer dm.mu.RUnlock()
 
-	path := r.URL.Path
-
 	// Exact match first.
 	if h, ok := dm.handlers[path]; ok {
-		h.ServeHTTP(w, r)
-		return
+		return h
 	}
 
 	// Longest subtree prefix match (patterns ending with "/").
@@ -64,11 +72,5 @@ func (dm *dynamicServeMux) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-
-	if bestHandler != nil {
-		bestHandler.ServeHTTP(w, r)
-		return
-	}
-
-	http.NotFound(w, r)
+	return bestHandler
 }

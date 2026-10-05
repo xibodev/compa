@@ -5,6 +5,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/xibodev/compa/pkg/providers"
+	"github.com/xibodev/compa/pkg/tokenizer"
 )
 
 // lookbackWindow is the number of recent history entries scanned for tool calls.
@@ -51,10 +52,10 @@ func ExtractFeatures(msg string, history []providers.Message) Features {
 }
 
 // estimateTokens returns a token count proxy that handles both CJK and Latin text.
-// CJK runes (U+2E80–U+9FFF, U+F900–U+FAFF, U+AC00–U+D7AF) map to roughly one
-// token each, while non-CJK runes average ~0.25 tokens/rune (≈4 chars per token
-// for English). Splitting the count this way avoids the 3x underestimation that a
-// flat rune_count/3 would produce for Chinese, Japanese, and Korean text.
+// CJK runes (tokenizer.IsCJK) map to roughly one token each, while non-CJK
+// runes average ~0.25 tokens/rune (≈4 chars per token for English). Splitting
+// the count this way avoids the 3x underestimation that a flat rune_count/3
+// would produce for Chinese, Japanese, and Korean text.
 func estimateTokens(msg string) int {
 	total := utf8.RuneCountInString(msg)
 	if total == 0 {
@@ -62,7 +63,7 @@ func estimateTokens(msg string) int {
 	}
 	cjk := 0
 	for _, r := range msg {
-		if r >= 0x2E80 && r <= 0x9FFF || r >= 0xF900 && r <= 0xFAFF || r >= 0xAC00 && r <= 0xD7AF {
+		if tokenizer.IsCJK(r) {
 			cjk++
 		}
 	}

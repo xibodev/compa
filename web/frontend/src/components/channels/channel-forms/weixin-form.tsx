@@ -10,6 +10,7 @@ import { useTranslation } from "react-i18next"
 
 import type { ChannelConfig } from "@/api/channels"
 import { pollWeixinFlow, startWeixinFlow } from "@/api/channels"
+import { ChannelAccessFields } from "@/components/channels/channel-access-fields"
 import {
   type ArrayFieldFlusher,
   ChannelArrayListField,
@@ -30,13 +31,7 @@ import {
 import { Input } from "@/components/ui/input"
 
 type BindingState =
-  | "idle"
-  | "loading"
-  | "waiting"
-  | "scaned"
-  | "confirmed"
-  | "expired"
-  | "error"
+  "idle" | "loading" | "waiting" | "scaned" | "confirmed" | "expired" | "error"
 
 interface WeixinFormProps {
   config: ChannelConfig
@@ -342,6 +337,7 @@ export function WeixinForm({
             registerFlusher={registerArrayFieldFlusher}
             resetVersion={arrayFieldResetVersion}
           />
+          <ChannelAccessFields config={config} onChange={onChange} />
 
           <Field
             label={t("channels.field.proxy")}

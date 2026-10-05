@@ -89,37 +89,39 @@ export function SessionHistoryMenu({
               </DropdownMenuItem>
             ) : (
               sessions.map((session) => (
-                <DropdownMenuItem
-                  key={session.id}
-                  className={`group relative my-0.5 flex flex-col items-start gap-0.5 pr-8 ${
-                    session.id === activeSessionId ? "bg-accent" : ""
-                  }`}
-                  onClick={() => onSwitchSession(session.id)}
-                >
-                  <span className="line-clamp-1 text-sm font-medium">
-                    {session.title}
-                  </span>
-                  <span className="text-muted-foreground text-xs">
-                    {t("chat.messagesCount", {
-                      count: session.message_count,
-                    })}{" "}
-                    · {dayjs(session.updated).fromNow()}
-                  </span>
-                  <Button
-                    variant="ghost"
-                    size="icon"
+                // Delete is its own menu item rather than a button inside the
+                // session's item: the menu moves focus between items only, so
+                // a nested button could not be reached from the keyboard.
+                <div key={session.id} className="group relative my-0.5">
+                  <DropdownMenuItem
+                    className={`flex flex-col items-start gap-0.5 pr-8 ${
+                      session.id === activeSessionId ? "bg-accent" : ""
+                    }`}
+                    onClick={() => onSwitchSession(session.id)}
+                  >
+                    <span className="line-clamp-1 text-sm font-medium">
+                      {session.title}
+                    </span>
+                    <span className="text-muted-foreground text-xs">
+                      {t("chat.messagesCount", {
+                        count: session.message_count,
+                      })}{" "}
+                      · {dayjs(session.updated).fromNow()}
+                    </span>
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
                     aria-label={t("chat.deleteSession")}
-                    className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive absolute top-1/2 right-2 h-6 w-6 -translate-y-1/2 opacity-60 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100"
-                    onClick={(e) => {
-                      e.preventDefault()
-                      e.stopPropagation()
+                    className="text-muted-foreground hover:bg-destructive/10 hover:text-destructive focus:bg-destructive/10 focus:text-destructive absolute top-1/2 right-2 flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-md p-0 opacity-60 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100"
+                    onSelect={() => {
                       setHistoryOpen(false)
-                      window.requestAnimationFrame(() => setPendingDelete(session))
+                      window.requestAnimationFrame(() =>
+                        setPendingDelete(session),
+                      )
                     }}
                   >
                     <IconTrash className="h-4 w-4" />
-                  </Button>
-                </DropdownMenuItem>
+                  </DropdownMenuItem>
+                </div>
               ))
             )}
             {hasMore && sessions.length > 0 && (
@@ -142,8 +144,9 @@ export function SessionHistoryMenu({
           <AlertDialogHeader>
             <AlertDialogTitle>{t("chat.deleteSession")}</AlertDialogTitle>
             <AlertDialogDescription>
-              Delete “{pendingDelete?.title}”? This permanently removes its chat
-              history.
+              {t("chat.deleteSessionConfirm", {
+                title: pendingDelete?.title ?? "",
+              })}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

@@ -2,12 +2,14 @@ package teamswebhook
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	goteamsnotify "github.com/atc0005/go-teams-notify/v2"
 	"github.com/atc0005/go-teams-notify/v2/adaptivecard"
@@ -94,7 +96,8 @@ func NewTeamsWebhookChannel(
 		[]string{
 			"*",
 		}, // Output-only channel; "*" suppresses misleading "allows EVERYONE" audit warning
-		channels.WithMaxMessageLength(24000), // Power Automate webhook payload limit is 28KB
+		// A first cut by characters; Send keeps each post within maxPayloadBytes.
+		channels.WithMaxMessageLength(24000),
 	)
 
 	client := goteamsnotify.NewTeamsClient()
@@ -157,36 +160,95 @@ func (c *TeamsWebhookChannel) Send(ctx context.Context, msg bus.OutboundMessage)
 		target = c.config.Webhooks["default"]
 	}
 
-	// Build an Adaptive Card for rich formatting
-	card, err := c.buildAdaptiveCard(msg, target)
+	// Build Adaptive Cards for rich formatting, as many as the payload limit needs
+	messages, err := c.buildMessages(msg.Content, target)
 	if err != nil {
-		return nil, fmt.Errorf("teams_webhook: failed to build card: %w", err)
-	}
-
-	// Create the message with the card
-	teamsMsg, err := adaptivecard.NewMessageFromCard(card)
-	if err != nil {
-		return nil, fmt.Errorf("teams_webhook: failed to create message: %w", err)
+		return nil, fmt.Errorf("teams_webhook: %w", err)
 	}
 
 	// Send to Teams
-	if err := c.client.SendWithContext(ctx, target.WebhookURL.String(), teamsMsg); err != nil {
-		// Log without raw error to avoid leaking webhook URL (embedded in net/http errors)
-		logger.ErrorCF("teams_webhook", "Failed to send message to Teams webhook", map[string]any{
-			"target": msg.ChatID,
-		})
-		// Classify error based on status code extracted from error message.
-		// The go-teams-notify library includes status in errors like "401 Unauthorized".
-		// Use ClassifySendError for proper retry behavior (4xx = permanent, 5xx = temporary).
-		classifiedErr := classifyTeamsError(err)
-		return nil, fmt.Errorf("teams_webhook: send failed: %w", classifiedErr)
+	for _, teamsMsg := range messages {
+		if err := c.client.SendWithContext(ctx, target.WebhookURL.String(), teamsMsg); err != nil {
+			// Log without raw error to avoid leaking webhook URL (embedded in net/http errors)
+			logger.ErrorCF("teams_webhook", "Failed to send message to Teams webhook", map[string]any{
+				"target": msg.ChatID,
+			})
+			// Classify error based on status code extracted from error message.
+			// The go-teams-notify library includes status in errors like "401 Unauthorized".
+			// Use ClassifySendError for proper retry behavior (4xx = permanent, 5xx = temporary).
+			classifiedErr := classifyTeamsError(err)
+			return nil, fmt.Errorf("teams_webhook: send failed: %w", classifiedErr)
+		}
 	}
 
 	logger.DebugCF("teams_webhook", "Message sent successfully", map[string]any{
 		"target": msg.ChatID,
+		"posts":  len(messages),
 	})
 
 	return nil, nil
+}
+
+// maxPayloadBytes keeps one webhook post under the 28 KB that Teams
+// workflow webhooks accept.
+const maxPayloadBytes = 27 << 10
+
+// minSplitRunes is the shortest part buildMessages splits content into.
+const minSplitRunes = 256
+
+// buildMessages returns the webhook messages that carry content, each within
+// maxPayloadBytes once encoded. The manager splits by characters; multi-byte
+// and escaped text can still exceed the byte limit.
+func (c *TeamsWebhookChannel) buildMessages(
+	content string,
+	target config.TeamsWebhookTarget,
+) ([]*adaptivecard.Message, error) {
+	whole, size, err := c.buildMessage(content, target)
+	if err != nil {
+		return nil, err
+	}
+	if size <= maxPayloadBytes {
+		return []*adaptivecard.Message{whole}, nil
+	}
+	for limit := utf8.RuneCountInString(content) / 2; ; limit /= 2 {
+		var parts []*adaptivecard.Message
+		fits := true
+		for _, chunk := range channels.SplitMessage(content, limit) {
+			part, size, err := c.buildMessage(chunk, target)
+			if err != nil {
+				return nil, err
+			}
+			if size > maxPayloadBytes && limit > minSplitRunes {
+				fits = false
+				break
+			}
+			parts = append(parts, part)
+		}
+		if fits {
+			return parts, nil
+		}
+	}
+}
+
+// buildMessage returns the webhook message for content with its encoded size.
+func (c *TeamsWebhookChannel) buildMessage(
+	content string,
+	target config.TeamsWebhookTarget,
+) (*adaptivecard.Message, int, error) {
+	card, err := c.buildAdaptiveCard(bus.OutboundMessage{Content: content}, target)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to build card: %w", err)
+	}
+	teamsMsg, err := adaptivecard.NewMessageFromCard(card)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to create message: %w", err)
+	}
+	// The client posts the message encoded this way (adaptivecard.Message.Prepare).
+	encoded, err := json.Marshal(teamsMsg)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to encode message: %w", err)
+	}
+	return teamsMsg, len(encoded), nil
 }
 
 // buildAdaptiveCard creates a formatted Adaptive Card from the outbound message.

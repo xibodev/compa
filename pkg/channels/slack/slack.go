@@ -2,6 +2,7 @@ package slack
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -18,6 +19,17 @@ import (
 	"github.com/xibodev/compa/pkg/media"
 	"github.com/xibodev/compa/pkg/utils"
 )
+
+// classifySendError maps a failed request to the channel error sentinels: a
+// rate limit is retried after the pause Slack asks for, anything else with
+// backoff.
+func classifySendError(err error) error {
+	var limited *slack.RateLimitedError
+	if errors.As(err, &limited) {
+		return channels.NewRateLimitError(limited.RetryAfter, err)
+	}
+	return fmt.Errorf("%w: %w", channels.ErrTemporary, err)
+}
 
 type SlackChannel struct {
 	*channels.BaseChannel
@@ -70,7 +82,7 @@ func NewSlackChannel(
 			return err
 		},
 		postTextFn: func(ctx context.Context, channelID, threadTS, text string) error {
-			opts := []slack.MsgOption{slack.MsgOptionText(text, false)}
+			opts := []slack.MsgOption{slack.MsgOptionText(text, true)}
 			if threadTS != "" {
 				opts = append(opts, slack.MsgOptionTS(threadTS))
 			}
@@ -137,7 +149,9 @@ func (c *SlackChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]str
 	}
 
 	opts := []slack.MsgOption{
-		slack.MsgOptionText(msg.Content, false),
+		// Escaped: the text comes from the model, and Slack would otherwise
+		// turn "<!channel>", "<!here>" or "<@U…>" in it into pings.
+		slack.MsgOptionText(msg.Content, true),
 	}
 
 	if msg.ReplyToMessageID != "" && threadTS == "" {
@@ -150,7 +164,7 @@ func (c *SlackChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]str
 
 	_, ts, err := c.api.PostMessageContext(ctx, channelID, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("slack send: %w", channels.ErrTemporary)
+		return nil, fmt.Errorf("slack send: %w", classifySendError(err))
 	}
 
 	if ref, ok := c.pendingAcks.LoadAndDelete(deliveryChatID); ok {
@@ -222,7 +236,7 @@ func (c *SlackChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMessa
 				"filename": filename,
 				"error":    err.Error(),
 			})
-			return nil, fmt.Errorf("slack send media: %w", channels.ErrTemporary)
+			return nil, fmt.Errorf("slack send media: %w", classifySendError(err))
 		}
 		sentAny = true
 	}
@@ -293,6 +307,7 @@ func (c *SlackChannel) eventLoop() {
 }
 
 func (c *SlackChannel) handleEventsAPI(event socketmode.Event) {
+	defer channels.RecoverPanic(c.Name(), "event")
 	if event.Request != nil {
 		c.socketClient.Ack(*event.Request)
 	}
@@ -321,20 +336,12 @@ func (c *SlackChannel) handleMessageEvent(ev *slackevents.MessageEvent) {
 		return
 	}
 
-	// check allowlist to avoid downloading attachments for rejected users
+	senderID := ev.User
 	sender := bus.SenderInfo{
 		Platform:    "slack",
-		PlatformID:  ev.User,
-		CanonicalID: identity.BuildCanonicalID("slack", ev.User),
+		PlatformID:  senderID,
+		CanonicalID: identity.BuildCanonicalID("slack", senderID),
 	}
-	if !c.IsAllowedSender(sender) {
-		logger.DebugCF("slack", "Message rejected by allowlist", map[string]any{
-			"user_id": ev.User,
-		})
-		return
-	}
-
-	senderID := ev.User
 	channelID := ev.Channel
 	threadTS := ev.ThreadTimeStamp
 	messageTS := ev.TimeStamp
@@ -342,6 +349,41 @@ func (c *SlackChannel) handleMessageEvent(ev *slackevents.MessageEvent) {
 	chatID := channelID
 	if threadTS != "" {
 		chatID = channelID + "/" + threadTS
+	}
+
+	peerKind := "channel"
+	if strings.HasPrefix(channelID, "D") {
+		peerKind = "direct"
+	}
+
+	// A channel message that mentions the bot also arrives as an app_mention
+	// event, which answers it; answering here too would reply twice.
+	if peerKind != "direct" && c.botUserID != "" && strings.Contains(ev.Text, "<@"+c.botUserID+">") {
+		return
+	}
+
+	// Decide on the message before downloading its files. A direct message
+	// the policy rejects still goes to it, as text only, so that an unpaired
+	// sender is recorded for the owner to approve.
+	if !c.Admits(peerKind, sender, channelID) {
+		logger.DebugCF("slack", "Message not admitted by the access policy", map[string]any{
+			"user_id": senderID,
+		})
+		if peerKind == "direct" {
+			content := c.stripBotMention(ev.Text)
+			if strings.TrimSpace(content) == "" {
+				content = "[file]"
+			}
+			c.HandleInboundContext(c.ctx, chatID, content, nil, bus.InboundContext{
+				Channel:   c.Name(),
+				Account:   c.teamID,
+				ChatID:    channelID,
+				ChatType:  peerKind,
+				SenderID:  senderID,
+				MessageID: messageTS,
+			}, sender)
+		}
+		return
 	}
 
 	c.pendingAcks.Store(chatID, slackMessageRef{
@@ -382,7 +424,7 @@ func (c *SlackChannel) handleMessageEvent(ev *slackevents.MessageEvent) {
 
 	if ev.Message != nil && len(ev.Message.Files) > 0 {
 		for _, file := range ev.Message.Files {
-			localPath := c.downloadSlackFile(file)
+			localPath := fetchFile(c, file)
 			if localPath == "" {
 				continue
 			}
@@ -393,11 +435,6 @@ func (c *SlackChannel) handleMessageEvent(ev *slackevents.MessageEvent) {
 
 	if strings.TrimSpace(content) == "" {
 		return
-	}
-
-	peerKind := "channel"
-	if strings.HasPrefix(channelID, "D") {
-		peerKind = "direct"
 	}
 
 	metadata := map[string]string{
@@ -438,17 +475,6 @@ func (c *SlackChannel) handleAppMention(ev *slackevents.AppMentionEvent) {
 		return
 	}
 
-	if !c.IsAllowedSender(bus.SenderInfo{
-		Platform:    "slack",
-		PlatformID:  ev.User,
-		CanonicalID: identity.BuildCanonicalID("slack", ev.User),
-	}) {
-		logger.DebugCF("slack", "Mention rejected by allowlist", map[string]any{
-			"user_id": ev.User,
-		})
-		return
-	}
-
 	senderID := ev.User
 	mentionSender := bus.SenderInfo{
 		Platform:    "slack",
@@ -458,6 +484,19 @@ func (c *SlackChannel) handleAppMention(ev *slackevents.AppMentionEvent) {
 	channelID := ev.Channel
 	threadTS := ev.ThreadTimeStamp
 	messageTS := ev.TimeStamp
+
+	mentionPeerKind := "channel"
+	if strings.HasPrefix(channelID, "D") {
+		mentionPeerKind = "direct"
+	}
+	// Mentions arrive from channels; the message event handles direct
+	// messages, including recording unpaired senders.
+	if !c.Admits(mentionPeerKind, mentionSender, channelID) {
+		logger.DebugCF("slack", "Mention not admitted by the access policy", map[string]any{
+			"user_id": ev.User,
+		})
+		return
+	}
 
 	var chatID string
 	if threadTS != "" {
@@ -475,11 +514,6 @@ func (c *SlackChannel) handleAppMention(ev *slackevents.AppMentionEvent) {
 
 	if strings.TrimSpace(content) == "" {
 		return
-	}
-
-	mentionPeerKind := "channel"
-	if strings.HasPrefix(channelID, "D") {
-		mentionPeerKind = "direct"
 	}
 
 	metadata := map[string]string{
@@ -508,6 +542,7 @@ func (c *SlackChannel) handleAppMention(ev *slackevents.AppMentionEvent) {
 }
 
 func (c *SlackChannel) handleSlashCommand(event socketmode.Event) {
+	defer channels.RecoverPanic(c.Name(), "slash command")
 	cmd, ok := event.Data.(slack.SlashCommand)
 	if !ok {
 		return
@@ -522,12 +557,8 @@ func (c *SlackChannel) handleSlashCommand(event socketmode.Event) {
 		PlatformID:  cmd.UserID,
 		CanonicalID: identity.BuildCanonicalID("slack", cmd.UserID),
 	}
-	if !c.IsAllowedSender(cmdSender) {
-		logger.DebugCF("slack", "Slash command rejected by allowlist", map[string]any{
-			"user_id": cmd.UserID,
-		})
-		return
-	}
+	// A command carries no files, so the access policy in
+	// HandleInboundContext decides on it, and records an unpaired sender.
 
 	senderID := cmd.UserID
 	channelID := cmd.ChannelID
@@ -568,6 +599,9 @@ func (c *SlackChannel) handleSlashCommand(event socketmode.Event) {
 
 	c.HandleInboundContext(c.ctx, chatID, content, nil, inboundCtx, cmdSender)
 }
+
+// fetchFile downloads a shared file; tests replace it.
+var fetchFile = (*SlackChannel).downloadSlackFile
 
 func (c *SlackChannel) downloadSlackFile(file slack.File) string {
 	downloadURL := file.URLPrivateDownload

@@ -69,6 +69,13 @@ func (a *Applier) applyDraftWithRollback(
 	); err != nil {
 		return nil, err
 	}
+	if hadOriginal && (draft.ChangeKind == ChangeKindReplace || draft.ChangeKind == ChangeKindMerge) &&
+		!a.evolutionCreated(workspace, draft.TargetSkillName) {
+		return nil, fmt.Errorf(
+			"cannot %s skill %q: it was not created by evolution",
+			draft.ChangeKind, draft.TargetSkillName,
+		)
+	}
 
 	skillDir := filepath.Join(workspace, "skills", draft.TargetSkillName)
 	if mkdirErr := os.MkdirAll(skillDir, 0o755); mkdirErr != nil {
@@ -83,6 +90,17 @@ func (a *Applier) applyDraftWithRollback(
 	return func() error {
 		return a.rollbackSkill(skillPath, backupPath, hadOriginal)
 	}, nil
+}
+
+// evolutionCreated reports whether evolution wrote the skill first: only
+// those skills may be replaced or merged. User-written and installed skills
+// have no profile, or a manual one.
+func (a *Applier) evolutionCreated(workspace, skillName string) bool {
+	profile, err := NewStore(a.paths).loadProfileForWorkspace(workspace, skillName)
+	if err != nil {
+		return false
+	}
+	return profile.Origin == "evolved"
 }
 
 func (a *Applier) backupCurrentSkill(

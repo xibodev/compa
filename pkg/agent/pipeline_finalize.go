@@ -5,7 +5,6 @@ package agent
 import (
 	"context"
 
-	"github.com/xibodev/compa/pkg/bus"
 	runtimeevents "github.com/xibodev/compa/pkg/events"
 	"github.com/xibodev/compa/pkg/providers"
 )
@@ -38,7 +37,6 @@ func (p *Pipeline) Finalize(
 			servedTarget:       exec.servedTarget,
 			servedIdentity:     exec.servedIdentity,
 			status:             turnStatus,
-			followUps:          append([]bus.InboundMessage(nil), ts.followUps...),
 		}, nil
 	}
 
@@ -72,12 +70,13 @@ func (p *Pipeline) Finalize(
 	}
 
 	if !ts.opts.NoHistory && ts.opts.EnableSummary {
-		al.contextManager.Compact(
+		p.ContextManager.Compact(
 			turnCtx,
 			&CompactRequest{
 				SessionKey: ts.sessionKey,
 				Reason:     ContextCompressReasonSummarize,
 				Budget:     ts.agent.ContextWindow,
+				AgentID:    ts.agent.ID,
 			},
 		)
 	}
@@ -105,7 +104,6 @@ func (p *Pipeline) Finalize(
 			servedTarget:       exec.servedTarget,
 			servedIdentity:     exec.servedIdentity,
 			status:             TurnEndStatusError,
-			followUps:          append([]bus.InboundMessage(nil), ts.followUps...),
 		}, streamErr
 	}
 	ts.setPhase(TurnPhaseCompleted)
@@ -116,6 +114,5 @@ func (p *Pipeline) Finalize(
 		servedTarget:       exec.servedTarget,
 		servedIdentity:     exec.servedIdentity,
 		status:             turnStatus,
-		followUps:          append([]bus.InboundMessage(nil), ts.followUps...),
 	}, nil
 }

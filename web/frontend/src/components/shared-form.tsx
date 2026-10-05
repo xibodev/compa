@@ -1,5 +1,12 @@
 import { IconChevronDown, IconEye, IconEyeOff } from "@tabler/icons-react"
-import { type ReactNode, useState } from "react"
+import {
+  Fragment,
+  type ReactNode,
+  cloneElement,
+  isValidElement,
+  useId,
+  useState,
+} from "react"
 import { useTranslation } from "react-i18next"
 
 import {
@@ -30,22 +37,43 @@ interface FieldProps {
   htmlFor?: string
 }
 
+/**
+ * Gives a lone control the id its label points at, unless it has its own.
+ * A wrapper element gets the id harmlessly: a label only names form controls.
+ */
+function withControlId(children: ReactNode, id: string): ReactNode {
+  if (
+    !isValidElement<{ id?: string }>(children) ||
+    children.type === Fragment ||
+    children.props.id !== undefined
+  ) {
+    return children
+  }
+  return cloneElement(children, { id })
+}
+
 export function Field({
   label,
   hint,
   error,
   required,
-  children,
+  children: childControl,
   layout = "default",
   controlClassName,
   htmlFor,
 }: FieldProps) {
+  const generatedId = useId()
+  const controlId = htmlFor ?? generatedId
+  const children = htmlFor
+    ? childControl
+    : withControlId(childControl, controlId)
+
   if (layout === "setting-row") {
     return (
       <div className="flex flex-col gap-4 py-4 md:grid md:grid-cols-[280px_minmax(0,1fr)] md:items-center md:gap-8">
         <div className="w-full min-w-0">
           <FieldLabel
-            htmlFor={htmlFor}
+            htmlFor={controlId}
             className="leading-relaxed break-words whitespace-normal"
           >
             {label}
@@ -77,7 +105,7 @@ export function Field({
   return (
     <UiField className="gap-2.5">
       <div className="space-y-1">
-        <FieldLabel htmlFor={htmlFor}>
+        <FieldLabel htmlFor={controlId}>
           {label}
           {required && <span className="text-destructive ml-1">*</span>}
         </FieldLabel>
@@ -102,6 +130,8 @@ interface KeyInputProps {
   onChange: (v: string) => void
   placeholder?: string
   className?: string
+  /** The input's id, so a label can name it. */
+  id?: string
 }
 
 export function KeyInput({
@@ -109,12 +139,15 @@ export function KeyInput({
   onChange,
   placeholder,
   className,
+  id,
 }: KeyInputProps) {
+  const { t } = useTranslation()
   const [show, setShow] = useState(false)
 
   return (
     <div className="relative">
       <Input
+        id={id}
         type={show ? "text" : "password"}
         value={value}
         onChange={(e) => onChange(e.target.value)}
@@ -124,7 +157,8 @@ export function KeyInput({
       <button
         type="button"
         onClick={() => setShow((v) => !v)}
-        tabIndex={-1}
+        aria-label={t("common.showSecret")}
+        aria-pressed={show}
         className="text-muted-foreground hover:text-foreground absolute top-1/2 right-3 -translate-y-1/2 transition-colors"
       >
         {show ? (

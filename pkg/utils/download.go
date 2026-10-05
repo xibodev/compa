@@ -17,24 +17,29 @@ import (
 //   - ctx:      context for cancellation/timeout
 //   - client:   HTTP client to use (caller controls timeouts, transport, etc.)
 //   - req:      fully prepared *http.Request (method, URL, headers, etc.)
-//   - maxBytes: maximum bytes to download; 0 means no limit
+//   - maxBytes: maximum bytes to download; 0 or less means
+//     DefaultDownloadMaxBytes
 //
 // Returns the path to the temporary file. The caller is responsible for
 // removing it when done (defer os.Remove(path)).
 //
-// On any error the temp file is cleaned up automatically.
+// On any error the temp file is cleaned up automatically. Neither the log
+// nor the error shows more of the URL than its host (see LogSafeURL).
 func DownloadToFile(ctx context.Context, client *http.Client, req *http.Request, maxBytes int64) (string, error) {
 	// Attach context.
 	req = req.WithContext(ctx)
+	if maxBytes <= 0 {
+		maxBytes = DefaultDownloadMaxBytes
+	}
 
 	logger.DebugCF("download", "Starting download", map[string]any{
-		"url":       req.URL.String(),
+		"host":      LogSafeURL(req.URL.String()),
 		"max_bytes": maxBytes,
 	})
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("request failed: %w", err)
+		return "", fmt.Errorf("request failed: %w", withoutURL(err))
 	}
 	defer resp.Body.Close()
 
@@ -62,21 +67,18 @@ func DownloadToFile(ctx context.Context, client *http.Client, req *http.Request,
 		_ = os.Remove(tmpPath)
 	}
 
-	// Optionally limit the download size.
-	var src io.Reader = resp.Body
-	if maxBytes > 0 {
-		src = io.LimitReader(resp.Body, maxBytes+1) // +1 to detect overflow
-	}
+	// Limit the download size.
+	src := io.LimitReader(resp.Body, maxBytes+1) // +1 to detect overflow
 
 	written, err := io.Copy(tmpFile, src)
 	if err != nil {
 		cleanup()
-		return "", fmt.Errorf("download write failed: %w", err)
+		return "", fmt.Errorf("download write failed: %w", withoutURL(err))
 	}
 
-	if maxBytes > 0 && written > maxBytes {
+	if written > maxBytes {
 		cleanup()
-		return "", fmt.Errorf("download too large: %d bytes (max %d)", written, maxBytes)
+		return "", fmt.Errorf("download too large: more than %d bytes", maxBytes)
 	}
 
 	if err := tmpFile.Close(); err != nil {

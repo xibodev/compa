@@ -42,8 +42,10 @@ To monitor:
 
 ## Finding sessions
 
-- List sessions on your socket: `{baseDir}/scripts/find-sessions.sh -S "$SOCKET"`.
-- Scan all sockets: `{baseDir}/scripts/find-sessions.sh --all` (uses `COMPA_TMUX_SOCKET_DIR`).
+Helper scripts live in this skill's `scripts/` folder (next to this SKILL.md); run them with `bash`.
+
+- List sessions on your socket: `bash scripts/find-sessions.sh -S "$SOCKET"`.
+- Scan all sockets: `bash scripts/find-sessions.sh --all` (uses `COMPA_TMUX_SOCKET_DIR`).
 
 ## Sending input safely
 
@@ -53,7 +55,7 @@ To monitor:
 ## Watching output
 
 - Capture recent history: `tmux -S "$SOCKET" capture-pane -p -J -t target -S -200`.
-- Wait for prompts: `{baseDir}/scripts/wait-for-text.sh -t session:0.0 -p 'pattern'`.
+- Wait for prompts: `bash scripts/wait-for-text.sh -t session:0.0 -p 'pattern'`.
 - Attaching is OK; detach with `Ctrl+b d`.
 
 ## Spawning processes
@@ -108,10 +110,10 @@ tmux -S "$SOCKET" capture-pane -p -t agent-1 -S -500
 
 ## Helper: wait-for-text.sh
 
-`{baseDir}/scripts/wait-for-text.sh` polls a pane for a regex (or fixed string) with a timeout.
+`scripts/wait-for-text.sh` (in this skill's folder) polls a pane for a regex (or fixed string) with a timeout.
 
 ```bash
-{baseDir}/scripts/wait-for-text.sh -t session:0.0 -p 'pattern' [-F] [-T 20] [-i 0.5] [-l 2000]
+bash scripts/wait-for-text.sh -t session:0.0 -p 'pattern' [-F] [-T 20] [-i 0.5] [-l 2000]
 ```
 
 - `-t`/`--target` pane target (required)

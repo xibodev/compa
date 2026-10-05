@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/gomarkdown/markdown"
 	"github.com/gomarkdown/markdown/ast"
@@ -23,11 +26,20 @@ var namePattern = regexp.MustCompile(`^[a-zA-Z0-9]+(-[a-zA-Z0-9]+)*$`)
 const (
 	MaxNameLength        = 64
 	MaxDescriptionLength = 1024
+
+	// OriginInstalled marks a skill installed from a registry: third-party
+	// instructions rather than ones the user wrote.
+	OriginInstalled = "installed"
+
+	// originMetaFile is written next to SKILL.md by the installers.
+	originMetaFile = ".skill-origin.json"
 )
 
 type SkillMetadata struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
+	// gates holds the platform requirements the skill declares.
+	gates skillGates
 }
 
 type SkillInfo struct {
@@ -35,6 +47,135 @@ type SkillInfo struct {
 	Path        string `json:"path"`
 	Source      string `json:"source"`
 	Description string `json:"description"`
+	// Origin is OriginInstalled for a skill installed from a registry.
+	Origin string `json:"origin,omitempty"`
+	// Unavailable says why the skill doesn't apply on this host (an
+	// unsupported OS or a missing binary). Such skills aren't offered to the
+	// agent.
+	Unavailable string `json:"unavailable,omitempty"`
+}
+
+// skillGates is the gating part of a skill's frontmatter metadata, for
+// example `metadata: {"compa":{"os":["linux"],"requires":{"bins":["tmux"]}}}`.
+type skillGates struct {
+	OS       []string `json:"os"`
+	Requires struct {
+		Bins    []string `json:"bins"`
+		AnyBins []string `json:"anyBins"`
+	} `json:"requires"`
+}
+
+// gateNamespaces are the metadata keys gating is read from: Compa's own and
+// the ones skills written for OpenClaw-style registries use.
+var gateNamespaces = []string{"compa", "openclaw", "clawdbot"}
+
+// lookPath finds a required binary; a variable so tests can stub it.
+var lookPath = exec.LookPath
+
+// unmet returns why the skill doesn't apply on this host, or "".
+func (g skillGates) unmet() string {
+	if len(g.OS) > 0 && !osMatches(g.OS, runtime.GOOS) {
+		return "requires " + strings.Join(g.OS, " or ")
+	}
+	for _, bin := range g.Requires.Bins {
+		if strings.TrimSpace(bin) == "" {
+			continue
+		}
+		if _, err := lookPath(bin); err != nil {
+			return "requires " + bin
+		}
+	}
+	if len(g.Requires.AnyBins) > 0 {
+		for _, bin := range g.Requires.AnyBins {
+			if _, err := lookPath(bin); err == nil {
+				return ""
+			}
+		}
+		return "requires one of " + strings.Join(g.Requires.AnyBins, ", ")
+	}
+	return ""
+}
+
+func osMatches(allowed []string, goos string) bool {
+	for _, name := range allowed {
+		switch strings.ToLower(strings.TrimSpace(name)) {
+		case goos:
+			return true
+		case "macos", "mac", "osx":
+			if goos == "darwin" {
+				return true
+			}
+		case "win", "win32":
+			if goos == "windows" {
+				return true
+			}
+		case "linux":
+			// Android runs a Linux kernel and userland tools (Termux).
+			if goos == "android" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// parseSkillGates reads gating from the frontmatter `metadata` value, which
+// may be a mapping or a JSON string.
+func parseSkillGates(metadata any) skillGates {
+	if text, ok := metadata.(string); ok {
+		var decoded any
+		if err := json.Unmarshal([]byte(text), &decoded); err != nil {
+			return skillGates{}
+		}
+		metadata = decoded
+	}
+	fields, ok := metadata.(map[string]any)
+	if !ok {
+		return skillGates{}
+	}
+	for _, ns := range gateNamespaces {
+		section, ok := fields[ns]
+		if !ok {
+			continue
+		}
+		data, err := json.Marshal(section)
+		if err != nil {
+			return skillGates{}
+		}
+		var gates skillGates
+		if err := json.Unmarshal(data, &gates); err != nil {
+			return skillGates{}
+		}
+		return gates
+	}
+	return skillGates{}
+}
+
+// isInstalledSkillDir reports whether the installers marked the skill as a
+// third-party install.
+func isInstalledSkillDir(dir string) bool {
+	data, err := os.ReadFile(filepath.Join(dir, originMetaFile))
+	if err != nil {
+		return false
+	}
+	var meta struct {
+		OriginKind string `json:"origin_kind"`
+	}
+	if err := json.Unmarshal(data, &meta); err != nil {
+		return false
+	}
+	return meta.OriginKind == "third_party"
+}
+
+var warnedOnce sync.Map
+
+// warnOnce logs a skill problem at warning level once per process, so a
+// misconfigured skill is reported without repeating on every prompt build.
+func warnOnce(key, message string, fields map[string]any) {
+	if _, loaded := warnedOnce.LoadOrStore(key, struct{}{}); loaded {
+		return
+	}
+	logger.WarnCF("skills", message, fields)
 }
 
 func (info SkillInfo) validate() error {
@@ -94,9 +235,15 @@ func NewSkillsLoader(workspace string, globalSkills string, builtinSkills string
 	}
 }
 
+// ListSkills lists the skills of every root, workspace first. A skill's
+// identity is its folder name, which LoadSkill resolves too: a frontmatter
+// name that differs is only logged, so a folder can't hide or take over
+// another skill by declaring its name. When folder names collide (across
+// roots, or by case) the first one wins in root order (workspace > global >
+// builtin) and then folder order, and the others are skipped with a warning.
 func (sl *SkillsLoader) ListSkills() []SkillInfo {
 	skills := make([]SkillInfo, 0)
-	seen := make(map[string]bool)
+	seen := make(map[string]string)
 
 	addSkills := func(dir, source string) {
 		if dir == "" {
@@ -121,17 +268,28 @@ func (sl *SkillsLoader) ListSkills() []SkillInfo {
 			}
 			metadata := sl.getSkillMetadata(skillFile)
 			if metadata != nil {
+				if metadata.Name != d.Name() {
+					logger.DebugCF("skills", "Skill frontmatter name differs from its folder name; using the folder name",
+						map[string]any{"path": skillFile, "folder": d.Name(), "declared_name": metadata.Name})
+				}
 				info.Description = metadata.Description
-				info.Name = metadata.Name
+				info.Unavailable = metadata.gates.unmet()
+			}
+			if isInstalledSkillDir(filepath.Dir(skillFile)) {
+				info.Origin = OriginInstalled
 			}
 			if err := info.validate(); err != nil {
 				slog.Warn("invalid skill from "+source, "name", info.Name, "error", err)
 				continue
 			}
-			if seen[info.Name] {
+			// Case-insensitive, so the list is the same on every file system.
+			key := strings.ToLower(info.Name)
+			if first, ok := seen[key]; ok {
+				warnOnce("dup:"+skillFile, "Skill skipped: a skill with the same name comes first",
+					map[string]any{"name": info.Name, "path": skillFile, "used": first})
 				continue
 			}
-			seen[info.Name] = true
+			seen[key] = skillFile
 			skills = append(skills, info)
 		}
 	}
@@ -192,26 +350,36 @@ func (sl *SkillsLoader) LoadSkillsForContext(skillNames []string) string {
 	return strings.Join(parts, "\n\n---\n\n")
 }
 
+// BuildSkillsSummary lists the skills offered to the agent. Skills that don't
+// apply on this host are left out, and installed third-party skills show the
+// source "installed".
 func (sl *SkillsLoader) BuildSkillsSummary() string {
 	allSkills := sl.ListSkills()
-	if len(allSkills) == 0 {
-		return ""
-	}
 
 	var lines []string
-	lines = append(lines, "<skills>")
 	for _, s := range allSkills {
+		if s.Unavailable != "" {
+			continue
+		}
 		escapedName := escapeXML(s.Name)
 		escapedDesc := escapeXML(s.Description)
 		escapedPath := escapeXML(s.Path)
+		source := s.Source
+		if s.Origin == OriginInstalled {
+			source = OriginInstalled
+		}
 
-		lines = append(lines, fmt.Sprintf("  <skill>"))
+		lines = append(lines, "  <skill>")
 		lines = append(lines, fmt.Sprintf("    <name>%s</name>", escapedName))
 		lines = append(lines, fmt.Sprintf("    <description>%s</description>", escapedDesc))
 		lines = append(lines, fmt.Sprintf("    <location>%s</location>", escapedPath))
-		lines = append(lines, fmt.Sprintf("    <source>%s</source>", s.Source))
+		lines = append(lines, fmt.Sprintf("    <source>%s</source>", source))
 		lines = append(lines, "  </skill>")
 	}
+	if len(lines) == 0 {
+		return ""
+	}
+	lines = append([]string{"<skills>"}, lines...)
 	lines = append(lines, "</skills>")
 
 	return strings.Join(lines, "\n")
@@ -230,14 +398,12 @@ func (sl *SkillsLoader) getSkillMetadata(skillPath string) *SkillMetadata {
 
 	frontmatter, bodyContent := splitFrontmatter(string(content))
 	dirName := filepath.Base(filepath.Dir(skillPath))
-	title, bodyDescription := extractMarkdownMetadata(bodyContent)
+	_, bodyDescription := extractMarkdownMetadata(bodyContent)
 
+	// The folder is the skill's identity; the H1 title is only display text.
 	metadata := &SkillMetadata{
 		Name:        dirName,
 		Description: bodyDescription,
-	}
-	if title != "" && namePattern.MatchString(title) && len(title) <= MaxNameLength {
-		metadata.Name = title
 	}
 
 	if frontmatter == "" {
@@ -248,6 +414,7 @@ func (sl *SkillsLoader) getSkillMetadata(skillPath string) *SkillMetadata {
 	var jsonMeta struct {
 		Name        string `json:"name"`
 		Description string `json:"description"`
+		Metadata    any    `json:"metadata"`
 	}
 	if err := json.Unmarshal([]byte(frontmatter), &jsonMeta); err == nil {
 		if jsonMeta.Name != "" {
@@ -256,6 +423,7 @@ func (sl *SkillsLoader) getSkillMetadata(skillPath string) *SkillMetadata {
 		if jsonMeta.Description != "" {
 			metadata.Description = jsonMeta.Description
 		}
+		metadata.gates = parseSkillGates(jsonMeta.Metadata)
 		return metadata
 	}
 
@@ -266,6 +434,12 @@ func (sl *SkillsLoader) getSkillMetadata(skillPath string) *SkillMetadata {
 	}
 	if description := yamlMeta["description"]; description != "" {
 		metadata.Description = description
+	}
+	var yamlGates struct {
+		Metadata any `yaml:"metadata"`
+	}
+	if err := yaml.Unmarshal([]byte(frontmatter), &yamlGates); err == nil {
+		metadata.gates = parseSkillGates(yamlGates.Metadata)
 	}
 	return metadata
 }

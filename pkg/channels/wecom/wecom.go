@@ -137,8 +137,6 @@ func NewChannel(bc *config.Channel, cfg *config.WeComSettings, messageBus *bus.M
 	return ch, nil
 }
 
-func (c *WeComChannel) Name() string { return "wecom" }
-
 func (c *WeComChannel) Start(ctx context.Context) error {
 	logger.InfoC("wecom", "Starting WeCom channel...")
 	c.ctx, c.cancel = context.WithCancel(ctx)
@@ -294,6 +292,7 @@ func (c *WeComChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMessa
 }
 
 func (c *WeComChannel) connectLoop() {
+	defer channels.RecoverPanic(c.Name(), "connection")
 	backoff := time.Second
 	for {
 		select {
@@ -433,6 +432,7 @@ func (c *WeComChannel) readLoop(conn *websocket.Conn) error {
 }
 
 func (c *WeComChannel) handleEnvelope(env wecomEnvelope) {
+	defer channels.RecoverPanic(c.Name(), "event")
 	switch env.Cmd {
 	case wecomCmdMsgCallback:
 		c.handleMessageCallback(env)
@@ -496,6 +496,28 @@ func (c *WeComChannel) dispatchIncoming(reqID string, msg wecomIncomingMessage) 
 		CanonicalID: identity.BuildCanonicalID("wecom", senderID),
 		DisplayName: senderID,
 	}
+	inboundCtx := bus.InboundContext{
+		Channel:   c.Name(),
+		Account:   strings.TrimSpace(msg.AIBotID),
+		ChatID:    actualChatID,
+		ChatType:  peerKind,
+		SenderID:  senderID,
+		MessageID: msg.MsgID,
+		ReplyHandles: map[string]string{
+			"req_id": reqID,
+		},
+	}
+
+	// Decide before fetching media or answering: a message the access policy
+	// does not admit gets no reply at all. A direct message from an unpaired
+	// sender still goes to the policy, without its media, so that the sender
+	// is recorded.
+	if !c.Admits(peerKind, sender, actualChatID) {
+		if peerKind == "direct" {
+			c.HandleInboundContext(c.ctx, actualChatID, "["+msg.MsgType+"]", nil, inboundCtx, sender)
+		}
+		return nil
+	}
 
 	var (
 		content   string
@@ -515,22 +537,25 @@ func (c *WeComChannel) dispatchIncoming(reqID string, msg wecomIncomingMessage) 
 		}
 	case "image":
 		content = "[image]"
-		mediaRefs, err = c.collectSingleMedia(c.ctx, scope, msg.MsgID, &mediaPayload{
-			url:    msg.Image.URL,
-			aesKey: msg.Image.AESKey,
-		}, "image", ".jpg")
+		var payload *mediaPayload
+		if msg.Image != nil {
+			payload = &mediaPayload{url: msg.Image.URL, aesKey: msg.Image.AESKey}
+		}
+		mediaRefs, err = c.collectSingleMedia(c.ctx, scope, msg.MsgID, payload, "image", ".jpg")
 	case "file":
 		content = "[file]"
-		mediaRefs, err = c.collectSingleMedia(c.ctx, scope, msg.MsgID, &mediaPayload{
-			url:    msg.File.URL,
-			aesKey: msg.File.AESKey,
-		}, "file", ".bin")
+		var payload *mediaPayload
+		if msg.File != nil {
+			payload = &mediaPayload{url: msg.File.URL, aesKey: msg.File.AESKey}
+		}
+		mediaRefs, err = c.collectSingleMedia(c.ctx, scope, msg.MsgID, payload, "file", ".bin")
 	case "video":
 		content = "[video]"
-		mediaRefs, err = c.collectSingleMedia(c.ctx, scope, msg.MsgID, &mediaPayload{
-			url:    msg.Video.URL,
-			aesKey: msg.Video.AESKey,
-		}, "video", ".mp4")
+		var payload *mediaPayload
+		if msg.Video != nil {
+			payload = &mediaPayload{url: msg.Video.URL, aesKey: msg.Video.AESKey}
+		}
+		mediaRefs, err = c.collectSingleMedia(c.ctx, scope, msg.MsgID, payload, "video", ".mp4")
 	case "mixed":
 		content, mediaRefs, err = c.collectMixedMedia(c.ctx, scope, msg)
 	default:
@@ -584,19 +609,7 @@ func (c *WeComChannel) dispatchIncoming(reqID string, msg wecomIncomingMessage) 
 	if quoteText != "" {
 		metadata["quote_text"] = quoteText
 	}
-
-	inboundCtx := bus.InboundContext{
-		Channel:   c.Name(),
-		Account:   strings.TrimSpace(msg.AIBotID),
-		ChatID:    actualChatID,
-		ChatType:  peerKind,
-		SenderID:  senderID,
-		MessageID: msg.MsgID,
-		ReplyHandles: map[string]string{
-			"req_id": reqID,
-		},
-		Raw: metadata,
-	}
+	inboundCtx.Raw = metadata
 
 	c.HandleInboundContext(c.ctx, actualChatID, content, mediaRefs, inboundCtx, sender)
 	return nil
@@ -626,8 +639,20 @@ type mediaPayload struct {
 	aesKey string
 }
 
-func (p *mediaPayload) GetURL() string    { return p.url }
-func (p *mediaPayload) GetAESKey() string { return p.aesKey }
+// The getters accept a nil payload, a message that lacks its media object.
+func (p *mediaPayload) GetURL() string {
+	if p == nil {
+		return ""
+	}
+	return p.url
+}
+
+func (p *mediaPayload) GetAESKey() string {
+	if p == nil {
+		return ""
+	}
+	return p.aesKey
+}
 
 func (c *WeComChannel) collectMixedMedia(
 	ctx context.Context,

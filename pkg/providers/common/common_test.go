@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
 
@@ -12,46 +11,6 @@ import (
 
 	"github.com/xibodev/compa/pkg/providers/protocoltypes"
 )
-
-// --- NewHTTPClient tests ---
-
-func TestNewHTTPClient_DefaultTimeout(t *testing.T) {
-	client := NewHTTPClient("")
-	if client.Timeout != DefaultRequestTimeout {
-		t.Errorf("timeout = %v, want %v", client.Timeout, DefaultRequestTimeout)
-	}
-}
-
-func TestNewHTTPClient_WithProxy(t *testing.T) {
-	client := NewHTTPClient("http://127.0.0.1:8080")
-	transport, ok := client.Transport.(*http.Transport)
-	if !ok || transport == nil {
-		t.Fatalf("expected http.Transport with proxy, got %T", client.Transport)
-	}
-	req := &http.Request{URL: &url.URL{Scheme: "https", Host: "api.example.com"}}
-	gotProxy, err := transport.Proxy(req)
-	if err != nil {
-		t.Fatalf("proxy function error: %v", err)
-	}
-	if gotProxy == nil || gotProxy.String() != "http://127.0.0.1:8080" {
-		t.Errorf("proxy = %v, want http://127.0.0.1:8080", gotProxy)
-	}
-}
-
-func TestNewHTTPClient_NoProxy(t *testing.T) {
-	client := NewHTTPClient("")
-	if client.Transport != nil {
-		t.Errorf("expected nil transport without proxy, got %T", client.Transport)
-	}
-}
-
-func TestNewHTTPClient_InvalidProxy(t *testing.T) {
-	// Should not panic, just log and return client without proxy
-	client := NewHTTPClient("://bad-url")
-	if client == nil {
-		t.Fatal("expected non-nil client even with invalid proxy")
-	}
-}
 
 // --- SerializeMessages tests ---
 
@@ -161,6 +120,80 @@ func TestSerializeMessages_StripsSystemParts(t *testing.T) {
 	data, _ := json.Marshal(result)
 	if strings.Contains(string(data), "system_parts") {
 		t.Error("system_parts should not appear in serialized output")
+	}
+}
+
+// joinedSystemText is the system text Anthropic gets from parts once
+// translation has made blocks of them: the text parts of one block joined
+// with "\n", a new block after each part with cache_control, and the blocks
+// concatenated.
+func joinedSystemText(parts []any) string {
+	var text strings.Builder
+	open := false
+	for _, raw := range parts {
+		part := raw.(map[string]any)
+		if open {
+			text.WriteString("\n")
+		}
+		text.WriteString(part["text"].(string))
+		open = part["cache_control"] == nil
+	}
+	return text.String()
+}
+
+func TestSerializeMessagesWithSystemPartsCarriesCacheControl(t *testing.T) {
+	ephemeral := &protocoltypes.CacheControl{Type: "ephemeral"}
+	parts := []protocoltypes.ContentBlock{
+		{Type: "text", Text: "static identity", CacheControl: ephemeral},
+		{Type: "text", Text: "an overlay"},
+		{Type: "text", Text: "  "},
+		{Type: "text", Text: "## Current Time\nnow", PromptLayer: "context"},
+		{Type: "text", Text: "cached tail", CacheControl: ephemeral},
+		{Type: "text", Text: "summary"},
+	}
+	content := "static identity\n\n---\n\nan overlay\n\n---\n\n## Current Time\nnow\n\n---\n\ncached tail\n\n---\n\nsummary"
+	messages := []Message{
+		{Role: "system", Content: content, SystemParts: parts},
+		{Role: "user", Content: "hi"},
+	}
+
+	result := SerializeMessagesWithSystemParts(messages)
+	system, ok := result[0].(map[string]any)
+	if !ok {
+		t.Fatalf("system message = %#v, want content parts", result[0])
+	}
+	sent, _ := system["content"].([]any)
+	if len(sent) != 5 {
+		t.Fatalf("parts = %#v, want the five non-empty parts", sent)
+	}
+	first := sent[0].(map[string]any)
+	if first["text"] != "static identity" || first["cache_control"].(map[string]any)["type"] != "ephemeral" {
+		t.Fatalf("first part = %#v, want the static block with its cache_control", first)
+	}
+	if got := joinedSystemText(sent); got != content {
+		t.Fatalf("translated system text = %q, want the message's content %q", got, content)
+	}
+	if user, _ := json.Marshal(result[1]); !strings.Contains(string(user), `"content":"hi"`) {
+		t.Fatalf("user message = %s", user)
+	}
+	if plain := SerializeMessages(messages); plain[0].(openaiMessage).Content != content {
+		t.Fatal("SerializeMessages no longer sends the content as a string")
+	}
+}
+
+func TestSerializeMessagesWithSystemPartsFallsBackToTheContent(t *testing.T) {
+	ephemeral := &protocoltypes.CacheControl{Type: "ephemeral"}
+	for name, message := range map[string]Message{
+		"rewritten content": {Role: "system", Content: "rewritten by a hook",
+			SystemParts: []protocoltypes.ContentBlock{{Type: "text", Text: "original", CacheControl: ephemeral}}},
+		"no cache breakpoint": {Role: "system", Content: "plain",
+			SystemParts: []protocoltypes.ContentBlock{{Type: "text", Text: "plain"}}},
+		"no parts": {Role: "system", Content: "plain"},
+	} {
+		result := SerializeMessagesWithSystemParts([]Message{message})
+		if got, ok := result[0].(openaiMessage); !ok || got.Content != message.Content {
+			t.Errorf("%s: system message = %#v, want its content as a string", name, result[0])
+		}
 	}
 }
 

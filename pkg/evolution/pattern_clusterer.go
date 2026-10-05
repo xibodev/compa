@@ -188,11 +188,21 @@ func (c *LLMPatternClusterer) BuildPatterns(
 	if !ok {
 		return fallback.BuildPatterns(ctx, workspace, tasks, existing)
 	}
-	patterns, clusteredIDs := c.validateAndBuildPatterns(workspace, payload.Clusters, tasks, existing)
+	patterns, clusteredIDs, assigned := c.validateAndBuildPatterns(workspace, payload.Clusters, tasks, existing)
 	if len(patterns) == 0 {
 		return fallback.BuildPatterns(ctx, workspace, tasks, existing)
 	}
-	return patterns, clusteredIDs, nil
+	// The tasks the model left out are clustered the simple way, so they are
+	// not sent again on every run.
+	rest := unassignedRecords(tasks, assigned)
+	if len(rest) == 0 {
+		return patterns, clusteredIDs, nil
+	}
+	more, moreIDs, err := fallback.BuildPatterns(ctx, workspace, rest, mergePatternRecords(existing, patterns, workspace))
+	if err != nil {
+		return nil, nil, err
+	}
+	return mergePatternRecords(patterns, more, workspace), appendUniqueStrings(clusteredIDs, moreIDs...), nil
 }
 
 func (c *LLMPatternClusterer) BuildPatternsWithEvidence(
@@ -276,18 +286,7 @@ func (c *LLMPatternClusterer) BuildPatternsWithEvidence(
 			minSuccessRatio,
 		)
 	}
-	if len(payload.Clusters) == 0 {
-		return buildFallbackPatternsWithEvidence(
-			ctx,
-			fallback,
-			workspace,
-			successfulTasks,
-			evidenceTasks,
-			existing,
-			minSuccessRatio,
-		)
-	}
-	patterns, clusteredIDs := c.validateAndBuildPatternsWithEvidence(
+	patterns, clusteredIDs, assigned := c.validateAndBuildPatternsWithEvidence(
 		workspace,
 		payload.Clusters,
 		successfulTasks,
@@ -295,7 +294,38 @@ func (c *LLMPatternClusterer) BuildPatternsWithEvidence(
 		existing,
 		minSuccessRatio,
 	)
-	return patterns, clusteredIDs, nil
+	// The model's valid clusters are kept, and the records it left out of
+	// every cluster are clustered the simple way, so they are not sent again
+	// on every run. A record it put in a cluster that fell short stays
+	// unclustered: the model judged it together with that cluster's records.
+	restEvidence := unassignedRecords(evidenceTasks, assigned)
+	if len(restEvidence) == 0 {
+		return patterns, clusteredIDs, nil
+	}
+	more, moreIDs, err := buildFallbackPatternsWithEvidence(
+		ctx,
+		fallback,
+		workspace,
+		unassignedRecords(successfulTasks, assigned),
+		restEvidence,
+		mergePatternRecords(existing, patterns, workspace),
+		minSuccessRatio,
+	)
+	if err != nil {
+		return nil, nil, err
+	}
+	return mergePatternRecords(patterns, more, workspace), appendUniqueStrings(clusteredIDs, moreIDs...), nil
+}
+
+// unassignedRecords returns the records whose IDs assigned lacks.
+func unassignedRecords(records []LearningRecord, assigned map[string]struct{}) []LearningRecord {
+	var rest []LearningRecord
+	for _, record := range records {
+		if _, ok := assigned[strings.TrimSpace(record.ID)]; !ok {
+			rest = append(rest, record)
+		}
+	}
+	return rest
 }
 
 func buildFallbackPatternsWithEvidence(
@@ -399,20 +429,23 @@ func buildFallbackPatternsWithEvidence(
 	return filteredPatterns, appendUniqueStrings(nil, clusteredIDs...), nil
 }
 
+// validateAndBuildPatterns builds the patterns of the model's valid clusters.
+// assigned holds the IDs of the tasks the model put in a cluster with a
+// valid label.
 func (c *LLMPatternClusterer) validateAndBuildPatterns(
 	workspace string,
 	clusters []llmCluster,
 	tasks []LearningRecord,
 	existing []LearningRecord,
-) ([]LearningRecord, []string) {
+) (patterns []LearningRecord, clusteredIDs []string, assigned map[string]struct{}) {
 	taskByID := make(map[string]LearningRecord, len(tasks))
 	for _, task := range tasks {
 		taskByID[task.ID] = task
 	}
 	existingByLabel := patternsByLabel(existing, workspace)
-	assigned := make(map[string]struct{}, len(tasks))
-	patterns := make([]LearningRecord, 0, len(clusters))
-	clusteredIDs := make([]string, 0)
+	assigned = make(map[string]struct{}, len(tasks))
+	patterns = make([]LearningRecord, 0, len(clusters))
+	clusteredIDs = make([]string, 0)
 
 	for _, cluster := range clusters {
 		label := validSkillNameOrEmpty(cluster.Label)
@@ -454,9 +487,12 @@ func (c *LLMPatternClusterer) validateAndBuildPatterns(
 		patterns = append(patterns, pattern)
 		clusteredIDs = append(clusteredIDs, collectRecordIDs(clusterTasks)...)
 	}
-	return patterns, clusteredIDs
+	return patterns, clusteredIDs, assigned
 }
 
+// validateAndBuildPatternsWithEvidence builds the patterns of the model's
+// valid clusters. assigned holds the IDs of the records the model put in a
+// cluster with a valid label, whether the cluster made a pattern or not.
 func (c *LLMPatternClusterer) validateAndBuildPatternsWithEvidence(
 	workspace string,
 	clusters []llmCluster,
@@ -464,7 +500,7 @@ func (c *LLMPatternClusterer) validateAndBuildPatternsWithEvidence(
 	evidenceTasks []LearningRecord,
 	existing []LearningRecord,
 	minSuccessRatio float64,
-) ([]LearningRecord, []string) {
+) (patterns []LearningRecord, clusteredIDs []string, assigned map[string]struct{}) {
 	evidenceByID := make(map[string]LearningRecord, len(evidenceTasks))
 	for _, task := range evidenceTasks {
 		evidenceByID[task.ID] = task
@@ -474,9 +510,9 @@ func (c *LLMPatternClusterer) validateAndBuildPatternsWithEvidence(
 		successfulByID[task.ID] = task
 	}
 	existingByLabel := patternsByLabel(existing, workspace)
-	assigned := make(map[string]struct{}, len(evidenceTasks))
-	patterns := make([]LearningRecord, 0, len(clusters))
-	clusteredIDs := make([]string, 0)
+	assigned = make(map[string]struct{}, len(evidenceTasks))
+	patterns = make([]LearningRecord, 0, len(clusters))
+	clusteredIDs = make([]string, 0)
 
 	for _, cluster := range clusters {
 		label := validSkillNameOrEmpty(cluster.Label)
@@ -528,10 +564,7 @@ func (c *LLMPatternClusterer) validateAndBuildPatternsWithEvidence(
 		patterns = append(patterns, pattern)
 		clusteredIDs = append(clusteredIDs, collectRecordIDs(clusterEvidence)...)
 	}
-	if len(assigned) != len(evidenceByID) {
-		return nil, nil
-	}
-	return patterns, clusteredIDs
+	return patterns, clusteredIDs, assigned
 }
 
 func parseLLMClusterResponse(content string) (llmClusterResponse, bool) {

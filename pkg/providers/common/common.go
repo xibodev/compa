@@ -15,14 +15,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
 	core "github.com/xibodev/llmgw-core"
 
+	"github.com/xibodev/compa/pkg/logger"
 	"github.com/xibodev/compa/pkg/providers/protocoltypes"
 )
 
@@ -39,34 +38,6 @@ type (
 	GoogleExtra            = protocoltypes.GoogleExtra
 	ReasoningDetail        = protocoltypes.ReasoningDetail
 )
-
-const DefaultRequestTimeout = 120 * time.Second
-
-// NewHTTPClient creates an *http.Client with an optional proxy and the default timeout.
-func NewHTTPClient(proxy string) *http.Client {
-	client := &http.Client{
-		Timeout: DefaultRequestTimeout,
-	}
-	if proxy != "" {
-		parsed, err := url.Parse(proxy)
-		if err == nil {
-			// Preserve http.DefaultTransport settings (TLS, HTTP/2, timeouts, etc.)
-			if base, ok := http.DefaultTransport.(*http.Transport); ok {
-				tr := base.Clone()
-				tr.Proxy = http.ProxyURL(parsed)
-				client.Transport = tr
-			} else {
-				// Fallback: minimal transport if DefaultTransport is not *http.Transport.
-				client.Transport = &http.Transport{
-					Proxy: http.ProxyURL(parsed),
-				}
-			}
-		} else {
-			log.Printf("common: invalid proxy URL %q: %v", proxy, err)
-		}
-	}
-	return client
-}
 
 // --- Message serialization ---
 
@@ -158,6 +129,75 @@ func SerializeMessages(messages []Message) []any {
 		out = append(out, msg)
 	}
 	return out
+}
+
+// systemPartSeparator joins a system message's SystemParts into its content,
+// as the agent joins its prompt parts.
+const systemPartSeparator = "\n\n---\n\n"
+
+// SerializeMessagesWithSystemParts is SerializeMessages for an upstream that
+// caches prompt prefixes by content part, as Anthropic does, reached through
+// translation: a system message whose SystemParts render its content and mark
+// a cache breakpoint is sent as those parts, each with its cache_control. A
+// system message whose parts no longer render its content, as after a hook
+// rewrote it, is sent as its content.
+//
+// Translation joins the text parts of one cached block with "\n" and starts
+// the next block after a breakpoint fresh, so each part after the first
+// carries the rest of the separator: the system text the model gets is the
+// message's content either way.
+func SerializeMessagesWithSystemParts(messages []Message) []any {
+	out := SerializeMessages(messages)
+	for i, m := range messages {
+		if m.Role != "system" || len(m.Media) > 0 {
+			continue
+		}
+		if parts := systemContentParts(m); parts != nil {
+			out[i] = map[string]any{"role": m.Role, "content": parts}
+		}
+	}
+	return out
+}
+
+// systemContentParts returns the content parts of a system message's
+// SystemParts, or nil when they do not render its content or set no
+// cache_control.
+func systemContentParts(m Message) []any {
+	blocks := make([]protocoltypes.ContentBlock, 0, len(m.SystemParts))
+	texts := make([]string, 0, len(m.SystemParts))
+	cached := false
+	for _, block := range m.SystemParts {
+		if block.Type != "" && block.Type != "text" {
+			return nil
+		}
+		if strings.TrimSpace(block.Text) == "" {
+			continue
+		}
+		blocks = append(blocks, block)
+		texts = append(texts, block.Text)
+		cached = cached || block.CacheControl != nil
+	}
+	if !cached || strings.Join(texts, systemPartSeparator) != m.Content {
+		return nil
+	}
+	parts := make([]any, 0, len(blocks))
+	for i, block := range blocks {
+		text := block.Text
+		switch {
+		case i == 0:
+		case blocks[i-1].CacheControl != nil:
+			text = systemPartSeparator + text
+		default:
+			// Joined to the part before with "\n".
+			text = systemPartSeparator[1:] + text
+		}
+		part := map[string]any{"type": "text", "text": text}
+		if block.CacheControl != nil {
+			part["cache_control"] = map[string]any{"type": block.CacheControl.Type}
+		}
+		parts = append(parts, part)
+	}
+	return parts
 }
 
 func serializeToolCalls(toolCalls []ToolCall) []openaiToolCall {
@@ -314,7 +354,11 @@ func ParseResponse(body io.Reader) (*LLMResponse, error) {
 				}
 				seenIDs[id] = struct{}{}
 			}
-			toolCalls = append(toolCalls, completionToolCallToToolCall(tc, len(toolCalls)))
+			toolCall, err := completionToolCallToToolCall(tc, len(toolCalls))
+			if err != nil {
+				return nil, err
+			}
+			toolCalls = append(toolCalls, toolCall)
 		}
 	}
 	out.ToolCalls = toolCalls
@@ -322,7 +366,10 @@ func ParseResponse(body io.Reader) (*LLMResponse, error) {
 	return out, nil
 }
 
-func completionToolCallToToolCall(tc completionToolCall, index int) ToolCall {
+// completionToolCallToToolCall converts one tool call of an answer. A call
+// whose arguments do not decode fails the answer: it must not run with
+// arguments it did not mean.
+func completionToolCallToToolCall(tc completionToolCall, index int) (ToolCall, error) {
 	arguments := make(map[string]any)
 	name := ""
 
@@ -336,7 +383,15 @@ func completionToolCallToToolCall(tc completionToolCall, index int) ToolCall {
 
 	if tc.Function != nil {
 		name = tc.Function.Name
-		arguments = DecodeToolCallArguments(tc.Function.Arguments, name)
+		decoded, _, err := decodeToolCallArguments(tc.Function.Arguments)
+		if err != nil {
+			logger.WarnCF("providers", "Failed to decode tool call arguments", map[string]any{
+				"tool":  name,
+				"error": err.Error(),
+			})
+			return ToolCall{}, InvalidToolArgumentsError(name)
+		}
+		arguments = decoded
 	}
 
 	toolCall := ToolCall{
@@ -362,7 +417,7 @@ func completionToolCallToToolCall(tc completionToolCall, index int) ToolCall {
 			toolCall.ExtraContent = extraContent
 		}
 	}
-	return toolCall
+	return toolCall, nil
 }
 
 // NormalizeFinishReason returns the finish reason Compa records for an
@@ -466,37 +521,59 @@ func AnswerError(message string) error {
 	}
 }
 
-// DecodeToolCallArguments decodes a tool call's arguments from raw JSON.
+// DecodeToolCallArguments decodes a tool call's arguments from raw JSON: a
+// JSON object, or a JSON string holding one. Arguments that do not decode
+// come back as {"raw": <their text>}.
 func DecodeToolCallArguments(raw json.RawMessage, name string) map[string]any {
+	arguments, text, err := decodeToolCallArguments(raw)
+	if err != nil {
+		logger.WarnCF("providers", "Failed to decode tool call arguments", map[string]any{
+			"tool":  name,
+			"error": err.Error(),
+		})
+		return map[string]any{"raw": text}
+	}
+	return arguments
+}
+
+// decodeToolCallArguments decodes a tool call's arguments, returning on
+// failure the text that did not decode.
+func decodeToolCallArguments(raw json.RawMessage) (map[string]any, string, error) {
 	arguments := make(map[string]any)
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
-		return arguments
+		return arguments, "", nil
 	}
 
 	var decoded any
 	if err := json.Unmarshal(raw, &decoded); err != nil {
-		log.Printf("common: failed to decode tool call arguments payload for %q: %v", name, err)
-		arguments["raw"] = string(raw)
-		return arguments
+		return nil, string(raw), err
 	}
 
 	switch v := decoded.(type) {
 	case string:
 		if strings.TrimSpace(v) == "" {
-			return arguments
+			return arguments, "", nil
 		}
 		if err := json.Unmarshal([]byte(v), &arguments); err != nil {
-			log.Printf("common: failed to decode tool call arguments for %q: %v", name, err)
-			arguments["raw"] = v
+			return nil, v, err
 		}
-		return arguments
+		return arguments, "", nil
 	case map[string]any:
-		return v
+		return v, "", nil
 	default:
-		log.Printf("common: unsupported tool call arguments type for %q: %T", name, decoded)
-		arguments["raw"] = string(raw)
-		return arguments
+		return nil, string(raw), fmt.Errorf("unsupported tool call arguments type %T", decoded)
+	}
+}
+
+// InvalidToolArgumentsError is the failure of an answer that calls tool with
+// arguments that are not a JSON object: the call is not run. Another target
+// may answer properly.
+func InvalidToolArgumentsError(tool string) error {
+	return &core.ProviderError{
+		Message:        fmt.Sprintf("the provider sent arguments for tool %q that are not valid JSON; the tool was not run", tool),
+		Class:          core.ProviderErrorUpstream,
+		Classification: core.ProviderErrorClassification{FailoverEligible: true},
 	}
 }
 

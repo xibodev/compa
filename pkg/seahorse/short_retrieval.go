@@ -44,9 +44,12 @@ func ParseLastDuration(s string) (time.Duration, error) {
 
 // GrepInput controls search across summaries and messages.
 type GrepInput struct {
-	Pattern          string     `json:"pattern"`
-	Scope            string     `json:"scope,omitempty"` // "both" (default), "summary", or "message"
-	Role             string     `json:"role,omitempty"`  // "user", "assistant", or "" (all)
+	Pattern string `json:"pattern"`
+	Scope   string `json:"scope,omitempty"` // "both" (default), "summary", or "message"
+	Role    string `json:"role,omitempty"`  // "user", "assistant", or "" (all)
+	// ConversationID limits the search to one conversation unless
+	// AllConversations is set. Zero means no conversation filter.
+	ConversationID   int64      `json:"conversationId,omitempty"`
 	AllConversations bool       `json:"allConversations,omitempty"`
 	Since            *time.Time `json:"since,omitempty"`
 	Before           *time.Time `json:"before,omitempty"`
@@ -89,6 +92,9 @@ type GrepMessageResult struct {
 type ExpandMessagesResult struct {
 	Messages   []Message `json:"messages"`
 	TokenCount int       `json:"tokenCount"`
+	// Skipped lists requested IDs that were not found or are outside the
+	// requested conversation.
+	Skipped []int64 `json:"skipped,omitempty"`
 }
 
 // Grep searches summaries and messages for matching content.
@@ -123,6 +129,7 @@ func (r *RetrievalEngine) Grep(ctx context.Context, input GrepInput) (*GrepResul
 		Pattern:          input.Pattern,
 		Mode:             mode,
 		Role:             input.Role,
+		ConversationID:   input.ConversationID,
 		AllConversations: input.AllConversations,
 		Since:            since,
 		Before:           input.Before,
@@ -198,13 +205,23 @@ func (r *RetrievalEngine) Grep(ctx context.Context, input GrepInput) (*GrepResul
 
 // ExpandMessages retrieves full message content by IDs.
 func (r *RetrievalEngine) ExpandMessages(ctx context.Context, messageIDs []int64) (*ExpandMessagesResult, error) {
+	return r.ExpandMessagesIn(ctx, messageIDs, 0)
+}
+
+// ExpandMessagesIn retrieves full message content by IDs, skipping messages
+// outside conversationID unless it is zero. Skipped and missing IDs are listed
+// in the result.
+func (r *RetrievalEngine) ExpandMessagesIn(
+	ctx context.Context, messageIDs []int64, conversationID int64,
+) (*ExpandMessagesResult, error) {
 	result := &ExpandMessagesResult{
 		Messages: make([]Message, 0, len(messageIDs)),
 	}
 
 	for _, msgID := range messageIDs {
 		msg, err := r.store.GetMessageByID(ctx, msgID)
-		if err != nil {
+		if err != nil || (conversationID != 0 && msg.ConversationID != conversationID) {
+			result.Skipped = append(result.Skipped, msgID)
 			continue
 		}
 		result.Messages = append(result.Messages, *msg)
@@ -212,4 +229,17 @@ func (r *RetrievalEngine) ExpandMessages(ctx context.Context, messageIDs []int64
 	}
 
 	return result, nil
+}
+
+// CurrentConversationID returns the conversation stored for sessionKey, or
+// zero when there is none yet.
+func (r *RetrievalEngine) CurrentConversationID(ctx context.Context, sessionKey string) (int64, error) {
+	if sessionKey == "" {
+		return 0, nil
+	}
+	conv, err := r.store.GetConversationBySessionKey(ctx, sessionKey)
+	if err != nil || conv == nil {
+		return 0, err
+	}
+	return conv.ConversationID, nil
 }

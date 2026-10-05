@@ -58,7 +58,10 @@ export function ModelsWorkspace() {
         aria-labelledby={`models-tab-${section}`}
       >
         <div className="mx-auto max-w-6xl">
-          <DefaultModelBar defaultModel={defaultModel} targets={state.targets} />
+          <DefaultModelBar
+            defaultModel={defaultModel}
+            targets={state.targets}
+          />
           {state.error && (
             <p role="alert" className="text-destructive mb-4 text-sm">
               {state.error}

@@ -8,6 +8,7 @@ import (
 
 	"github.com/mymmrac/telego"
 
+	"github.com/xibodev/compa/pkg/channels"
 	"github.com/xibodev/compa/pkg/commands"
 	"github.com/xibodev/compa/pkg/logger"
 )
@@ -46,15 +47,15 @@ func (c *TelegramChannel) RegisterCommands(ctx context.Context, defs []commands.
 	if err != nil {
 		// If we can't read current commands, fall through to set them.
 		logger.WarnCF("telegram", "Failed to get current commands, will set unconditionally",
-			map[string]any{"error": err.Error()})
+			map[string]any{"error": c.redactToken(err.Error())})
 	} else if slices.Equal(current, botCommands) {
 		logger.DebugCF("telegram", "Bot commands are up to date", nil)
 		return nil
 	}
 
-	return c.bot.SetMyCommands(ctx, &telego.SetMyCommandsParams{
+	return c.safeErr(c.bot.SetMyCommands(ctx, &telego.SetMyCommandsParams{
 		Commands: botCommands,
-	})
+	}))
 }
 
 func (c *TelegramChannel) startCommandRegistration(ctx context.Context, defs []commands.Definition) {
@@ -77,6 +78,7 @@ func (c *TelegramChannel) startCommandRegistration(ctx context.Context, defs []c
 	// Registration runs asynchronously so Telegram message intake is never blocked
 	// by temporary upstream API failures. Retry stops on success or channel shutdown.
 	go func() {
+		defer channels.RecoverPanic("telegram", "command registration")
 		attempt := 0
 		timer := time.NewTimer(0)
 		if !timer.Stop() {
@@ -97,7 +99,7 @@ func (c *TelegramChannel) startCommandRegistration(ctx context.Context, defs []c
 
 			delay := delayFn(attempt)
 			logger.WarnCF("telegram", "Telegram command registration failed; will retry", map[string]any{
-				"error":       err.Error(),
+				"error":       c.redactToken(err.Error()),
 				"retry_after": delay.String(),
 			})
 			attempt++

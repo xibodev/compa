@@ -1,12 +1,15 @@
+import type { TFunction } from "i18next"
+
 import { launcherFetch } from "@/api/http"
 
 /**
  * Detached modules.
  *
  * A module is a separate local process that contributes capabilities to the
- * agent. Installing one grants it nothing by itself: the host supplies
- * filesystem roots and subprocess binaries per invocation, and a capability
- * declaring unknown cost requires human approval before it runs.
+ * agent. It runs under the user's account: the host names the filesystem
+ * roots and subprocess binaries for each invocation, but does not confine the
+ * process to them. The approval policy (tools.approval) decides which
+ * capabilities need human approval before they run.
  */
 
 export interface CapabilityView {
@@ -105,7 +108,12 @@ export interface InvokeResult {
   module: string
   capability: string
   duration_ms: number
-  error?: { code: string; message: string; retryable: boolean; details: Record<string, unknown> }
+  error?: {
+    code: string
+    message: string
+    retryable: boolean
+    details: Record<string, unknown>
+  }
   execution: ExecutionView
   warnings: string[]
   /** The host's own findings about this invocation, kept separate from the
@@ -173,25 +181,33 @@ export async function removeModule(id: string): Promise<void> {
  * Disabling keeps the binary, its state and its declared content on disk, so
  * re-enabling restores what the user had rather than making them re-install.
  */
-export async function setModuleEnabled(id: string, enabled: boolean): Promise<void> {
-  const res = await launcherFetch(`/api/modules/${encodeURIComponent(id)}/enabled`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ enabled }),
-  })
+export async function setModuleEnabled(
+  id: string,
+  enabled: boolean,
+): Promise<void> {
+  const res = await launcherFetch(
+    `/api/modules/${encodeURIComponent(id)}/enabled`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    },
+  )
   if (!res.ok) {
     const body = await res.json().catch(() => null)
-    throw new Error(body?.error ?? `could not change enabled state: ${res.status}`)
+    throw new Error(
+      body?.error ?? `could not change enabled state: ${res.status}`,
+    )
   }
 }
 
 /**
  * Run one capability.
  *
- * `approved` says a person clicked "Approve and run" on a capability whose
- * declared effects were shown to them first. It is the only way a consent claim
- * survives into a module request: approval arriving through the agent is
- * stripped by the host, because the model was observed minting
+ * `approved` answers the approval policy's ask: a person clicked "Approve and
+ * run" on a capability whose declared effects were shown to them first. The
+ * host then records the consent in the module request. Consent fields the
+ * model writes itself are always stripped: it was observed minting
  * `paid_generation_approved` from a chat sentence.
  */
 export async function invokeCapability(
@@ -200,11 +216,14 @@ export async function invokeCapability(
   input: unknown,
   approved = false,
 ): Promise<InvokeResult> {
-  const res = await launcherFetch(`/api/modules/${encodeURIComponent(moduleId)}/invoke`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ capability, input, approved }),
-  })
+  const res = await launcherFetch(
+    `/api/modules/${encodeURIComponent(moduleId)}/invoke`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ capability, input, approved }),
+    },
+  )
   const body = await res.json()
   if (!res.ok) throw new Error(body?.error ?? `invoke failed: ${res.status}`)
   return body
@@ -217,18 +236,25 @@ export async function invokeCapability(
  * different approval decisions, and collapsing them is how an unpriced call
  * looks safe.
  */
-export function formatCost(value: number | null | undefined): string {
-  if (value === null || value === undefined) return "UNKNOWN"
-  if (value === 0) return "free"
+export function formatCost(
+  value: number | null | undefined,
+  t: TFunction,
+): string {
+  if (value === null || value === undefined)
+    return t("pages.agent.modules.cost_unknown")
+  if (value === 0) return t("pages.agent.modules.cost_free")
   return value.toFixed(4)
 }
 
 /** The declared effects of a capability, in words a person can act on. */
-export function describeEffects(cap: CapabilityView): string[] {
+export function describeEffects(cap: CapabilityView, t: TFunction): string[] {
   const notes: string[] = []
-  if (cap.network) notes.push("reaches the network")
-  if (cap.external_writes) notes.push("writes files")
-  if (!cap.cost_known) notes.push("cost UNKNOWN — may bill real money")
-  else if (cap.provider && cap.provider !== "local") notes.push(`provider ${cap.provider}`)
+  if (cap.network) notes.push(t("pages.agent.modules.effect_network"))
+  if (cap.external_writes) notes.push(t("pages.agent.modules.effect_writes"))
+  if (!cap.cost_known) notes.push(t("pages.agent.modules.effect_cost_unknown"))
+  else if (cap.provider && cap.provider !== "local")
+    notes.push(
+      t("pages.agent.modules.effect_provider", { provider: cap.provider }),
+    )
   return notes
 }

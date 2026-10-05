@@ -12,7 +12,7 @@
           "version": "0.0.0.0"
         },
         "description": "Compa - Web-based configuration editor",
-        "minimum-os": "win7",
+        "minimum-os": "win10",
         "execution-level": "asInvoker",
         "dpi-awareness": "system",
         "use-common-controls-v6": true

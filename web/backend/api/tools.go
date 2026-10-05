@@ -255,30 +255,27 @@ func moduleToolSupport(ctx context.Context) []toolSupportItem {
 }
 
 func (h *Handler) handleUpdateToolState(w http.ResponseWriter, r *http.Request) {
-	cfg, err := config.LoadConfig(h.configPath)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to load config: %v", err), http.StatusInternalServerError)
-		return
-	}
-
 	var req toolStateRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, fmt.Sprintf("Invalid JSON: %v", err), http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("Invalid JSON: %v", err))
 		return
 	}
 
-	if err := applyToolState(cfg, r.PathValue("name"), req.Enabled); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	var invalid error
+	_, err := h.updateConfig(func(cfg *config.Config) error {
+		invalid = applyToolState(cfg, r.PathValue("name"), req.Enabled)
+		return invalid
+	})
+	switch {
+	case invalid != nil:
+		writeJSONError(w, http.StatusBadRequest, invalid.Error())
+		return
+	case err != nil:
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
-	if err := config.SaveConfig(h.configPath, cfg); err != nil {
-		http.Error(w, fmt.Sprintf("Failed to save config: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func buildToolSupport(cfg *config.Config) []toolSupportItem {
@@ -459,24 +456,32 @@ func (h *Handler) handleGetWebSearchConfig(w http.ResponseWriter, r *http.Reques
 }
 
 func (h *Handler) handleUpdateWebSearchConfig(w http.ResponseWriter, r *http.Request) {
-	cfg, err := config.LoadConfig(h.configPath)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to load config: %v", err), http.StatusInternalServerError)
-		return
-	}
-
 	var req webSearchConfigRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, fmt.Sprintf("Invalid JSON: %v", err), http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, fmt.Sprintf("Invalid JSON: %v", err))
 		return
 	}
 
 	provider := normalizeWebSearchProvider(req.Provider)
 	if provider == "" {
-		http.Error(w, "invalid web search provider", http.StatusBadRequest)
+		writeJSONError(w, http.StatusBadRequest, "invalid web search provider")
 		return
 	}
 
+	cfg, err := h.updateConfig(func(cfg *config.Config) error {
+		applyWebSearchConfig(cfg, provider, req)
+		return nil
+	})
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusOK, buildWebSearchConfigResponse(cfg))
+}
+
+// applyWebSearchConfig applies a web search settings request to cfg.
+func applyWebSearchConfig(cfg *config.Config, provider string, req webSearchConfigRequest) {
 	cfg.Tools.Web.Provider = provider
 	cfg.Tools.Web.PreferNative = req.PreferNative
 	cfg.Tools.Web.Proxy = strings.TrimSpace(req.Proxy)
@@ -547,16 +552,6 @@ func (h *Handler) handleUpdateWebSearchConfig(w http.ResponseWriter, r *http.Req
 		if key := strings.TrimSpace(settings.APIKey); key != "" {
 			cfg.Tools.Web.BaiduSearch.APIKey = *config.NewSecureString(key)
 		}
-	}
-
-	if err := config.SaveConfig(h.configPath, cfg); err != nil {
-		http.Error(w, fmt.Sprintf("Failed to save config: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(buildWebSearchConfigResponse(cfg)); err != nil {
-		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
 	}
 }
 

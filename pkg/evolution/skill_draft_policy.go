@@ -1,6 +1,11 @@
 package evolution
 
-import "strings"
+import (
+	"strconv"
+	"strings"
+
+	"gopkg.in/yaml.v3"
+)
 
 func skillDraftPromptInstructions() []string {
 	return []string{
@@ -80,16 +85,41 @@ func normalizeDeployableDescription(body string) string {
 		if !inFrontmatter || !strings.HasPrefix(trimmed, "description:") {
 			continue
 		}
-		value := strings.TrimSpace(strings.TrimPrefix(trimmed, "description:"))
-		value = cleanDeployableDescription(value)
-		lines[i] = "description: " + value
+		raw := strings.TrimSpace(strings.TrimPrefix(trimmed, "description:"))
+		if strings.HasPrefix(raw, "|") || strings.HasPrefix(raw, ">") {
+			break // block scalar spanning several lines: leave it as written
+		}
+		// Parse the value as YAML and write it back the same way, so quoting
+		// that a value like "Convert documents: PDF to text" needs survives.
+		lines[i] = yamlDescriptionLine(cleanDeployableDescription(yamlScalarValue(raw)))
 		break
 	}
 	return strings.Join(lines, "\n")
 }
 
+// yamlScalarValue returns the string a one-line YAML scalar denotes.
+func yamlScalarValue(raw string) string {
+	var parsed struct {
+		Value string `yaml:"v"`
+	}
+	if err := yaml.Unmarshal([]byte("v: "+raw), &parsed); err == nil {
+		return parsed.Value
+	}
+	return strings.Trim(raw, `"'`)
+}
+
+// yamlDescriptionLine renders a description frontmatter line with the quoting
+// the value needs.
+func yamlDescriptionLine(value string) string {
+	out, err := yaml.Marshal(map[string]string{"description": value})
+	if err != nil || strings.Count(strings.TrimRight(string(out), "\n"), "\n") > 0 {
+		return "description: " + strconv.Quote(value)
+	}
+	return strings.TrimRight(string(out), "\n")
+}
+
 func cleanDeployableDescription(description string) string {
-	description = strings.TrimSpace(strings.Trim(description, `"'`))
+	description = strings.TrimSpace(description)
 	for _, marker := range []string{
 		" for: ",
 		" from learned pattern: ",

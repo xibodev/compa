@@ -3,6 +3,7 @@ package mcp
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -448,22 +449,133 @@ func TestMCPEditUsesEditor(t *testing.T) {
 	editorCommand = func(name string, args ...string) *exec.Cmd {
 		gotName = name
 		gotArgs = append([]string(nil), args...)
-		if runtime.GOOS == "windows" {
-			return exec.Command("cmd", "/c", "exit 0")
-		}
-		return exec.Command("sh", "-c", "exit 0")
+		return noopCommand()
 	}
 
 	t.Setenv("EDITOR", `dummy-editor --wait`)
 
 	cmd := NewMCPCommand()
-	_, err := executeCommand(cmd, []string{"edit"}, "")
+	output, err := executeCommand(cmd, []string{"edit"}, "")
 	require.NoError(t, err)
 
 	assert.Equal(t, "dummy-editor", gotName)
-	assert.Equal(t, []string{"--wait", configPath}, gotArgs)
+	require.Len(t, gotArgs, 2)
+	assert.Equal(t, "--wait", gotArgs[0])
+	assert.Equal(t, filepath.Dir(configPath), filepath.Dir(gotArgs[1]))
+	assert.Contains(t, output, "No changes.")
+	// Nothing is written when the editor changed nothing, and the copy is gone.
 	_, statErr := os.Stat(configPath)
-	assert.NoError(t, statErr)
+	assert.True(t, os.IsNotExist(statErr), "config must not be created without changes")
+	_, statErr = os.Stat(gotArgs[1])
+	assert.True(t, os.IsNotExist(statErr), "edit copy must be removed")
+}
+
+func TestMCPEditWritesOnlyAfterEditorAndKeepsEnvOverridesOut(t *testing.T) {
+	configPath := setupMCPConfigEnv(t)
+	writeMCPConfig(t, configPath, nil)
+	before, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	t.Setenv("COMPA_AGENTS_DEFAULTS_MODEL_NAME", "env-only-model")
+
+	originalEditor := editorCommand
+	defer func() { editorCommand = originalEditor }()
+	editorCommand = func(name string, args ...string) *exec.Cmd {
+		draft := args[len(args)-1]
+		// The editor sees the file as stored, and the real config is
+		// untouched while it runs.
+		data, err := os.ReadFile(draft)
+		require.NoError(t, err)
+		assert.Equal(t, string(before), string(data))
+		current, err := os.ReadFile(configPath)
+		require.NoError(t, err)
+		assert.Equal(t, string(before), string(current))
+
+		var doc map[string]any
+		require.NoError(t, json.Unmarshal(data, &doc))
+		doc["tools"].(map[string]any)["mcp"].(map[string]any)["servers"] = map[string]any{
+			"files": map[string]any{"enabled": true, "command": "npx"},
+		}
+		edited, err := json.MarshalIndent(doc, "", "  ")
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(draft, edited, 0o600))
+		return noopCommand()
+	}
+	t.Setenv("EDITOR", "dummy-editor")
+
+	output, err := executeCommand(NewMCPCommand(), []string{"edit"}, "")
+	require.NoError(t, err)
+	assert.Contains(t, output, "Config saved.")
+
+	saved, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(saved), `"files"`)
+	assert.NotContains(t, string(saved), "env-only-model")
+}
+
+func TestMCPEditRejectsInvalidEdit(t *testing.T) {
+	configPath := setupMCPConfigEnv(t)
+	writeMCPConfig(t, configPath, nil)
+	before, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+
+	originalEditor := editorCommand
+	defer func() { editorCommand = originalEditor }()
+	editorCommand = func(name string, args ...string) *exec.Cmd {
+		require.NoError(t, os.WriteFile(args[len(args)-1], []byte(`{"tools": {"mcp": {"servers": {"x": {"enabled": "yes"}}}}`), 0o600))
+		return noopCommand()
+	}
+	t.Setenv("EDITOR", "dummy-editor")
+
+	_, err = executeCommand(NewMCPCommand(), []string{"edit"}, "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "config not saved")
+
+	after, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	assert.Equal(t, string(before), string(after))
+}
+
+// The edit is loaded the way the kernel loads config.json: a key it does not
+// know, such as a typo, is refused instead of saved.
+func TestMCPEditRejectsUnknownKey(t *testing.T) {
+	configPath := setupMCPConfigEnv(t)
+	writeMCPConfig(t, configPath, nil)
+	before, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+
+	originalEditor := editorCommand
+	defer func() { editorCommand = originalEditor }()
+	editorCommand = func(name string, args ...string) *exec.Cmd {
+		draft := args[len(args)-1]
+		var doc map[string]any
+		data, err := os.ReadFile(draft)
+		require.NoError(t, err)
+		require.NoError(t, json.Unmarshal(data, &doc))
+		doc["tools"].(map[string]any)["mcp"].(map[string]any)["servers"] = map[string]any{
+			"files": map[string]any{"enabled": true, "command": "npx", "trustd": true},
+		}
+		edited, err := json.MarshalIndent(doc, "", "  ")
+		require.NoError(t, err)
+		require.NoError(t, os.WriteFile(draft, edited, 0o600))
+		return noopCommand()
+	}
+	t.Setenv("EDITOR", "dummy-editor")
+
+	_, err = executeCommand(NewMCPCommand(), []string{"edit"}, "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "config not saved")
+	assert.Contains(t, err.Error(), "trustd")
+
+	after, err := os.ReadFile(configPath)
+	require.NoError(t, err)
+	assert.Equal(t, string(before), string(after))
+}
+
+func noopCommand() *exec.Cmd {
+	if runtime.GOOS == "windows" {
+		return exec.Command("cmd", "/c", "exit 0")
+	}
+	return exec.Command("sh", "-c", "exit 0")
 }
 
 func TestMCPEditRequiresEditor(t *testing.T) {
@@ -543,6 +655,33 @@ func TestMCPAddNoDeferredByDefault(t *testing.T) {
 	cfg := readMCPConfig(t, configPath)
 	server := cfg.Tools.MCP.Servers["myserver"]
 	assert.Nil(t, server.Deferred)
+	assert.False(t, server.Trusted)
+	assert.Empty(t, server.Cwd)
+}
+
+// trusted and cwd are saved, and a config that has them still validates
+// when another server is added.
+func TestMCPAddTrustedAndCwd(t *testing.T) {
+	configPath := setupMCPConfigEnv(t)
+
+	_, err := executeCommand(NewMCPCommand(), []string{
+		"add", "--trusted", "--cwd", "~/projects", "files", "npx", "server-files",
+	}, "")
+	require.NoError(t, err)
+	_, err = executeCommand(NewMCPCommand(), []string{"add", "other", "npx", "other-mcp"}, "")
+	require.NoError(t, err)
+
+	cfg := readMCPConfig(t, configPath)
+	server := cfg.Tools.MCP.Servers["files"]
+	assert.True(t, server.Trusted)
+	assert.Equal(t, "~/projects", server.Cwd)
+	assert.Contains(t, cfg.Tools.MCP.Servers, "other")
+
+	_, err = executeCommand(NewMCPCommand(), []string{
+		"add", "--cwd", "/tmp", "-t", "http", "remote", "https://mcp.example.com/mcp",
+	}, "")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--cwd can only be used with stdio transport")
 }
 
 func TestMCPShowNotFound(t *testing.T) {
@@ -566,6 +705,8 @@ func TestMCPShowDisabledServer(t *testing.T) {
 						Enabled: false,
 						Type:    "stdio",
 						Command: "npx",
+						Trusted: true,
+						Cwd:     "~/work",
 					},
 				},
 			},
@@ -577,6 +718,8 @@ func TestMCPShowDisabledServer(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, output, "myserver")
 	assert.Contains(t, output, "disabled")
+	assert.Regexp(t, `Trusted\S*\s+yes`, output)
+	assert.Contains(t, output, "~/work")
 }
 
 func TestMCPShowUsesProbe(t *testing.T) {

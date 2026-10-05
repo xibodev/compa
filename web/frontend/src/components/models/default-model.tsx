@@ -31,7 +31,10 @@ export function DefaultModelBar({
             {t("models.management.default.label")}
           </span>
           {label ? (
-            <span className="flex min-w-0 items-baseline gap-1.5" title={selection}>
+            <span
+              className="flex min-w-0 items-baseline gap-1.5"
+              title={selection}
+            >
               <strong className="text-foreground truncate font-semibold">
                 {label.model}
               </strong>

@@ -3,12 +3,15 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/xibodev/compa/pkg/approval"
 	"github.com/xibodev/compa/pkg/bus"
 	"github.com/xibodev/compa/pkg/config"
 	"github.com/xibodev/compa/pkg/constants"
@@ -34,6 +37,21 @@ type CronTool struct {
 	allowCommand          bool
 	execEnabled           bool
 	commandAllowedRemotes []string
+	// policy is tools.approval: without a gate, it alone decides a run of a
+	// scheduled command.
+	policy approval.Policy
+
+	gateMu sync.Mutex
+	gate   approval.Gate
+}
+
+// SetApprovalGate sets the gate that decides each run of a scheduled
+// command, asking when the approval policy says to. Without a gate the policy
+// alone decides, and a command it says to ask about does not run.
+func (t *CronTool) SetApprovalGate(gate approval.Gate) {
+	t.gateMu.Lock()
+	defer t.gateMu.Unlock()
+	t.gate = gate
 }
 
 // NewCronTool creates a new CronTool
@@ -45,10 +63,12 @@ func NewCronTool(
 	allowCommand := true
 	execEnabled := true
 	var commandAllowedRemotes []string
+	var policy approval.Policy
 	if config != nil {
 		allowCommand = config.Tools.Cron.AllowCommand
 		execEnabled = config.Tools.Exec.Enabled
 		commandAllowedRemotes = config.Tools.Cron.CommandAllowedRemotes
+		policy = config.Tools.Approval
 	}
 
 	var execTool *ExecTool
@@ -71,6 +91,7 @@ func NewCronTool(
 		allowCommand:          allowCommand,
 		execEnabled:           execEnabled,
 		commandAllowedRemotes: commandAllowedRemotes,
+		policy:                policy,
 	}, nil
 }
 
@@ -591,8 +612,18 @@ func (t *CronTool) enableJob(ctx context.Context, args map[string]any, enable bo
 	return SilentResult(fmt.Sprintf("Cron job '%s' %s", updatedJob.Name, status))
 }
 
-// ExecuteJob executes a cron job through the agent
+// ExecuteJob executes a cron job through the agent. It returns "ok", or the
+// error of a turn that failed; RunJob also reports a failed run as an error.
 func (t *CronTool) ExecuteJob(ctx context.Context, job *cron.CronJob) string {
+	result, _ := t.RunJob(ctx, job)
+	return result
+}
+
+// RunJob executes a cron job like ExecuteJob, and returns an error when the
+// run failed: the turn failed, the command failed, was refused or could not
+// run, or the job's context ended first (its timeout). It is a
+// cron.JobHandlerContext, so the job's last status records the failure.
+func (t *CronTool) RunJob(ctx context.Context, job *cron.CronJob) (string, error) {
 	// Get channel/chatID from job payload
 	channel := job.Payload.Channel
 	chatID := job.Payload.To
@@ -608,38 +639,34 @@ func (t *CronTool) ExecuteJob(ctx context.Context, job *cron.CronJob) string {
 	// Execute command if present
 	if job.Payload.Command != "" {
 		if !t.execEnabled || t.execTool == nil {
-			output := "Error executing scheduled command: command execution is disabled"
-			pubCtx, pubCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer pubCancel()
-			t.msgBus.PublishOutbound(pubCtx, bus.OutboundMessage{
-				Context: bus.NewOutboundContext(channel, chatID, ""),
-				Content: output,
-			})
-			return "ok"
+			t.publishJobOutput(channel, chatID, "Error executing scheduled command: command execution is disabled")
+			return "ok", fmt.Errorf("command execution is disabled")
 		}
 
 		args := map[string]any{
-			"action":    "run",
-			"command":   job.Payload.Command,
-			"__channel": channel,
-			"__chat_id": chatID,
+			"action":  "run",
+			"command": job.Payload.Command,
+		}
+		if err := t.checkCommand(ctx, job.Name, args, channel, chatID); err != nil {
+			t.publishJobOutput(channel, chatID,
+				fmt.Sprintf("Scheduled command '%s' was not run: %v", job.Payload.Command, err))
+			return "ok", fmt.Errorf("scheduled command not run: %w", err)
 		}
 
-		result := t.execTool.Execute(ctx, args)
+		// The job's channel reaches the exec tool the way a turn's does, so
+		// its remote-channel check applies to scheduled commands too.
+		result := t.execTool.Execute(WithToolContext(ctx, channel, chatID), args)
 		var output string
+		runErr := ctx.Err()
 		if result.IsError {
 			output = fmt.Sprintf("Error executing scheduled command: %s", result.ForLLM)
+			runErr = fmt.Errorf("scheduled command failed")
 		} else {
 			output = fmt.Sprintf("Scheduled command '%s' executed:\n%s", job.Payload.Command, result.ForLLM)
 		}
 
-		pubCtx, pubCancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer pubCancel()
-		t.msgBus.PublishOutbound(pubCtx, bus.OutboundMessage{
-			Context: bus.NewOutboundContext(channel, chatID, ""),
-			Content: output,
-		})
-		return "ok"
+		t.publishJobOutput(channel, chatID, output)
+		return "ok", runErr
 	}
 
 	// Every run gets its own opaque session so scheduled jobs never share or
@@ -655,11 +682,53 @@ func (t *CronTool) ExecuteJob(ctx context.Context, job *cron.CronJob) string {
 		chatID,
 	)
 	if err != nil {
-		return fmt.Sprintf("Error: %v", err)
+		return fmt.Sprintf("Error: %v", err), err
 	}
 
 	if response != "" {
 		t.executor.PublishResponseIfNeeded(ctx, channel, chatID, sessionKey, response)
 	}
-	return "ok"
+	return "ok", ctx.Err()
+}
+
+// checkCommand decides a run of a scheduled command, a call of exec from
+// origin cron, by the approval policy: through the gate, which asks when the
+// policy says to, or without one by the policy alone, under which a command
+// to ask about does not run. A nil error lets the command run.
+func (t *CronTool) checkCommand(ctx context.Context, jobName string, args map[string]any, channel, chatID string) error {
+	call := approval.Call{
+		Tool:      "exec",
+		Arguments: args,
+		Origin:    approval.OriginCron,
+		Job:       jobName,
+		Channel:   channel,
+		ChatID:    chatID,
+	}
+	t.gateMu.Lock()
+	gate := t.gate
+	t.gateMu.Unlock()
+	if gate != nil {
+		return gate.Check(ctx, call)
+	}
+	policyTool, _ := approval.Describe(call.Tool, t.execTool)
+	switch t.policy.Decide(policyTool, call.Origin).Action {
+	case approval.Allow:
+		return nil
+	case approval.Ask:
+		return errors.New("The owner's approval is needed, and there is no chat to ask the owner in.")
+	case approval.Hide:
+		return fmt.Errorf("Tool %q is not available.", call.Tool)
+	default:
+		return errors.New("Denied by the approval policy.")
+	}
+}
+
+// publishJobOutput sends a scheduled command's report to the job's chat.
+func (t *CronTool) publishJobOutput(channel, chatID, output string) {
+	pubCtx, pubCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer pubCancel()
+	t.msgBus.PublishOutbound(pubCtx, bus.OutboundMessage{
+		Context: bus.NewOutboundContext(channel, chatID, ""),
+		Content: output,
+	})
 }

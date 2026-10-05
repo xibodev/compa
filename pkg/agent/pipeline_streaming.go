@@ -84,7 +84,9 @@ func (p *Pipeline) tryCandidateStreamingLLM(
 				func(accumulated string) { publisher.Update(ctx, accumulated) },
 			)
 		}
-		if updateErr := publisher.Err(); updateErr != nil {
+		if updateErr := publisher.Err(); updateErr != nil && (streamErr != nil || response == nil) {
+			// A failed preview update fails the candidate only when the
+			// answer did not arrive whole either.
 			streamErr = updateErr
 		}
 		if streamErr != nil {
@@ -95,6 +97,12 @@ func (p *Pipeline) tryCandidateStreamingLLM(
 			publisher.Cancel(ctx)
 			publisher.ClearFinalizedStreamMarker()
 			return nil, streamErr
+		}
+		if publisher.Err() != nil && !publisher.Published() {
+			// Nothing became visible: the whole answer goes out as a message.
+			publisher.Cancel(ctx)
+			exec.streamingFallback = true
+			return response, nil
 		}
 		exec.streamingPublisher = publisher
 		return response, nil
@@ -227,6 +235,20 @@ func (p *Pipeline) tryConfiguredStreamingLLM(
 				"channel":  ts.channel,
 				"model":    exec.llmModel,
 				"error":    updateErr.Error(),
+			}
+			if response != nil {
+				// The answer arrived whole: a failed preview update (an edit
+				// rate limit, say) costs the preview, not the answer. A
+				// visible stream is finalized with it; otherwise it is
+				// delivered as a message.
+				logger.WarnCF("agent", "ChatStream update failed; keeping the completed response", logFields)
+				if !publisher.Published() {
+					publisher.Cancel(ctx)
+					exec.streamingFallback = true
+					return response, true, nil
+				}
+				exec.streamingPublisher = publisher
+				return response, true, nil
 			}
 			if publisher.Published() {
 				logger.WarnCF("agent", "ChatStream update failed after visible output", logFields)
