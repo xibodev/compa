@@ -1191,6 +1191,9 @@ func TestAgentLoop_Steering_DirectResponseContinuesWithQueuedMessage(t *testing.
 		resp string
 		err  error
 	}, 1)
+	// Chat clears provider.firstStarted under its lock once it closed it;
+	// wait on the channel itself.
+	firstStarted := provider.firstStarted
 	go func() {
 		resp, err := al.ProcessDirectWithChannel(
 			context.Background(),
@@ -1206,7 +1209,7 @@ func TestAgentLoop_Steering_DirectResponseContinuesWithQueuedMessage(t *testing.
 	}()
 
 	select {
-	case <-provider.firstStarted:
+	case <-firstStarted:
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout waiting for first LLM call to start")
 	}
