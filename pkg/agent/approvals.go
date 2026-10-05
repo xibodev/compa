@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/xibodev/compa/pkg/bus"
 	"github.com/xibodev/compa/pkg/commands"
@@ -32,13 +33,19 @@ const (
 	approvalIDLength = 6
 	// approvalIDAlphabet leaves out characters easily misread for others.
 	approvalIDAlphabet = "abcdefghjkmnpqrstuvwxyz23456789"
-	// approvalQuoteMaxRunes caps the command or arguments a request quotes.
-	approvalQuoteMaxRunes = 300
+	// approvalQuoteMaxRunes bounds the command or arguments a request quotes.
+	// The owner approves the whole call, so a request shows it in full, and a
+	// call longer than this is refused rather than asked about: a chat is no
+	// place to review it.
+	approvalQuoteMaxRunes = 3000
 
 	approvalDeniedReason    = "The owner denied this call."
 	approvalExpiredReason   = "No approval within 10 minutes."
 	approvalNoChatReason    = "The owner's approval is needed, and there is no chat to ask the owner in."
 	approvalWithdrawnReason = "The turn ended before the owner answered."
+	// approvalTooLongFormat refuses a call too long to show the owner in full.
+	approvalTooLongFormat = "The call is too long (%d characters) to show the owner in full for approval; " +
+		"split it into shorter steps."
 )
 
 var errNoApprovalChat = errors.New("no chat to ask the owner in")
@@ -139,6 +146,9 @@ func (al *AgentLoop) askOwnerApproval(
 	args map[string]any,
 	job string,
 ) (approved bool, reason string) {
+	if n := utf8.RuneCountInString(approvalQuote(toolName, args)); n > approvalQuoteMaxRunes {
+		return false, fmt.Sprintf(approvalTooLongFormat, n)
+	}
 	outcome, err := al.askOwner(ctx, inbound, func(id string) string {
 		return ownerApprovalText(toolName, args, job, id)
 	})
@@ -157,19 +167,53 @@ func (al *AgentLoop) askOwnerApproval(
 	return false, approvalWithdrawnReason
 }
 
-// ownerApprovalText is the request the owner answers: the command to run, or
-// the tool and its arguments, and the scheduled job it runs for.
+// approvalQuote is what a request shows of a call: exec's command, or the
+// arguments of any other tool.
+func approvalQuote(toolName string, args map[string]any) string {
+	if command, ok := args["command"].(string); ok && toolName == "exec" {
+		return command
+	}
+	return compactJSON(args)
+}
+
+// ownerApprovalText is the request the owner answers: the whole command to
+// run, or the tool and all of its arguments, and the scheduled job it runs
+// for. One line without backticks is quoted inline; anything else goes in a
+// code block that nothing in it can close, so the call reads as it is.
 func ownerApprovalText(toolName string, args map[string]any, job, id string) string {
 	var forJob string
 	if job != "" {
 		forJob = fmt.Sprintf(" (scheduled job %q)", job)
 	}
-	if command, ok := args["command"].(string); ok && toolName == "exec" {
-		return fmt.Sprintf("Approve running: `%s`%s? Reply /approve %s or /deny %s",
-			truncateRunes(command, approvalQuoteMaxRunes), forJob, id, id)
+	reply := fmt.Sprintf("Reply /approve %s or /deny %s", id, id)
+	quote := approvalQuote(toolName, args)
+	inline := !strings.ContainsAny(quote, "`\r\n")
+	if _, ok := args["command"].(string); ok && toolName == "exec" {
+		if inline {
+			return fmt.Sprintf("Approve running: `%s`%s? %s", quote, forJob, reply)
+		}
+		return fmt.Sprintf("Approve running this command%s? %s\n%s", forJob, reply, codeBlock(quote))
 	}
-	return fmt.Sprintf("Approve calling %s with `%s`%s? Reply /approve %s or /deny %s",
-		toolName, truncateRunes(compactJSON(args), approvalQuoteMaxRunes), forJob, id, id)
+	if inline {
+		return fmt.Sprintf("Approve calling %s with `%s`%s? %s", toolName, quote, forJob, reply)
+	}
+	return fmt.Sprintf("Approve calling %s with these arguments%s? %s\n%s", toolName, forJob, reply, codeBlock(quote))
+}
+
+// codeBlock fences text with more backticks than any run of them in it, so
+// nothing in text ends the block early.
+func codeBlock(text string) string {
+	longest, run := 0, 0
+	for _, r := range text {
+		if r == '`' {
+			run++
+			longest = max(longest, run)
+		} else {
+			run = 0
+		}
+	}
+	fence := strings.Repeat("`", max(3, longest+1))
+	return fence + "\n" + text + "\n" + fence
 }
 
 // compactJSON renders args on one line, as written.
@@ -325,13 +369,4 @@ func (al *AgentLoop) handleApprovalReply(ctx context.Context, msg bus.InboundMes
 	}
 	go al.publishDirectReply(ctx, msg, sessionKey, reply)
 	return true
-}
-
-// truncateRunes shortens s to at most limit runes, marking a cut with "…".
-func truncateRunes(s string, limit int) string {
-	runes := []rune(s)
-	if len(runes) <= limit {
-		return s
-	}
-	return string(runes[:limit-1]) + "…"
 }

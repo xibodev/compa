@@ -842,11 +842,21 @@ func (cs *CronService) checkQuotaLocked(channel, to string) error {
 	return nil
 }
 
+// JobOption sets an optional part of a job AddJob creates.
+type JobOption func(*CronPayload)
+
+// WithCommand makes the job run command rather than an agent turn. The job is
+// written with it at once, so it never runs, nor stays, without it.
+func WithCommand(command string) JobOption {
+	return func(p *CronPayload) { p.Command = command }
+}
+
 func (cs *CronService) AddJob(
 	name string,
 	schedule CronSchedule,
 	message string,
 	channel, to string,
+	opts ...JobOption,
 ) (*CronJob, error) {
 	if err := schedule.Validate(); err != nil {
 		return nil, err
@@ -879,6 +889,9 @@ func (cs *CronService) AddJob(
 			UpdatedAtMS: nowMS,
 			// One-time tasks (at) should be deleted after execution
 			DeleteAfterRun: schedule.Kind == "at",
+		}
+		for _, opt := range opts {
+			opt(&added.Payload)
 		}
 		cs.store.Jobs = append(cs.store.Jobs, added)
 		return true, nil

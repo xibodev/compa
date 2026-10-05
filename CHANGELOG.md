@@ -35,6 +35,8 @@ Settings below are keys in `~/.compa/config.json` unless noted.
   `/approve <id>` or `/deny <id>` in chat; unanswered requests are refused
   after 10 minutes. Scheduled commands are decided as calls from `cron`.
   Approver hooks are asked only about the calls the policy asks about.
+- A request shows the whole command or all the arguments; a call too long to
+  show in full (over 3000 characters) is refused without asking.
 - Requests from other people's messages, scheduled jobs and the heartbeat go
   to your chat, the conversation you last wrote to Compa from.
 - Saving `tools.approval`, the model selections, or a channel's **Allow

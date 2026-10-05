@@ -196,7 +196,8 @@ func TestToolCallsHaveADefaultTimeout(t *testing.T) {
 		want string
 	}{
 		{"tool honoring its context", &stuckTool{}, "context deadline exceeded"},
-		{"tool ignoring its context", &stuckTool{ignoreContext: true}, "did not finish within"},
+		// An abandoned call may still complete, and the model is told so.
+		{"tool ignoring its context", &stuckTool{ignoreContext: true}, "may still complete"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			registry := tools.NewToolRegistry()

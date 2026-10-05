@@ -58,6 +58,10 @@ func executeToolWithTimeout(
 		return tools.ErrorResult(fmt.Sprintf("Tool %q was stopped.", name)).WithError(err)
 	}
 	err := fmt.Errorf("tool %q did not finish within %s", name, defaultToolTimeout)
-	return tools.ErrorResult(fmt.Sprintf("Tool %q did not finish within %s and was abandoned.", name, defaultToolTimeout)).
+	// The call may still run to its end; the model must not take the timeout
+	// for proof that nothing happened and repeat a side effect.
+	return tools.ErrorResult(fmt.Sprintf("Tool %q did not finish within %s and was abandoned. "+
+		"It may still be running and may still complete: check its effects before calling it again.",
+		name, defaultToolTimeout)).
 		WithError(err)
 }

@@ -263,17 +263,45 @@ func TestOwnerApprovalDeniedWithoutAnOwnerChat(t *testing.T) {
 	noPost(t, msgBus)
 }
 
-func TestOwnerApprovalTruncatesTheQuotedCommand(t *testing.T) {
+// The owner approves the whole call, so the request shows all of it: a
+// command over many lines, or with backticks, goes in a code block nothing in
+// it can close.
+func TestOwnerApprovalQuotesTheWholeCommand(t *testing.T) {
 	al, msgBus := newApprovalTestLoop(t)
 	inbound := ownerTelegram("chat-1")
 
-	done := askOwnerInBackground(al, context.Background(), inbound, "exec", runCommand(strings.Repeat("x", 500)))
+	long := strings.Repeat("x", 500) + "; rm -rf ~/notes"
+	done := askOwnerInBackground(al, context.Background(), inbound, "exec", runCommand(long))
 	out, id := nextApprovalRequest(t, msgBus)
-	if !strings.Contains(out.Content, "`"+strings.Repeat("x", approvalQuoteMaxRunes-1)+"…`") {
-		t.Fatalf("request does not quote the command cut to %d characters: %q", approvalQuoteMaxRunes, out.Content)
+	if want := "Approve running: `" + long + "`? Reply /approve " + id + " or /deny " + id; out.Content != want {
+		t.Fatalf("request = %q, want %q", out.Content, want)
 	}
 	reply(al, inbound, "/deny "+id)
 	waitOwnerAnswer(t, done)
+
+	multi := "echo `date`\n```\necho done"
+	done = askOwnerInBackground(al, context.Background(), inbound, "exec", runCommand(multi))
+	out, id = nextApprovalRequest(t, msgBus)
+	want := "Approve running this command? Reply /approve " + id + " or /deny " + id +
+		"\n````\n" + multi + "\n````"
+	if out.Content != want {
+		t.Fatalf("request = %q, want %q", out.Content, want)
+	}
+	reply(al, inbound, "/deny "+id)
+	waitOwnerAnswer(t, done)
+}
+
+// A call too long to show in full is refused without asking: the owner would
+// approve what they could not read.
+func TestOwnerApprovalRefusesACallTooLongToShow(t *testing.T) {
+	al, msgBus := newApprovalTestLoop(t)
+
+	approved, reason := al.askOwnerApproval(context.Background(), ownerTelegram("chat-1"), "exec",
+		runCommand(strings.Repeat("x", approvalQuoteMaxRunes+1)), "")
+	if approved || !strings.Contains(reason, "too long") {
+		t.Fatalf("askOwnerApproval = %v, %q; want refused as too long", approved, reason)
+	}
+	noPost(t, msgBus)
 }
 
 func TestOwnerApprovalQuotesAToolAndItsArguments(t *testing.T) {
@@ -291,11 +319,14 @@ func TestOwnerApprovalQuotesAToolAndItsArguments(t *testing.T) {
 	reply(al, inbound, "/deny "+id)
 	waitOwnerAnswer(t, done)
 
+	content := strings.Repeat("y", 500) + "`tail`"
 	done = askOwnerInBackground(al, context.Background(), inbound, "write_file",
-		map[string]any{"content": strings.Repeat("y", 500)})
+		map[string]any{"content": content})
 	out, id = nextApprovalRequest(t, msgBus)
-	if !strings.Contains(out.Content, "`{\"content\":\""+strings.Repeat("y", approvalQuoteMaxRunes-13)+"…`") {
-		t.Fatalf("request does not quote the arguments cut to %d characters: %q", approvalQuoteMaxRunes, out.Content)
+	want = "Approve calling write_file with these arguments? Reply /approve " + id + " or /deny " + id +
+		"\n```\n{\"content\":\"" + content + "\"}\n```"
+	if out.Content != want {
+		t.Fatalf("request = %q, want %q", out.Content, want)
 	}
 	reply(al, inbound, "/deny "+id)
 	waitOwnerAnswer(t, done)

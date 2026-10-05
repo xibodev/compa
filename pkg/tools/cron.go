@@ -256,25 +256,22 @@ func (t *CronTool) addJob(ctx context.Context, args map[string]any) *ToolResult 
 	// Truncate message for job name (max 30 chars)
 	messagePreview := utils.Truncate(message, 30)
 
+	// A command job is written with its command at once: it must never run,
+	// nor stay, as the agent turn of its message.
+	var opts []cron.JobOption
+	if command != "" {
+		opts = append(opts, cron.WithCommand(command))
+	}
 	job, err := t.cronService.AddJob(
 		messagePreview,
 		schedule,
 		message,
 		channel,
 		chatID,
+		opts...,
 	)
 	if err != nil {
 		return ErrorResult(fmt.Sprintf("Error adding job: %v", err))
-	}
-
-	// Apply optional payload fields and persist in a single UpdateJob call
-	needsUpdate := false
-	if command != "" {
-		job.Payload.Command = command
-		needsUpdate = true
-	}
-	if needsUpdate {
-		t.cronService.UpdateJob(job)
 	}
 
 	return SilentResult(fmt.Sprintf("Cron job added: %s (id: %s)", job.Name, job.ID))

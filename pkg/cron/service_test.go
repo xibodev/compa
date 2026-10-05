@@ -311,6 +311,31 @@ func TestCronService_ExecutionFlow(t *testing.T) {
 	})
 }
 
+// A command job is written with its command in the same write that creates
+// it: a run, or a reload, never sees it without.
+func TestAddJobWritesACommandJobAtOnce(t *testing.T) {
+	tmpFile := filepath.Join(t.TempDir(), "jobs.json")
+	cs := NewCronService(tmpFile, nil)
+	at := time.Now().Add(24 * time.Hour).UnixMilli()
+	job, err := cs.AddJob("disk", CronSchedule{Kind: "at", AtMS: &at}, "check the disk", "cli", "direct",
+		WithCommand("df -h"))
+	if err != nil {
+		t.Fatalf("AddJob: %v", err)
+	}
+	if job.Payload.Command != "df -h" || job.Payload.Message != "check the disk" {
+		t.Fatalf("payload = %+v", job.Payload)
+	}
+
+	reloaded := NewCronService(tmpFile, nil)
+	if err := reloaded.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	jobs := reloaded.ListJobs(true)
+	if len(jobs) != 1 || jobs[0].Payload.Command != "df -h" {
+		t.Fatalf("stored jobs = %+v, want the command job", jobs)
+	}
+}
+
 func TestCronService_PersistenceIntegrity(t *testing.T) {
 	tmpFile := filepath.Join(t.TempDir(), "persist_test.json")
 

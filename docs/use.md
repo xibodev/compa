@@ -162,15 +162,17 @@ sets matches:
 
 | Field | Matches |
 |---|---|
-| `tool` | The tool's name as the agent sees it, such as `exec`, `install_skill` or `mcp_github_*`. |
-| `source` | Where the tool comes from: `builtin`, `mcp:<server>` or `module:<id>`. |
+| `tool` | The tool's name as the agent sees it, such as `exec` or `install_skill`. |
+| `source` | Where the tool comes from: `builtin`, `mcp:<server>` or `module:<id>`. To match one MCP server's tools, use `source`: a name glob like `mcp_git_*` also matches the tools of a server named `git_hub`. |
 | `origin` | Any of `web` (the browser chat), `cli` (`compa-kernel agent`), `chat` (chat apps) and `cron` (scheduled jobs and the heartbeat). A subagent's calls have its parent's origin. |
 | `hints` | Any of `read_only`, `destructive`, `idempotent` and `open_world`, the annotations of an MCP tool, and `cost_unknown`, `network` and `external_writes`, the effects a module declares for a capability. |
 
 In `tool` and `source`, `*` matches any run of characters and `?` one
 character. Annotations count only from a server with `"trusted": true` (see
 [MCP servers](#mcp-servers)); the tools of any other server count as
-`destructive` and `open_world`.
+`destructive` and `open_world`. A module's effects are what the module says
+about itself: Compa can't check them, any more than the rest of a program you
+installed.
 
 The `action` is `allow`, `ask` (wait for an approval, below), `deny` (refuse
 the call) or `hide`: the agent isn't offered the tool, not even through tool
@@ -187,9 +189,12 @@ a program that embeds Compa. With none, Compa posts the request in a chat with
 a short ID, such as
 ``Approve running: `df -h`? Reply /approve k7m2qp or /deny k7m2qp``, and waits;
 other tools read ``Approve calling <tool> with `<arguments>`?``, and a
-scheduled job's request names the job. Answer `/approve <id>` to go ahead or
-`/deny <id>` to refuse. A request nobody answers within 10 minutes is refused.
-Only you can answer, whatever `commands.owner_only` says.
+scheduled job's request names the job. The request shows the whole command or
+all the arguments, in a code block when they span lines or hold backticks; a
+call too long to show in full (over 3000 characters) is refused without
+asking. Answer `/approve <id>` to go ahead or `/deny <id>` to refuse. A
+request nobody answers within 10 minutes is refused. Only you can answer,
+whatever `commands.owner_only` says.
 
 When the request comes from your own message, Compa asks in that chat. When it
 comes from someone else's message or from a scheduled job, Compa asks in your
@@ -327,9 +332,12 @@ with an unknown cost, network access or writes outside your computer, runs
 only with your approval: **Approve and run** on the Modules page, `/approve`
 in chat when the agent runs it, or `compa-kernel module-invoke` with
 `--approve`. The agent can't approve its own calls. A rule that allows a
-capability counts as your approval; `deny` or `hide` refuses it everywhere,
-**Approve and run** and `module-invoke` included. The Modules page's runs have
-the origin `web`, and `module-invoke`'s `cli`.
+capability is a standing approval: every call it matches runs as if you had
+approved it, so it may spend money or publish if the capability does. A broad
+rule such as `{"tool": "*", "action": "allow"}` approves every module call
+this way. `deny` or `hide` refuses a capability everywhere, **Approve and
+run** and `module-invoke` included. The Modules page's runs have the origin
+`web`, and `module-invoke`'s `cli`.
 
 ## Logs
 
