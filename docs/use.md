@@ -188,13 +188,13 @@ With `ask`, approver hooks decide first: process hooks with
 a program that embeds Compa. With none, Compa posts the request in a chat with
 a short ID, such as
 ``Approve running: `df -h`? Reply /approve k7m2qp or /deny k7m2qp``, and waits;
-other tools read ``Approve calling <tool> with `<arguments>`?``, and a
-scheduled job's request names the job. The request shows the whole command or
-all the arguments, in a code block when they span lines or hold backticks; a
-call too long to show in full (over 3000 characters) is refused without
-asking. Answer `/approve <id>` to go ahead or `/deny <id>` to refuse. A
-request nobody answers within 10 minutes is refused. Only you can answer,
-whatever `commands.owner_only` says.
+other calls, `exec` with another action or a `cwd` included, read
+``Approve calling <tool> with `<arguments>`?``, and a scheduled job's request
+names the job. The request shows the whole command or all the arguments, in a
+code block when they span lines or hold backticks; a call too long to show in
+full (over 3000 characters) is refused without asking. Answer `/approve <id>`
+to go ahead or `/deny <id>` to refuse. A request nobody answers within 10
+minutes is refused. Only you can answer, whatever `commands.owner_only` says.
 
 When the request comes from your own message, Compa asks in that chat. When it
 comes from someone else's message or from a scheduled job, Compa asks in your
@@ -331,11 +331,13 @@ A capability that [`tools.approval`](#approvals) asks about, by default one
 with an unknown cost, network access or writes outside your computer, runs
 only with your approval: **Approve and run** on the Modules page, `/approve`
 in chat when the agent runs it, or `compa-kernel module-invoke` with
-`--approve`. The agent can't approve its own calls. A rule that allows a
-capability is a standing approval: every call it matches runs as if you had
-approved it, so it may spend money or publish if the capability does. A broad
-rule such as `{"tool": "*", "action": "allow"}` approves every module call
-this way. `deny` or `hide` refuses a capability everywhere, **Approve and
+`--approve`. The agent's own calls of a capability wait for your answer, but a
+command it runs with `exec` acts as you, `compa-kernel module-invoke
+--approve` included: add an `ask` rule for `exec` if that matters. A rule that
+allows a capability is a standing approval: every call it matches runs as if
+you had approved it, so it may spend money or publish if the capability does.
+A broad rule such as `{"tool": "*", "action": "allow"}` approves every module
+call this way. `deny` or `hide` refuses a capability everywhere, **Approve and
 run** and `module-invoke` included. The Modules page's runs have the origin
 `web`, and `module-invoke`'s `cli`.
 

@@ -28,6 +28,25 @@ func TestNewWebClientChannel_MissingURL(t *testing.T) {
 	}
 }
 
+// The token and the agent's remote control travel this connection: plain
+// ws:// to a host on the internet is refused before anything is sent.
+func TestWebClientRefusesUnencryptedWSToTheInternet(t *testing.T) {
+	bc := &config.Channel{Type: config.ChannelWebClient, Enabled: true}
+	settings := &config.WebChatClientSettings{URL: "ws://8.8.8.8:9/ws"}
+	settings.Token = *config.NewSecureString("secret-token")
+	ch, err := NewWebClientChannel(bc, settings, bus.NewMessageBus())
+	if err != nil {
+		t.Fatalf("NewWebClientChannel() error = %v", err)
+	}
+	err = ch.Start(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "use wss://") {
+		t.Fatalf("Start() error = %v, want a refusal of unencrypted ws://", err)
+	}
+	if ch.IsRunning() {
+		t.Fatal("the channel runs after the refusal")
+	}
+}
+
 func TestNewWebClientChannel_OK(t *testing.T) {
 	bc := &config.Channel{Type: config.ChannelWebClient, Enabled: true}
 	ch, err := NewWebClientChannel(bc, &config.WebChatClientSettings{

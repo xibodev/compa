@@ -548,45 +548,36 @@ func (al *AgentLoop) activeRequestsDec() {
 	al.activeReqMu.Unlock()
 }
 
+// waitForActiveRequests waits until no request is in flight, ctx ends or
+// timeout passes, and reports whether no request is in flight.
 func (al *AgentLoop) waitForActiveRequests(ctx context.Context, timeout time.Duration) bool {
-	al.activeReqMu.Lock()
-	if al.activeReqCount == 0 {
-		al.activeReqMu.Unlock()
-		return true
-	}
-
-	// Wake blocked Wait() callers on timeout or context cancellation.
-	var timedOut bool
-	if timeout > 0 {
-		time.AfterFunc(timeout, func() {
-			al.activeReqMu.Lock()
-			timedOut = true
-			al.activeReqCond.Broadcast()
-			al.activeReqMu.Unlock()
-		})
-	}
-	go func() {
-		<-ctx.Done()
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	// Wakes the wait below once ctx ended.
+	stop := context.AfterFunc(ctx, func() {
 		al.activeReqMu.Lock()
+		defer al.activeReqMu.Unlock()
 		al.activeReqCond.Broadcast()
-		al.activeReqMu.Unlock()
-	}()
+	})
+	defer stop()
 
-	for al.activeReqCount > 0 && !timedOut && ctx.Err() == nil {
+	al.activeReqMu.Lock()
+	defer al.activeReqMu.Unlock()
+	for al.activeReqCount > 0 && ctx.Err() == nil {
 		al.activeReqCond.Wait()
 	}
-	result := al.activeReqCount == 0
-	al.activeReqMu.Unlock()
-	return result
+	return al.activeReqCount == 0
 }
 
-// closeReloadedProviders closes the stateful providers of a replaced
-// registry that current does not share, once in-flight requests drain or the
-// grace period expires.
-func (al *AgentLoop) closeReloadedProviders(
-	ctx context.Context,
+// closeReplaced closes what a reload replaced: the stateful providers of the
+// previous agents that the current ones do not share, and the replaced
+// context manager when it holds resources. Requests in flight may still use
+// them, so they close in the background once no request is in flight, the
+// grace period expired or the loop closes.
+func (al *AgentLoop) closeReplaced(
 	previous map[string]providers.LLMProvider,
 	current map[string]providers.LLMProvider,
+	contextManager ContextManager,
 ) {
 	stale := make(map[string]providers.LLMProvider, len(previous))
 	for key, provider := range previous {
@@ -597,27 +588,22 @@ func (al *AgentLoop) closeReloadedProviders(
 			stale[key] = provider
 		}
 	}
-	if len(stale) == 0 {
+	_, holds := contextManager.(interface{ Close() error })
+	if len(stale) == 0 && !holds {
 		return
 	}
 
-	waitCtx := ctx
-	if waitCtx == nil {
-		waitCtx = context.Background()
-	}
-
-	drained := al.waitForActiveRequests(waitCtx, providerReloadGracePeriod)
-	if !drained {
-		fields := map[string]any{"grace_period": providerReloadGracePeriod.String()}
-		if err := waitCtx.Err(); err != nil {
-			fields["error"] = err.Error()
-			logger.WarnCF("agent", "Provider reload interrupted while waiting for in-flight requests", fields)
-		} else {
-			logger.WarnCF("agent", "Provider reload grace period expired with in-flight requests still running", fields)
+	al.closingReplaced.Add(1)
+	go func() {
+		defer al.closingReplaced.Done()
+		lifetime := al.lifetimeContext()
+		if !al.waitForActiveRequests(lifetime, providerReloadGracePeriod) && lifetime.Err() == nil {
+			logger.WarnCF("agent", "Closing what a reload replaced with requests still in flight",
+				map[string]any{"grace_period": providerReloadGracePeriod.String()})
 		}
-	}
-
-	closeUnreferencedStatefulProviders(stale, nil)
+		closeUnreferencedStatefulProviders(stale, nil)
+		closeContextManager(contextManager)
+	}()
 }
 
 func makePendingTurnID(sessionKey string, seq uint64) string {

@@ -210,8 +210,8 @@ func (al *AgentLoop) initializeMCP(
 }
 
 // connectMCP connects mcpCfg's servers and registers their tools on
-// registry's agents. A server that announces its tool list changed has its
-// tools registered again.
+// registry's agents. A server that announces its tool list changed, or is
+// reconnected, has its tools registered again.
 func (al *AgentLoop) connectMCP(
 	cfg *config.Config,
 	registry *AgentRegistry,

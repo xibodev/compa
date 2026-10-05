@@ -625,6 +625,48 @@ func TestCallToolAfterLostSession(t *testing.T) {
 	}
 }
 
+// A server reconnected after its session ended may list other tools: the
+// manager's tools-changed handler is told them.
+func TestReconnectedServerToolsReachTheToolsChangedHandler(t *testing.T) {
+	originalConnectServerFunc := connectServerFunc
+	t.Cleanup(func() { connectServerFunc = originalConnectServerFunc })
+
+	staleConn, _, err := newScriptedServerConnection("session-1", nil, nil)
+	if err != nil {
+		t.Fatalf("newScriptedServerConnection(stale) error = %v", err)
+	}
+	staleConn.lost.Store(true)
+	freshConn, _, err := newScriptedServerConnection("session-2",
+		&sdkmcp.CallToolResult{Content: []sdkmcp.Content{&sdkmcp.TextContent{Text: "ok"}}}, nil)
+	if err != nil {
+		t.Fatalf("newScriptedServerConnection(fresh) error = %v", err)
+	}
+	freshConn.Tools = append(freshConn.Tools, &sdkmcp.Tool{Name: "added", InputSchema: map[string]any{"type": "object"}})
+	connectServerFunc = func(context.Context, string, config.MCPServerConfig, connectOptions) (*ServerConnection, error) {
+		return freshConn, nil
+	}
+
+	changed := make(chan []*sdkmcp.Tool, 4)
+	mgr := NewManager(WithToolsChangedHandler(func(name string, tools []*sdkmcp.Tool) {
+		if name == "flaky" {
+			changed <- tools
+		}
+	}))
+	mgr.servers["flaky"] = staleConn
+
+	if _, err := mgr.CallTool(context.Background(), "flaky", "echo", nil); err != nil {
+		t.Fatalf("CallTool() error = %v", err)
+	}
+	select {
+	case tools := <-changed:
+		if len(tools) != 2 || tools[1].Name != "added" {
+			t.Fatalf("handler told %d tools, want the reconnected server's 2", len(tools))
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the tools-changed handler was not told the reconnected server's tools")
+	}
+}
+
 // A tool whose own error says "session not found" did not lose the session:
 // its error comes back as it is, and the server is neither reconnected nor
 // called again, even for a trusted read-only tool.

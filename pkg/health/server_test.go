@@ -179,7 +179,7 @@ func TestReloadHandler_NoReloadFunc(t *testing.T) {
 func TestReloadHandler_Success(t *testing.T) {
 	s := newTestServer()
 	called := false
-	s.SetReloadFunc(func() error {
+	s.SetReloadFunc(func(context.Context) error {
 		called = true
 		return nil
 	})
@@ -200,7 +200,7 @@ func TestReloadHandler_Success(t *testing.T) {
 
 func TestReloadHandler_Error(t *testing.T) {
 	s := newTestServer()
-	s.SetReloadFunc(func() error {
+	s.SetReloadFunc(func(context.Context) error {
 		return errors.New("config parse error")
 	})
 
@@ -212,6 +212,34 @@ func TestReloadHandler_Error(t *testing.T) {
 
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("reload error status = %d, want %d", w.Code, http.StatusInternalServerError)
+	}
+}
+
+// The answer of a reload that outlasts the server's write timeout still
+// reaches the caller.
+func TestReloadHandlerAnswersAReloadLongerThanTheWriteTimeout(t *testing.T) {
+	s := newTestServer()
+	s.SetReloadFunc(func(context.Context) error {
+		time.Sleep(300 * time.Millisecond)
+		return nil
+	})
+	server := httptest.NewUnstartedServer(http.HandlerFunc(s.reloadHandler))
+	server.Config.WriteTimeout = 100 * time.Millisecond
+	server.Start()
+	defer server.Close()
+
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/reload", http.NoBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer test")
+	resp, err := server.Client().Do(req)
+	if err != nil {
+		t.Fatalf("POST /reload error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /reload = %d, want %d", resp.StatusCode, http.StatusOK)
 	}
 }
 

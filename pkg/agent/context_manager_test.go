@@ -262,6 +262,7 @@ func TestReloadRebuildsTheContextManagerWhenItsSettingsChange(t *testing.T) {
 	if len(built) != 2 || al.currentContextManager() != built[1] {
 		t.Fatal("a reload with changed context manager settings kept the old manager")
 	}
+	al.closingReplaced.Wait()
 	if !built[0].closed.Load() || built[1].closed.Load() {
 		t.Fatal("the replaced context manager was not closed, or the new one was")
 	}

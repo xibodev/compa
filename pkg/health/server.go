@@ -19,7 +19,7 @@ type Server struct {
 	ready        bool
 	checks       map[string]Check
 	startTime    time.Time
-	reloadFunc   func() error
+	reloadFunc   func(context.Context) error
 	shutdownFunc func()
 	authToken    string // optional bearer token for protected endpoints
 }
@@ -114,8 +114,9 @@ func (s *Server) RegisterCheck(name string, checkFn func() (bool, string)) {
 	}
 }
 
-// SetReloadFunc sets the callback function for config reload.
-func (s *Server) SetReloadFunc(fn func() error) {
+// SetReloadFunc sets what POST /reload runs; it answers with its outcome.
+// Its context ends when the caller is gone.
+func (s *Server) SetReloadFunc(fn func(ctx context.Context) error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.reloadFunc = fn
@@ -155,7 +156,10 @@ func (s *Server) reloadHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := reloadFunc(); err != nil {
+	// The answer waits for the reload, which can take longer than the
+	// server's write timeout.
+	_ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
+	if err := reloadFunc(r.Context()); err != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusInternalServerError)
 		json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})

@@ -381,6 +381,47 @@ func TestShutdownEndpointTakesTheSignalPath(t *testing.T) {
 	}
 }
 
+// POST /reload waits for a reload in progress, which may have read the
+// config before it was saved, then answers with the outcome of its own.
+func TestAwaitReloadWaitsForTheReloadInProgress(t *testing.T) {
+	busy, reloads := 2, 0
+	failed := errors.New("load config: bad")
+	trigger := func(done chan error) error {
+		if busy > 0 {
+			busy--
+			return errReloadInProgress
+		}
+		reloads++
+		done <- failed
+		return nil
+	}
+	if err := awaitReload(context.Background(), trigger); !errors.Is(err, failed) {
+		t.Fatalf("awaitReload() = %v, want the outcome of its reload", err)
+	}
+	if busy != 0 || reloads != 1 {
+		t.Fatalf("reloads = %d with %d refusals left, want 1 after both", reloads, busy)
+	}
+}
+
+// POST /reload stops waiting once its caller is gone, and answers another
+// refusal at once.
+func TestAwaitReloadEndsWithItsCaller(t *testing.T) {
+	gone, cancel := context.WithCancel(context.Background())
+	cancel()
+	inProgress := func(chan error) error { return errReloadInProgress }
+	if err := awaitReload(gone, inProgress); !errors.Is(err, context.Canceled) {
+		t.Fatalf("awaitReload() behind a reload in progress = %v, want context.Canceled", err)
+	}
+	unanswered := func(chan error) error { return nil }
+	if err := awaitReload(gone, unanswered); !errors.Is(err, context.Canceled) {
+		t.Fatalf("awaitReload() of an unfinished reload = %v, want context.Canceled", err)
+	}
+	queued := errors.New("reload already queued")
+	if err := awaitReload(context.Background(), func(chan error) error { return queued }); !errors.Is(err, queued) {
+		t.Fatalf("awaitReload() = %v, want the refusal", err)
+	}
+}
+
 func TestHeartbeatHandler(t *testing.T) {
 	t.Run("a reply other than HEARTBEAT_OK is delivered", func(t *testing.T) {
 		var gotChannel, gotChat string

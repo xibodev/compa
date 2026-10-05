@@ -119,6 +119,9 @@ type AgentLoop struct {
 	// terminalChat is set when the terminal shows what the loop posts in its
 	// chat (SetTerminalChat).
 	terminalChat atomic.Bool
+	// closingReplaced counts what reloads replaced and is still to close
+	// (closeReplaced). Close waits for it.
+	closingReplaced sync.WaitGroup
 }
 
 // lifetimeContext returns the loop's own context (see lifetime).
@@ -253,6 +256,9 @@ func (al *AgentLoop) Close() {
 	if al.endLifetime != nil {
 		al.endLifetime()
 	}
+	// Once the lifetime ended, what a reload replaced closes without waiting
+	// for the requests in flight.
+	al.closingReplaced.Wait()
 	mcpManager := al.mcp.reset()
 
 	if mcpManager != nil {
@@ -405,17 +411,10 @@ func (al *AgentLoop) ReloadProviderAndConfig(
 	// lifetime: ctx ends as soon as the reload returns.
 	al.startMCPInitialization()
 
-	// Close the previous agents' providers the new ones do not share, after
-	// releasing the lock (so readers are not blocked) and once in-flight
-	// requests drain.
-	al.closeReloadedProviders(ctx, oldRegistry.providerMap(), registry.providerMap())
-	// Turns that started before the reload had the replaced manager; one
-	// that holds resources closes once their requests drain, like the
-	// providers above.
-	if _, holds := replacedContextManager.(interface{ Close() error }); holds {
-		al.waitForActiveRequests(ctx, providerReloadGracePeriod)
-		closeContextManager(replacedContextManager)
-	}
+	// Turns that started before the reload still run on the previous agents'
+	// providers and the replaced context manager: those close once their
+	// requests end, without the reload waiting for them.
+	al.closeReplaced(oldRegistry.providerMap(), registry.providerMap(), replacedContextManager)
 
 	fields := map[string]any{"model": cfg.Agents.Defaults.GetModelName()}
 	if agent := registry.GetDefaultAgent(); agent != nil && !agent.hasModel() {

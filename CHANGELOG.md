@@ -21,6 +21,8 @@ Settings below are keys in `~/.compa/config.json` unless noted.
   taken as instructions.
 - MQTT verifies the broker's TLS certificate unless
   `tls_insecure_skip_verify` is on.
+- OneBot and the web client refuse unencrypted `ws://` to a host outside this
+  computer and its local network; use `wss://` there.
 
 ### Approvals and commands
 

@@ -203,16 +203,3 @@ func TestHandleMessage_GroupTriggerBeforeDownload(t *testing.T) {
 		t.Fatalf("downloads = %d, want 1", downloads)
 	}
 }
-
-func TestCheckWSURL(t *testing.T) {
-	ctx := context.Background()
-	if err := checkWSURL(ctx, "ws://127.0.0.1:3001"); err != nil {
-		t.Fatalf("a local ws:// URL is accepted: %v", err)
-	}
-	if err := checkWSURL(ctx, "wss://onebot.example.com/ws"); err != nil {
-		t.Fatalf("wss:// is accepted: %v", err)
-	}
-	if err := checkWSURL(ctx, "ws://8.8.8.8:3001"); err == nil {
-		t.Fatal("ws:// to an internet host is refused")
-	}
-}

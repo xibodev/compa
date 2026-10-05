@@ -179,7 +179,7 @@ func TestApplyLiveChangesReloadsTheRunningGateway(t *testing.T) {
 // A reload the gateway refuses leaves the restart to do.
 func TestApplyLiveChangesKeepsARefusedChangeForARestart(t *testing.T) {
 	handler, configPath := applyingDefaultModelHandler(t)
-	pidData, reloads := fakeGatewayReload(t, http.StatusInternalServerError, `{"error":"reload already in progress"}`, nil)
+	pidData, reloads := fakeGatewayReload(t, http.StatusInternalServerError, `{"error":"load config: bad"}`, nil)
 	booted := loadSavedConfig(t, configPath)
 	runningGateway(t, pidData, booted)
 

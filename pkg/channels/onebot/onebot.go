@@ -4,9 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -174,7 +172,7 @@ func (c *OneBotChannel) Start(ctx context.Context) error {
 		"ws_url": c.config.WSUrl,
 	})
 
-	if err := checkWSURL(ctx, c.config.WSUrl); err != nil {
+	if err := channels.CheckWebSocketURL(ctx, c.config.WSUrl, "OneBot ws_url"); err != nil {
 		return err
 	}
 
@@ -1227,54 +1225,6 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return string(runes[:n]) + "..."
-}
-
-// checkWSURL refuses an unencrypted ws:// connection to a host outside this
-// computer and its local network: the access token and every message would
-// cross the internet in clear text. wss:// is accepted.
-func checkWSURL(ctx context.Context, rawURL string) error {
-	u, err := url.Parse(strings.TrimSpace(rawURL))
-	if err != nil {
-		return fmt.Errorf("invalid OneBot ws_url: %w", err)
-	}
-	switch strings.ToLower(u.Scheme) {
-	case "wss":
-		return nil
-	case "ws":
-	default:
-		return fmt.Errorf("OneBot ws_url must start with ws:// or wss://")
-	}
-
-	host := u.Hostname()
-	var ips []net.IP
-	if ip := net.ParseIP(host); ip != nil {
-		ips = []net.IP{ip}
-	} else {
-		addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
-		if err != nil {
-			return fmt.Errorf("resolve OneBot host %q: %w", host, err)
-		}
-		for _, addr := range addrs {
-			ips = append(ips, addr.IP)
-		}
-	}
-	for _, ip := range ips {
-		if !isLocalNetworkIP(ip) {
-			return fmt.Errorf(
-				"OneBot ws_url %q uses unencrypted ws:// to a host outside this computer and its local network; use wss://",
-				rawURL,
-			)
-		}
-	}
-	return nil
-}
-
-// sharedAddressSpace is 100.64.0.0/10 (RFC 6598), used by carrier NAT and by
-// overlay networks such as Tailscale; it is not reachable from the internet.
-var sharedAddressSpace = &net.IPNet{IP: net.IPv4(100, 64, 0, 0), Mask: net.CIDRMask(10, 32)}
-
-func isLocalNetworkIP(ip net.IP) bool {
-	return ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || sharedAddressSpace.Contains(ip)
 }
 
 // VoiceCapabilities returns the voice capabilities of the channel.

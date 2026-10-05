@@ -291,6 +291,39 @@ func TestOwnerApprovalQuotesTheWholeCommand(t *testing.T) {
 	waitOwnerAnswer(t, done)
 }
 
+// An exec call is shown as what it does: a write or send-keys sends its data
+// or keys, not a command it may also carry, and a run in another folder
+// shows the folder. Only a plain run reads as its command.
+func TestOwnerApprovalShowsWhatAnExecCallDoes(t *testing.T) {
+	al, msgBus := newApprovalTestLoop(t)
+	inbound := ownerTelegram("chat-1")
+
+	for _, args := range []map[string]any{
+		{"action": "write", "sessionId": "s1", "data": "rm -rf ~/notes\n", "command": "echo safe"},
+		{"action": "send-keys", "sessionId": "s1", "keys": "rm -rf ~/notes Enter", "command": "echo safe"},
+		{"action": "run", "command": "rm -rf build", "cwd": "/home/me"},
+	} {
+		done := askOwnerInBackground(al, context.Background(), inbound, "exec", args)
+		out, id := nextApprovalRequest(t, msgBus)
+		want := "Approve calling exec with `" + compactJSON(args) + "`? Reply /approve " + id + " or /deny " + id
+		if out.Content != want {
+			t.Fatalf("request = %q, want %q", out.Content, want)
+		}
+		reply(al, inbound, "/deny "+id)
+		waitOwnerAnswer(t, done)
+	}
+
+	// A run whose other arguments only shape how it runs reads as the command.
+	args := map[string]any{"action": "run", "command": "make test", "timeout": 60, "background": true}
+	done := askOwnerInBackground(al, context.Background(), inbound, "exec", args)
+	out, id := nextApprovalRequest(t, msgBus)
+	if want := "Approve running: `make test`? Reply /approve " + id + " or /deny " + id; out.Content != want {
+		t.Fatalf("request = %q, want %q", out.Content, want)
+	}
+	reply(al, inbound, "/deny "+id)
+	waitOwnerAnswer(t, done)
+}
+
 // A call too long to show in full is refused without asking: the owner would
 // approve what they could not read.
 func TestOwnerApprovalRefusesACallTooLongToShow(t *testing.T) {

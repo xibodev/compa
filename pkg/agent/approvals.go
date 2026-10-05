@@ -167,13 +167,36 @@ func (al *AgentLoop) askOwnerApproval(
 	return false, approvalWithdrawnReason
 }
 
-// approvalQuote is what a request shows of a call: exec's command, or the
-// arguments of any other tool.
+// approvalQuote is what a request shows of a call: the command of a plain
+// exec run, or else all the arguments.
 func approvalQuote(toolName string, args map[string]any) string {
-	if command, ok := args["command"].(string); ok && toolName == "exec" {
+	if command, ok := execRunCommand(toolName, args); ok {
 		return command
 	}
 	return compactJSON(args)
+}
+
+// execRunCommand returns the command of an exec run that the command alone
+// describes: its other arguments, if any, only shape how it runs (timeout,
+// background, pty). Any other exec call -- another action, which acts with
+// data or keys rather than the command, or a run in another folder -- is
+// shown with all of its arguments, so what is approved is what is shown.
+func execRunCommand(toolName string, args map[string]any) (string, bool) {
+	if action, _ := args["action"].(string); toolName != "exec" || action != "run" {
+		return "", false
+	}
+	command, ok := args["command"].(string)
+	if !ok {
+		return "", false
+	}
+	for name := range args {
+		switch name {
+		case "action", "command", "timeout", "background", "pty":
+		default:
+			return "", false
+		}
+	}
+	return command, true
 }
 
 // ownerApprovalText is the request the owner answers: the whole command to
@@ -188,7 +211,7 @@ func ownerApprovalText(toolName string, args map[string]any, job, id string) str
 	reply := fmt.Sprintf("Reply /approve %s or /deny %s", id, id)
 	quote := approvalQuote(toolName, args)
 	inline := !strings.ContainsAny(quote, "`\r\n")
-	if _, ok := args["command"].(string); ok && toolName == "exec" {
+	if _, ok := execRunCommand(toolName, args); ok {
 		if inline {
 			return fmt.Sprintf("Approve running: `%s`%s? %s", quote, forJob, reply)
 		}

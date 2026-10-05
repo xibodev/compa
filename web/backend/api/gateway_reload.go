@@ -16,8 +16,10 @@ import (
 )
 
 // gatewayReloadTimeout bounds the wait for the gateway to apply a reloaded
-// config: it rebuilds its agents and restarts the services that changed.
-const gatewayReloadTimeout = 30 * time.Second
+// config. Its /reload answers once it has: after a reload in progress, it
+// rebuilds its agents and restarts the services that changed. A wait this
+// long means the reload is stuck.
+const gatewayReloadTimeout = 2 * time.Minute
 
 // liveApplyMu serializes applying saved changes, so a change saved while
 // another is applied is applied after it rather than refused.

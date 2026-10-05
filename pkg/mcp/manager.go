@@ -185,8 +185,9 @@ type Manager struct {
 	callTimeout    time.Duration
 	closeTimeout   time.Duration
 
-	// toolsChanged is told a server's new tools when it announces that its
-	// tool list changed; nil when nobody listens.
+	// toolsChanged is told a server's tools when they may have changed: the
+	// server announced that its tool list changed, or was reconnected. nil
+	// when nobody listens.
 	toolsChanged ToolsChangedFunc
 
 	// roots are the roots every client advertises. They are set once: a
@@ -224,12 +225,13 @@ func WithRoots(dirs ...string) ManagerOption {
 	}
 }
 
-// ToolsChangedFunc receives the tools of a server that announced its tool
-// list changed, listed again.
+// ToolsChangedFunc receives the tools of a server listed again: after it
+// announced its tool list changed, or after it was reconnected.
 type ToolsChangedFunc func(server string, tools []*mcp.Tool)
 
-// WithToolsChangedHandler has handler told the new tools of a server that
-// announces its tool list changed (notifications/tools/list_changed).
+// WithToolsChangedHandler has handler told the tools of a server that
+// announces its tool list changed (notifications/tools/list_changed), and of
+// a server reconnected, which may list other tools than before.
 func WithToolsChangedHandler(handler ToolsChangedFunc) ManagerOption {
 	return func(m *Manager) {
 		m.toolsChanged = handler
@@ -1192,8 +1194,18 @@ func (m *Manager) reconnectServer(
 	if currentConn == staleConn {
 		m.servers[serverName] = freshConn
 		staleToClose := staleConn
+		handler, tools := m.toolsChanged, freshConn.Tools
 		m.mu.Unlock()
 		_ = closeConnection(staleToClose)
+		// The server started again may list other tools. The handler
+		// registers them; not on this call's goroutine, whose tool runs.
+		if handler != nil {
+			go func() {
+				if !m.closed.Load() {
+					handler(serverName, tools)
+				}
+			}()
+		}
 		return freshConn, nil
 	}
 

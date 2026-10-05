@@ -53,6 +53,10 @@ func NewWebClientChannel(
 // Start dials the remote server and begins reading.
 func (c *WebClientChannel) Start(ctx context.Context) error {
 	logger.InfoC("web_client", "Starting web chat client channel")
+	// The token and the remote control of the agent travel this connection.
+	if err := channels.CheckWebSocketURL(ctx, c.config.URL, "web_client url"); err != nil {
+		return err
+	}
 	c.ctx, c.cancel = context.WithCancel(ctx)
 
 	if err := c.dial(); err != nil {

@@ -64,14 +64,18 @@ const (
 	serviceShutdownTimeout  = 30 * time.Second
 	providerReloadTimeout   = 30 * time.Second
 	gracefulShutdownTimeout = 15 * time.Second
-	// reloadWaitTimeout bounds how long POST /reload waits for the reload
-	// it triggered to finish, within the gateway server's write timeout.
-	reloadWaitTimeout = 25 * time.Second
+	// reloadRetryInterval is how often POST /reload checks whether the
+	// reload in progress it waits for is over.
+	reloadRetryInterval = 100 * time.Millisecond
 
 	logPath   = "logs"
 	panicFile = "gateway_panic.log"
 	logFile   = "gateway.log"
 )
+
+// errReloadInProgress refuses a reload asked for while another one is queued
+// or running.
+var errReloadInProgress = errors.New("reload already in progress")
 
 // reloadRequest asks the gateway loop for a manual reload. done, when set,
 // receives the reload's outcome.
@@ -83,6 +87,34 @@ type reloadRequest struct {
 func (r reloadRequest) finish(err error) {
 	if r.done != nil {
 		r.done <- err
+	}
+}
+
+// awaitReload asks trigger for a reload and returns its outcome once it is
+// done. A reload in progress may have read the config before the caller
+// saved it, so awaitReload waits for that one to end and asks for its own.
+// It gives up once ctx ends.
+func awaitReload(ctx context.Context, trigger func(done chan error) error) error {
+	done := make(chan error, 1)
+	for {
+		err := trigger(done)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, errReloadInProgress) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(reloadRetryInterval):
+		}
+	}
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
@@ -298,7 +330,7 @@ func Run(debug bool, homePath, configPath string, allowEmptyStartup bool) (runEr
 	runningServices.manualReloadChan = manualReloadChan
 	reloadTrigger := func(done chan error) error {
 		if !runningServices.reloading.CompareAndSwap(false, true) {
-			return fmt.Errorf("reload already in progress")
+			return errReloadInProgress
 		}
 		select {
 		case manualReloadChan <- reloadRequest{done: done}:
@@ -309,20 +341,12 @@ func Run(debug bool, homePath, configPath string, allowEmptyStartup bool) (runEr
 			return fmt.Errorf("reload already queued")
 		}
 	}
-	// POST /reload answers once the reload is done, so its caller knows the
-	// config it saved is in effect. A reload asked for from a chat command
-	// runs on its own: that turn must not wait for the agents it rebuilds.
-	runningServices.HealthServer.SetReloadFunc(func() error {
-		done := make(chan error, 1)
-		if err := reloadTrigger(done); err != nil {
-			return err
-		}
-		select {
-		case err := <-done:
-			return err
-		case <-time.After(reloadWaitTimeout):
-			return fmt.Errorf("the reload did not finish within %s", reloadWaitTimeout)
-		}
+	// POST /reload answers once its reload is done, so its caller knows the
+	// config it saved is in effect (awaitReload). A reload asked for from a
+	// chat command runs on its own: that turn must not wait for the agents it
+	// rebuilds.
+	runningServices.HealthServer.SetReloadFunc(func(ctx context.Context) error {
+		return awaitReload(ctx, reloadTrigger)
 	})
 	agentLoop.SetReloadFunc(func() error { return reloadTrigger(nil) })
 
