@@ -220,6 +220,8 @@ type reloadBlockingProvider struct {
 	chatStarted chan struct{}
 	releaseChat chan struct{}
 	closeCalled chan struct{}
+	// closeDelay is how long Close takes, like a provider ending a process.
+	closeDelay time.Duration
 }
 
 func (p *reloadBlockingProvider) Chat(
@@ -248,6 +250,7 @@ func (p *reloadBlockingProvider) GetDefaultModel() string {
 }
 
 func (p *reloadBlockingProvider) Close() {
+	time.Sleep(p.closeDelay)
 	select {
 	case <-p.closeCalled:
 	default:
@@ -255,7 +258,9 @@ func (p *reloadBlockingProvider) Close() {
 	}
 }
 
-func TestReloadProviderAndConfigWaitsForInFlightRequestsBeforeClosingOldProvider(t *testing.T) {
+// A reload does not wait for the requests in flight: it returns while one
+// runs on the previous provider, which closes once the request ended.
+func TestReloadClosesTheReplacedProviderOnceItsRequestsEnd(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Agents.Defaults.Workspace = t.TempDir()
 
@@ -292,12 +297,18 @@ func TestReloadProviderAndConfigWaitsForInFlightRequestsBeforeClosingOldProvider
 		reloaded.Agents.Defaults.Workspace = cfg.Agents.Defaults.Workspace
 		reloadDone <- al.ReloadProviderAndConfig(context.Background(), &mockProvider{}, reloaded)
 	}()
+	select {
+	case err := <-reloadDone:
+		if err != nil {
+			t.Fatalf("ReloadProviderAndConfig() error = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the reload waited for the request in flight")
+	}
 
 	select {
 	case <-oldProvider.closeCalled:
 		t.Fatal("old provider closed before in-flight request completed")
-	case err := <-reloadDone:
-		t.Fatalf("reload returned early: %v", err)
 	case <-time.After(150 * time.Millisecond):
 	}
 
@@ -313,18 +324,52 @@ func TestReloadProviderAndConfigWaitsForInFlightRequestsBeforeClosingOldProvider
 	}
 
 	select {
-	case err := <-reloadDone:
-		if err != nil {
-			t.Fatalf("ReloadProviderAndConfig() error = %v", err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for reload to finish")
-	}
-
-	select {
 	case <-oldProvider.closeCalled:
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for old provider close")
+	}
+}
+
+// What a reload replaced closes once no request is in flight, and when the
+// loop closes, at once.
+func TestReplacedProvidersCloseOnceRequestsEndOrTheLoopCloses(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Agents.Defaults.Workspace = t.TempDir()
+	al := NewAgentLoop(cfg, bus.NewMessageBus(), &mockProvider{})
+
+	first := &reloadBlockingProvider{closeCalled: make(chan struct{})}
+	al.activeRequestsInc()
+	al.closeReplaced(map[string]providers.LLMProvider{"first": first}, nil, nil)
+	select {
+	case <-first.closeCalled:
+		t.Fatal("the replaced provider closed with a request in flight")
+	case <-time.After(150 * time.Millisecond):
+	}
+	al.activeRequestsDec()
+	select {
+	case <-first.closeCalled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the replaced provider did not close once the request ended")
+	}
+
+	second := &reloadBlockingProvider{closeCalled: make(chan struct{}), closeDelay: 300 * time.Millisecond}
+	al.activeRequestsInc()
+	defer al.activeRequestsDec()
+	al.closeReplaced(map[string]providers.LLMProvider{"second": second}, nil, nil)
+	closed := make(chan struct{})
+	go func() {
+		al.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close waited for the request in flight")
+	}
+	select {
+	case <-second.closeCalled:
+	default:
+		t.Fatal("Close returned before closing what the reload replaced")
 	}
 }
 

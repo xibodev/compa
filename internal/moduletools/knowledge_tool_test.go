@@ -81,9 +81,12 @@ func TestKnowledgeToolRejectsUnknownAndUnscopedSkill(t *testing.T) {
 func TestKnowledgeToolSmallSkillBypassesHugeOverlay(t *testing.T) {
 	tool, root := knowledgeToolFixture(t, strings.Repeat("huge overlay\n", 10000))
 	ctx := context.Background()
+	// An overlay over the 64 KiB document cap is refused on its own, with a
+	// warning, and the module's small skill still loads.
 	got := tool.Execute(ctx, map[string]any{"module": " TEST.MODULE "})
-	if !got.IsError || !strings.Contains(got.ForLLM, "list=true") || !strings.Contains(got.ForLLM, "offset=0") {
-		t.Fatalf("oversized module has no recovery instructions: %+v", got)
+	if got.IsError || !strings.Contains(got.ForLLM, "larger than 64 KiB") ||
+		!strings.Contains(got.ForLLM, "small verified skill") || strings.Contains(got.ForLLM, "huge overlay") {
+		t.Fatalf("oversized overlay was not refused on its own: %+v", got)
 	}
 	got = tool.Execute(ctx, map[string]any{"module": " TEST.MODULE ", "list": true})
 	if got.IsError || !strings.Contains(got.ForLLM, "skill guide") {

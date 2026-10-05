@@ -17,6 +17,8 @@ type addOptions struct {
 	Transport string
 	Force     bool
 	Deferred  *bool // nil = not set, true = deferred, false = not deferred
+	Trusted   bool
+	Cwd       string
 }
 
 func newAddCommand() *cobra.Command {
@@ -78,6 +80,8 @@ func newAddCommand() *cobra.Command {
 	flags.BoolP("force", "f", false, "Overwrite an existing server without prompting")
 	flags.Bool("deferred", false, "Mark server as deferred (tools hidden until explicitly activated)")
 	flags.Bool("no-deferred", false, "Mark server as non-deferred (tools always active)")
+	flags.Bool("trusted", false, "Trust the server's tool annotations (such as read-only)")
+	flags.String("cwd", "", "Working folder for stdio servers (default: the agent workspace)")
 
 	return cmd
 }
@@ -107,6 +111,16 @@ func parseAddArgs(args []string) (addOptions, string, string, []string, bool, er
 		case arg == "--no-deferred":
 			f := false
 			opts.Deferred = &f
+		case arg == "--trusted":
+			opts.Trusted = true
+		case arg == "--cwd":
+			if i+1 >= len(args) {
+				return addOptions{}, "", "", nil, false, fmt.Errorf("missing value for %s", arg)
+			}
+			i++
+			opts.Cwd = args[i]
+		case strings.HasPrefix(arg, "--cwd="):
+			opts.Cwd = strings.TrimPrefix(arg, "--cwd=")
 		case arg == "--transport" || arg == "-t":
 			if i+1 >= len(args) {
 				return addOptions{}, "", "", nil, false, fmt.Errorf("missing value for %s", arg)
@@ -196,6 +210,7 @@ func buildServerConfig(target string, args []string, opts addOptions) (config.MC
 		Enabled:  true,
 		Type:     transport,
 		Deferred: opts.Deferred,
+		Trusted:  opts.Trusted,
 	}
 
 	switch transport {
@@ -205,6 +220,9 @@ func buildServerConfig(target string, args []string, opts addOptions) (config.MC
 		}
 		if strings.TrimSpace(opts.EnvFile) != "" {
 			return config.MCPServerConfig{}, fmt.Errorf("--env-file can only be used with stdio transport")
+		}
+		if strings.TrimSpace(opts.Cwd) != "" {
+			return config.MCPServerConfig{}, fmt.Errorf("--cwd can only be used with stdio transport")
 		}
 		if len(args) > 0 {
 			return config.MCPServerConfig{}, fmt.Errorf("%s transport does not accept command arguments", transport)
@@ -244,6 +262,7 @@ func buildServerConfig(target string, args []string, opts addOptions) (config.MC
 	server.Args = commandArgs
 	server.Env = env
 	server.EnvFile = strings.TrimSpace(opts.EnvFile)
+	server.Cwd = strings.TrimSpace(opts.Cwd)
 
 	return server, nil
 }

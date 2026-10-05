@@ -16,76 +16,162 @@ import (
 )
 
 // gatewayReloadTimeout bounds the wait for the gateway to apply a reloaded
-// config: it rebuilds its agents and restarts the services that changed.
-const gatewayReloadTimeout = 30 * time.Second
+// config. Its /reload answers once it has: after a reload in progress, it
+// rebuilds its agents and restarts the services that changed. A wait this
+// long means the reload is stuck.
+const gatewayReloadTimeout = 2 * time.Minute
 
-// modelApplyMu serializes applying model changes, so a change saved while
+// liveApplyMu serializes applying saved changes, so a change saved while
 // another is applied is applied after it rather than refused.
-var modelApplyMu sync.Mutex
+var liveApplyMu sync.Mutex
 
-// ApplyModelChanges wraps next so that a request that changes the model
-// selections the gateway runs with - the default model, the image or light
-// model, an agent's model - takes effect in the running gateway before its
-// answer is sent: the gateway reloads its config, as a restart would apply
-// it, without restarting. Other config changes keep waiting for a restart.
-func (h *Handler) ApplyModelChanges(next http.Handler) http.Handler {
+// liveConfigRoutes are the API families whose writes can change what takes
+// effect in the running gateway without a restart: a model selection (the
+// default, image, light or an agent's model, directly or by dropping targets
+// a provider no longer serves), the approval policy, or a channel's access
+// lists and policies (PATCH /api/config).
+var liveConfigRoutes = []string{
+	"/api/config",
+	"/api/default-model",
+	"/api/provider-instances",
+	"/api/model-routes",
+	"/api/active-models",
+	"/api/credentials",
+	"/api/extension",
+}
+
+// ApplyLiveChanges wraps next so that a request that changes what the
+// running gateway applies without a restart - the model selections, the
+// approval policy (tools.approval), a channel's allow_from, dm_policy or
+// group_policy - takes effect in it: once the request was answered, the
+// gateway reloads its config, as a restart would apply it, without
+// restarting (see applyLiveConfig). Other config changes keep waiting for a
+// restart. Only successful writes to liveConfigRoutes trigger it, and the
+// reload runs in the background, so no request waits for the gateway.
+func (h *Handler) ApplyLiveChanges(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		next.ServeHTTP(w, r)
-		if mayChangeConfig(r) {
-			h.applyModelSelections()
+		if !mayChangeLiveConfig(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		// Pending from before the save: the client reads the gateway status
+		// as soon as the response reached it, which can be before next
+		// returns.
+		h.pendingLiveApplies.Add(1)
+		defer h.pendingLiveApplies.Add(-1)
+		status := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(status, r)
+		if status.status < http.StatusBadRequest {
+			h.scheduleLiveApply()
 		}
 	})
 }
 
-// mayChangeConfig reports whether r is an API request that can save the
-// config: one that is not a read and does not drive the gateway itself.
-func mayChangeConfig(r *http.Request) bool {
+// mayChangeLiveConfig reports whether r is a write to an API that can change
+// what the gateway applies without a restart.
+func mayChangeLiveConfig(r *http.Request) bool {
 	switch r.Method {
 	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
 	default:
 		return false
 	}
 	path := r.URL.Path
-	return strings.HasPrefix(path, "/api/") && !strings.HasPrefix(path, "/api/gateway/")
+	for _, route := range liveConfigRoutes {
+		if path == route || strings.HasPrefix(path, route+"/") {
+			return true
+		}
+	}
+	return false
 }
 
-// applyModelSelections reloads the running gateway's config when its saved
-// model selections differ from the ones the gateway applied, and records
-// that the gateway now runs the saved config. It never starts a gateway.
-func (h *Handler) applyModelSelections() {
-	modelApplyMu.Lock()
-	defer modelApplyMu.Unlock()
+// scheduleLiveApply applies the saved config's live changes in the
+// background. The apply is pending from now until applyLiveConfig returned.
+func (h *Handler) scheduleLiveApply() {
+	h.pendingLiveApplies.Add(1)
+	h.liveApplies.Add(1)
+	go func() {
+		defer h.liveApplies.Done()
+		defer h.pendingLiveApplies.Add(-1)
+		h.applyLiveConfig()
+	}()
+}
+
+// waitForLiveApplies waits until every scheduled apply finished.
+func (h *Handler) waitForLiveApplies() {
+	h.liveApplies.Wait()
+}
+
+// statusRecorder remembers the status a handler answered with.
+type statusRecorder struct {
+	http.ResponseWriter
+	status      int
+	wroteHeader bool
+}
+
+func (s *statusRecorder) WriteHeader(code int) {
+	if !s.wroteHeader {
+		s.status = code
+		s.wroteHeader = true
+	}
+	s.ResponseWriter.WriteHeader(code)
+}
+
+func (s *statusRecorder) Write(b []byte) (int, error) {
+	s.wroteHeader = true
+	return s.ResponseWriter.Write(b)
+}
+
+func (s *statusRecorder) Flush() {
+	if f, ok := s.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Unwrap lets http.ResponseController reach the underlying writer.
+func (s *statusRecorder) Unwrap() http.ResponseWriter {
+	return s.ResponseWriter
+}
+
+// applyLiveConfig reloads the running gateway's config when the saved
+// config's live parts - the model selections, the approval policy, the
+// channels' access lists and policies - differ from those the gateway
+// applied (see configSignature.liveEqual), and records what the reload
+// applied. A reload that fails leaves the restart to do. It never starts a
+// gateway.
+func (h *Handler) applyLiveConfig() {
+	liveApplyMu.Lock()
+	defer liveApplyMu.Unlock()
 
 	cfg, err := config.LoadConfig(h.configPath)
 	if err != nil {
 		return
 	}
-	saved := modelSelectionSignature(cfg)
+	saved := computeConfigSignature(cfg)
 	gateway.mu.Lock()
-	applied := gateway.bootModelSignature
-	var pidData *ppid.PidFileData
-	if gateway.pidData != nil {
-		copied := *gateway.pidData
-		pidData = &copied
-	}
+	applied := gateway.bootConfig
+	pidData := copyPidData(gateway.pidData)
 	running := gateway.runtimeStatus == "running"
 	gateway.mu.Unlock()
-	if !running || pidData == nil || applied == "" || applied == saved {
+	if !running || pidData == nil || len(applied) == 0 || saved.liveEqual(applied) {
 		return
 	}
 
 	if err := h.reloadGateway(pidData, cfg); err != nil {
-		logger.WarnC("gateway", fmt.Sprintf("The new model selection could not be applied without a restart: %v", err))
+		logger.WarnC("gateway", fmt.Sprintf("The saved changes could not be applied without a restart: %v", err))
 		return
 	}
 	gateway.mu.Lock()
 	if gateway.pidData != nil && gateway.pidData.PID == pidData.PID {
 		gateway.bootDefaultModel = strings.TrimSpace(cfg.Agents.Defaults.GetModelName())
-		gateway.bootConfigSignature = computeConfigSignature(cfg)
-		gateway.bootModelSignature = saved
+		// A reload rebuilds the agents and their tools from the saved config
+		// and restarts each channel whose config, secrets included, changed:
+		// the gateway runs the saved config now.
+		gateway.bootConfig = saved
+		// The web chat channel runs with its saved token now.
+		refreshWebChatTokenLocked(h.configPath)
 	}
 	gateway.mu.Unlock()
-	logger.InfoC("gateway", "Applied the new model selection to the running gateway")
+	logger.InfoC("gateway", "Applied the saved changes to the running gateway")
 }
 
 // reloadGateway asks the gateway pidData describes to reload its config and

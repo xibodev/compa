@@ -1,4 +1,4 @@
-# Build, vet and test the Go programs and the web UI.
+# Build, vet, lint and test the Go programs, the web UI and the installers.
 #
 # release.yml calls this workflow too, so a version tag cannot publish
 # anything unless these jobs pass for the tagged commit.
@@ -66,10 +66,125 @@ jobs:
       - name: Test
         run: go test -tags goolm,stdjson -p 1 ./...
 
+      # Releases leave out whatsapp_native, which links GPL-3.0 code; this
+      # keeps it compiling.
+      - name: Build, vet and test with whatsapp_native
+        run: |
+          go build -tags goolm,stdjson,whatsapp_native ./...
+          go vet -tags goolm,stdjson,whatsapp_native ./pkg/channels/whatsapp_native/...
+          go test -tags goolm,stdjson,whatsapp_native -p 1 ./pkg/channels/whatsapp_native/...
+
+  # Releases ship Windows and macOS programs too, built from files only those
+  # platforms compile, such as the Windows-only code and the macOS tray.
+  go-platforms:
+    name: go build / vet / test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            cgo: "0"
+          # As in release.yml, compa uses cgo on macOS for its tray icon.
+          - os: macos-latest
+            cgo: "1"
+    defaults:
+      run:
+        shell: bash
+    env:
+      CGO_ENABLED: ${{ matrix.cgo }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: 1.26.6
+          cache-dependency-path: go.sum
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          package_json_file: web/frontend/package.json
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: web/frontend/pnpm-lock.yaml
+
+      - name: Build the UI into web/backend/dist
+        working-directory: web/frontend
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm run build:backend
+
+      - name: Build
+        run: go build -tags goolm,stdjson ./...
+
+      - name: Vet
+        run: go vet -tags goolm,stdjson ./...
+
+      - name: Test
+        run: go test -tags goolm,stdjson -p 1 ./...
+
+  race:
+    name: go test -race
+    runs-on: ubuntu-latest
+    # The race detector makes the tests several times slower.
+    timeout-minutes: 120
+    env:
+      CGO_ENABLED: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: 1.26.6
+          cache-dependency-path: go.sum
+
+      - name: Test with the race detector
+        run: go test -race -tags goolm,stdjson -p 1 ./...
+
+  lint:
+    name: golangci-lint / go.mod / govulncheck / doc links
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: 1.26.6
+          cache-dependency-path: go.sum
+
+      # Settings in .golangci.yml.
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.14.0
+
+      - name: go.mod and go.sum are tidy
+        if: ${{ !cancelled() }}
+        run: go mod tidy -diff
+
+      # Fails only on vulnerabilities in code that is actually called.
+      - name: govulncheck
+        if: ${{ !cancelled() }}
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.8.0 -tags goolm,stdjson ./...
+
+      - name: Links in the Markdown docs
+        if: ${{ !cancelled() }}
+        run: sh scripts/check-doc-links.sh
+
   frontend:
     name: frontend typecheck / lint / test / build
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: web/frontend
@@ -98,8 +213,88 @@ jobs:
       - name: Lint
         run: pnpm run lint
 
+      - name: Format
+        run: pnpm run format
+
       - name: Test
         run: pnpm test
 
       - name: Build
         run: pnpm run build
+
+      # The end-to-end tests run against the build above and a fixture API.
+      - name: Install Chromium for Playwright
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: End-to-end tests
+        run: pnpm run test:e2e
+
+      - name: Brand check
+        working-directory: .
+        run: node brand/check.mjs
+
+  installers:
+    name: installers (shellcheck / PSScriptAnalyzer / install.sh test)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      # Builds the stand-ins the installer tests install.
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: 1.26.6
+          cache-dependency-path: go.sum
+
+      - name: shellcheck
+        run: shellcheck scripts/install/install.sh scripts/install/test-install.sh scripts/*.sh
+
+      - name: PSScriptAnalyzer
+        if: ${{ !cancelled() }}
+        shell: pwsh
+        run: |
+          if (-not (Get-Module -ListAvailable PSScriptAnalyzer)) {
+            Install-Module PSScriptAnalyzer -Scope CurrentUser -Force
+          }
+          $installer = 'scripts/install/install.ps1'
+          # An installer talks to the person at the console, keeps its helper
+          # functions private and treats some cleanup as best effort.
+          $exclude = 'PSAvoidUsingWriteHost', 'PSUseShouldProcessForStateChangingFunctions', 'PSAvoidUsingEmptyCatchBlock'
+          $issues = @(Invoke-ScriptAnalyzer -Path $installer -Severity Warning, Error -ExcludeRule $exclude)
+          # It has to run on Windows PowerShell 5.1 too.
+          $issues += @(Invoke-ScriptAnalyzer -Path $installer -Settings @{
+              IncludeRules = @('PSUseCompatibleSyntax')
+              Rules = @{ PSUseCompatibleSyntax = @{ Enable = $true; TargetVersions = @('5.1', '7.0') } }
+            })
+          $issues | Format-Table -AutoSize -Wrap RuleName, Severity, Line, Message
+          if ($issues.Count) { exit 1 }
+
+      - name: Test install.sh
+        if: ${{ !cancelled() }}
+        run: bash scripts/install/test-install.sh
+
+  installers-windows:
+    name: install.ps1 test (windows)
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: 1.26.6
+          cache-dependency-path: go.sum
+
+      - name: Test install.ps1 under PowerShell 7
+        run: ./scripts/install/test-install.ps1 -Shell pwsh
+
+      - name: Test install.ps1 under Windows PowerShell 5.1
+        if: ${{ !cancelled() }}
+        run: ./scripts/install/test-install.ps1 -Shell powershell

@@ -12,7 +12,7 @@ import (
 )
 
 func (al *AgentLoop) transcribeAudioInMessage(ctx context.Context, msg bus.InboundMessage) (bus.InboundMessage, bool) {
-	if al.transcriber == nil || al.mediaStore == nil || len(msg.Media) == 0 {
+	if al.transcriber == nil || al.currentMediaStore() == nil || len(msg.Media) == 0 {
 		return msg, false
 	}
 
@@ -20,7 +20,7 @@ func (al *AgentLoop) transcribeAudioInMessage(ctx context.Context, msg bus.Inbou
 	var transcriptions []string
 	var keptMedia []string
 	for _, ref := range msg.Media {
-		path, meta, err := al.mediaStore.ResolveWithMeta(ref)
+		path, meta, err := al.currentMediaStore().ResolveWithMeta(ref)
 		if err != nil {
 			logger.WarnCF("voice", "Failed to resolve media ref", map[string]any{"ref": ref, "error": err})
 			keptMedia = append(keptMedia, ref)
@@ -77,10 +77,10 @@ func (al *AgentLoop) sendTranscriptionFeedback(
 	channel, chatID, messageID string,
 	validTexts []string,
 ) {
-	if !al.cfg.Voice.EchoTranscription {
+	if !al.GetConfig().Voice.EchoTranscription {
 		return
 	}
-	if al.channelManager == nil {
+	if al.currentChannelManager() == nil {
 		return
 	}
 
@@ -98,7 +98,7 @@ func (al *AgentLoop) sendTranscriptionFeedback(
 		feedbackMsg = "No voice detected in the audio"
 	}
 
-	err := al.channelManager.SendMessage(ctx, bus.OutboundMessage{
+	err := al.currentChannelManager().SendMessage(ctx, bus.OutboundMessage{
 		Context:          bus.NewOutboundContext(channel, chatID, messageID),
 		Content:          feedbackMsg,
 		ReplyToMessageID: messageID,

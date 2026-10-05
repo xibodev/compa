@@ -23,8 +23,6 @@ import (
 //
 //	{"version": "v1.2.3"}  the release to install; default: the latest
 //	{"url": "https://github.com/xibodev/compa/releases/tag/v1.2.3"}
-//	{"binary": "compa"}    accepted from older clients and ignored; both
-//	                       programs are always updated together
 //
 // The answer is {"status": "ok"|"error", "message": "...", "version": "v1.2.3"}.
 
@@ -53,7 +51,6 @@ func (h *Handler) registerUpdateRoutes(mux *http.ServeMux) {
 type updateRequest struct {
 	Version string `json:"version,omitempty"`
 	URL     string `json:"url,omitempty"`
-	Binary  string `json:"binary,omitempty"`
 }
 
 type updateResponse struct {

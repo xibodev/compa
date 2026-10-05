@@ -18,8 +18,9 @@ and the status menu at the top of the page shows **Gateway: Stopped** or
      it found no `compa-kernel` in Compa's folder. Install again, or keep both
      programs in one folder.
    - `config.json` doesn't load, for example after a hand edit. The Config page
-     then says **Failed to load configuration**. Fix the file, or use
-     **Factory Reset** (see [Start over](#start-over)).
+     then says **Failed to load configuration**. A key Compa doesn't know fails
+     the load too, and the error names it, such as `tools.future_tool`. Fix the
+     file, or use **Factory Reset** (see [Start over](#start-over)).
    - Port 18790 is taken; see the next section.
 
 ## Port already in use
@@ -43,14 +44,14 @@ and the status menu at the top of the page shows **Gateway: Stopped** or
 Quit Compa (tray icon → **Quit**), then run:
 
 ```sh
-compa -password "your-new-password"
+compa -password -
 ```
 
-This sets the new password (at least 8 characters) and exits. Start Compa and
-sign in with it. If `compa` isn't on your `PATH`, use its full path:
-`& "$env:LOCALAPPDATA\Programs\Compa\compa.exe"` in PowerShell, or
-`~/.local/bin/compa` on macOS and Linux. Your shell may keep the command in its
-history.
+This asks for the new password (at least 8 characters), sets it and exits.
+Start Compa and sign in with it. If `compa` isn't on your `PATH`, use its full
+path: `& "$env:LOCALAPPDATA\Programs\Compa\compa.exe"` in PowerShell, or
+`~/.local/bin/compa` on macOS and Linux. `compa -password "your-new-password"`
+works too, but your shell may keep that command in its history.
 
 ## Where the logs are
 
@@ -65,6 +66,11 @@ In `~/.compa/logs`:
 
 The **Logs** page shows the gateway's recent output and has a level menu. For
 more detail everywhere, start Compa with `compa -d`.
+
+When a log file reaches 10 MB, Compa starts a new one and keeps up to 5 of
+each (`logging.max_size_mb` and `logging.max_files` in `config.json`). With
+`logging.redact_secrets`, on by default, Compa masks the keys and tokens it
+knows before it writes a log line.
 
 ## A model doesn't answer
 
@@ -81,6 +87,34 @@ more detail everywhere, start Compa with `compa -d`.
 - A **route** falls back to its next model when one fails, so a route with two
   providers keeps answering when one is down.
 - The **Logs** page shows the error the provider returned.
+
+## An approval doesn't arrive
+
+When [`tools.approval`](use.md#approvals) asks about a call:
+
+- If a process hook has `intercept: ["approve_tool"]`, it decides instead of
+  you, and no request is posted.
+- A request that comes from someone else's message or from a scheduled job
+  goes to the conversation you last wrote to Compa from, in the browser or a
+  chat app. Until you have written to Compa there, such requests are refused:
+  send Compa a message once.
+- `compa-kernel agent -m` can't ask, so it refuses such calls; interactive
+  `compa-kernel agent` asks in the terminal.
+- **"No request … is waiting for an answer"**: the ID is wrong, the request was
+  already answered, or 10 minutes passed, which refuses it. Ask again.
+- Only you can answer. In a chat app that means a sender listed by ID in the
+  channel's **Allow From**.
+- A call refused without any request was denied or hidden by the policy. The
+  Modules page and `module-invoke` don't post requests either: there,
+  **Approve and run** or `--approve` is the approval.
+
+## A saved change doesn't take effect
+
+Saving the model selections, `tools.approval`, or a channel's **Allow From**,
+**DM Policy** or **Group Policy**, and approving a pairing request, applies to
+the running gateway at once, together with every other change saved before.
+Other changes show **Gateway restart required**: choose **Restart gateway** in
+the status menu at the top.
 
 ## Start over
 
@@ -129,29 +163,39 @@ Everything is in `~/.compa`:
 | `.security.yml` | Channel tokens and other secret settings. |
 | `auth.json` | Provider API keys and sign-ins, and the extension's shared secret. |
 | `launcher-auth.db` | The dashboard password, as a bcrypt hash. |
-| `workspace/` | The agent's files, chat history, memory, skills and scheduled jobs. |
+| `workspace/` | The agent's files, chat history, memory and skills. |
+| `state/` | Scheduled jobs (`state/cron/jobs.json`) and the terminal chat's input history. |
+| `pairing.json` | Pairing requests from chat apps waiting for your answer. |
 | `modules/`, `logs/` | Installed modules and log files. |
 
-The secrets are stored unencrypted by default. `config.json`, `.security.yml`
-and `auth.json` are created readable only by your account (file mode 600 on
-macOS and Linux), but anyone who can read your user files can read them.
+Secrets are stored in plain text in `.security.yml`, or in a file beside it
+that a `file://` reference there names; Compa has no option to encrypt them.
+`config.json` shows `[NOT_HERE]` in place of a secret that is set.
+`config.json`, `.security.yml` and `auth.json` are created readable only by
+your account (file mode 600 on macOS and Linux), but anyone who can read your
+user files can read them.
 
 ### The dashboard password
 
 The password protects the web UI. Compa stores only its bcrypt hash and allows
 10 sign-in attempts per minute from each address. A sign-in lasts until you
-sign out or Compa restarts, at most 31 days. When Compa opens your browser
-itself, a one-time link that works for 5 minutes signs you in. The password
-doesn't encrypt your files.
+sign out or Compa restarts, at most 31 days; **Sign out everywhere** ends every
+browser's sign-in at once. Changing the password asks for the current one.
+When Compa opens your browser itself, a one-time link that works for 2 minutes
+signs you in. The first password can only be set through the setup link Compa
+opens or prints when it starts. The password doesn't encrypt your files.
 
 ### LAN access is off by default
 
-The web UI and the gateway listen only on this computer unless you start
-Compa with `-public` or `-host`, or turn on **Enable LAN Access**. If you turn
-it on, set the password first: until one is set, whoever opens the page first
-sets it. Compa serves plain HTTP, so the password and your chats cross the
-network unencrypted, and the gateway port 18790 is reachable too. **Allowed
-Network CIDRs** limits which addresses can reach the web UI.
+The web UI listens only on this computer unless you start Compa with `-public`
+or `-host`, or turn on **Enable LAN Access**. If you turn it on, set the
+password first: Compa doesn't start in LAN mode without one, unless **Allow
+LAN Without Password** (`allow_lan_without_password` in `launcher-config.json`)
+is on. Compa serves plain HTTP, so the password and your chats cross the
+network unencrypted. The gateway, port 18790, stays on this computer either
+way, unless you set `gateway.host` in `config.json`. **Allowed Network CIDRs**
+limits which addresses can reach the web UI, and **Allowed Hosts** adds names,
+such as a reverse proxy's, that it answers to.
 
 To use Compa from another computer without LAN access, forward the port over
 SSH from that computer, then open http://127.0.0.1:18800 there:
@@ -174,11 +218,16 @@ ssh -L 18800:127.0.0.1:18800 you@the-computer-running-compa
   **Allow Commands** turns commands off entirely.
 - **Allow Remote Commands** is on by default. It lets chats other than the
   terminal run commands, which includes the browser chat and every chat app
-  you connect. A channel whose **Allow From** is empty answers anyone, so
-  anyone who can message a connected bot can then run commands on your
-  computer. Fill in **Allow From** on each channel, or turn **Allow Remote
+  you connect. A channel answers only the IDs in **Allow From** and the people
+  you approve from their pairing requests, unless **Allow From** has `*` or
+  its `dm_policy` or `group_policy` is `open`: then anyone who can message
+  that bot can run commands on your computer. List only your own IDs in
+  **Allow From** (see [Channels](use.md#channels)), or turn **Allow Remote
   Commands** off.
+  A `tools.approval` rule can make Compa ask you before it runs commands from
+  chat apps and scheduled jobs (see [Approvals](use.md#approvals)).
 - Skills and modules are third-party content; install only ones you trust.
   Modules run as separate programs under your account. A module capability
-  that needs approval runs only when you press **Approve and run** on the
-  Modules page.
+  that `tools.approval` asks about, by default one with an unknown cost,
+  network access or writes outside your computer, runs only with your
+  approval, such as **Approve and run** on the Modules page.

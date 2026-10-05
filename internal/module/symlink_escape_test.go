@@ -83,6 +83,33 @@ func TestALinkThatStaysInsideTheRootIsAllowed(t *testing.T) {
 	}
 }
 
+// A ROOT that is itself a link must still serve the files inside it.
+//
+// The root was resolved with filepath.EvalSymlinks, which stopped following
+// junctions in Go 1.23, while the path inside it went through pathlink. The
+// root resolved to the junction and the path to its target, so every artifact
+// under a junctioned workspace was refused as escaping it.
+func TestAnArtifactUnderALinkedRootResolves(t *testing.T) {
+	real := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(real, "out"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(real, "out", "render.mp4"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(t.TempDir(), "workspace")
+	linkDir(t, root, real)
+
+	req := &modproto.Request{Roots: map[string]modproto.Root{"workspace": {Path: root, Mode: "rw"}}}
+	got, err := ResolveArtifact(req, modproto.Artifact{Root: "workspace", Path: "out/render.mp4"})
+	if err != nil {
+		t.Fatalf("an artifact inside a linked root was refused: %v", err)
+	}
+	if got != filepath.Join(root, "out", "render.mp4") {
+		t.Fatalf("resolved %q", got)
+	}
+}
+
 // linkDir makes name a directory link to target, skipping the test when the
 // platform will not allow one without elevation.
 func linkDir(t *testing.T, name, target string) {

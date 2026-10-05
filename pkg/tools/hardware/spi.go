@@ -60,7 +60,7 @@ func (t *SPITool) Parameters() map[string]any {
 			},
 			"confirm": map[string]any{
 				"type":        "boolean",
-				"description": "Must be true for transfer operations. Safety guard to prevent accidental writes.",
+				"description": "Must be true for transfer and read operations; a read clocks zeros out to the device. Safety guard to prevent accidental writes.",
 			},
 		},
 		"required": []string{"action"},
@@ -68,13 +68,20 @@ func (t *SPITool) Parameters() map[string]any {
 }
 
 func (t *SPITool) Execute(ctx context.Context, args map[string]any) *ToolResult {
-	if runtime.GOOS != "linux" {
-		return ErrorResult("SPI is only supported on Linux. This tool requires /dev/spidev* device files.")
-	}
-
 	action, ok := args["action"].(string)
 	if !ok {
 		return ErrorResult("action is required")
+	}
+
+	// A read clocks out zeros, which the device receives as data.
+	if action == "read" {
+		if r := requireConfirm(args, "an SPI read sends zero bytes to the device"); r != nil {
+			return r
+		}
+	}
+
+	if runtime.GOOS != "linux" {
+		return ErrorResult("SPI is only supported on Linux. This tool requires /dev/spidev* device files.")
 	}
 
 	switch action {

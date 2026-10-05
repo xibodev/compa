@@ -2,8 +2,12 @@ import { IconLogout, IconMenu2, IconRefresh } from "@tabler/icons-react"
 import { Link } from "@tanstack/react-router"
 import * as React from "react"
 import { useTranslation } from "react-i18next"
+import { toast } from "sonner"
 
-import { postLauncherDashboardLogout } from "@/api/launcher-auth"
+import {
+  postLauncherDashboardLogout,
+  postLauncherDashboardLogoutAll,
+} from "@/api/launcher-auth"
 import { BrandLogo } from "@/components/brand-logo"
 import { GatewayStatusControl } from "@/components/gateway-status"
 import { LanguageMenu, ThemeToggle } from "@/components/header-controls"
@@ -26,6 +30,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { useGateway } from "@/hooks/use-gateway.ts"
+import { navigateTo } from "@/lib/navigate"
 
 export function AppHeader() {
   const { t } = useTranslation()
@@ -49,7 +54,16 @@ export function AppHeader() {
 
   const handleLogout = async () => {
     await postLauncherDashboardLogout()
-    globalThis.location.assign("/launcher-login")
+    navigateTo("/launcher-login")
+  }
+
+  const handleLogoutAll = async () => {
+    const result = await postLauncherDashboardLogoutAll().catch(() => null)
+    if (!result?.ok) {
+      toast.error(result?.error ?? t("launcherLogin.errorNetwork"))
+      return
+    }
+    navigateTo("/launcher-login")
   }
 
   const handleGatewayRestart = () => {
@@ -104,6 +118,12 @@ export function AppHeader() {
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+            <AlertDialogAction
+              variant="outline"
+              onClick={() => void handleLogoutAll()}
+            >
+              {t("header.logout.everywhere")}
+            </AlertDialogAction>
             <AlertDialogAction onClick={() => void handleLogout()}>
               {t("header.logout.confirm")}
             </AlertDialogAction>
@@ -142,10 +162,7 @@ export function AppHeader() {
         <LanguageMenu />
         <ThemeToggle />
 
-        <Separator
-          className="mx-1 my-2 sm:mx-2"
-          orientation="vertical"
-        />
+        <Separator className="mx-1 my-2 sm:mx-2" orientation="vertical" />
 
         <Tooltip delayDuration={700}>
           <TooltipTrigger asChild>

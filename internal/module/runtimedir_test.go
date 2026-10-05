@@ -19,7 +19,7 @@ import (
 // dependency it had actually shipped with, which reads like a broken install
 // rather than an incomplete copy.
 func TestDeclaredRuntimeDirectoryTravelsWithTheBinary(t *testing.T) {
-	bin := buildFakeModule(t)
+	bin := copyFakeModule(t)
 	srcRoot := filepath.Dir(bin)
 
 	// The fake module declares no directory requirement, so nothing should be

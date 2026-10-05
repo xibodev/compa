@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next"
 
 import { AnsiLogLine } from "@/components/logs/ansi-log-line"
 import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area"
+import type { GatewayLogLine } from "@/hooks/use-gateway-logs"
 
 const AUTO_SCROLL_THRESHOLD_PX = 24
 
@@ -14,7 +15,7 @@ function isNearBottom(viewport: HTMLDivElement) {
 }
 
 type LogsPanelProps = {
-  logs: string[]
+  logs: GatewayLogLine[]
 }
 
 export function LogsPanel({ logs }: LogsPanelProps) {
@@ -74,7 +75,9 @@ export function LogsPanel({ logs }: LogsPanelProps) {
           {logs.length === 0 ? (
             <div className="text-zinc-500 italic">{t("pages.logs.empty")}</div>
           ) : (
-            logs.map((log, index) => <AnsiLogLine key={index} line={log} />)
+            // Keyed by position in the run, so a line keeps its element as
+            // older lines scroll out of the buffer and only new lines render.
+            logs.map((log) => <AnsiLogLine key={log.offset} line={log.text} />)
           )}
         </div>
         <ScrollBar orientation="horizontal" />

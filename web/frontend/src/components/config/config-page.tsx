@@ -7,7 +7,7 @@ import {
 } from "@tabler/icons-react"
 import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { Link } from "@tanstack/react-router"
-import { type ReactNode, useEffect, useState } from "react"
+import { type ReactNode, useEffect, useEffectEvent, useState } from "react"
 import { useTranslation } from "react-i18next"
 import { toast } from "sonner"
 
@@ -15,6 +15,8 @@ import { patchAppConfig, resetAppConfig } from "@/api/channels"
 import { launcherFetch } from "@/api/http"
 import { postLauncherDashboardSetup } from "@/api/launcher-auth"
 import {
+  type AutoStartStatus,
+  type LauncherConfig,
   getAutoStartStatus,
   getLauncherConfig,
   getSystemVersionInfo,
@@ -24,15 +26,18 @@ import {
 import { ConfigChangeNotice } from "@/components/config-change-notice"
 import {
   AgentDefaultsSection,
+  ApprovalsSection,
   CronSection,
   DevicesSection,
   EvolutionSection,
   ExecSection,
   LauncherSection,
+  LoggingSection,
   MCPSection,
   RuntimeSection,
 } from "@/components/config/config-sections"
 import {
+  type ApprovalRuleForm,
   type CoreConfigForm,
   EMPTY_FORM,
   EMPTY_LAUNCHER_FORM,
@@ -45,6 +50,7 @@ import {
   parseIntField,
   parseJSONObjectField,
   parseMultilineList,
+  unmaskSecretValues,
 } from "@/components/config/form-model"
 import { PageHeader } from "@/components/page-header"
 import {
@@ -60,8 +66,9 @@ import {
 } from "@/components/ui/alert-dialog"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { isReleaseVersion } from "@/lib/version"
+import { UnsavedChangesGuard } from "@/components/unsaved-changes-guard"
 import { showSaveSuccessOrRestartToast } from "@/lib/restart-required"
+import { isReleaseVersion } from "@/lib/version"
 import { refreshGatewayState } from "@/store/gateway"
 
 type ConfigGroupKey = "access" | "agent" | "tools" | "advanced"
@@ -106,6 +113,22 @@ function ConfigGroup({
   )
 }
 
+function launcherFormFromConfig(config: LauncherConfig): LauncherForm {
+  return {
+    port: String(config.port),
+    publicAccess: config.public,
+    allowLANWithoutPassword: config.allow_lan_without_password === true,
+    allowedCIDRsText: (config.allowed_cidrs ?? []).join("\n"),
+    allowedHostsText: (config.allowed_hosts ?? []).join("\n"),
+    allowLocalhostBypass: config.allow_localhost_bypass ?? true,
+    trustedProxyCIDRsText: (config.trusted_proxy_cidrs ?? []).join("\n"),
+    remoteImages: config.remote_images === "always" ? "always" : "click",
+    dashboardPassword: "",
+    dashboardPasswordConfirm: "",
+    dashboardPasswordCurrent: "",
+  }
+}
+
 function buildStringMapMergePatch(
   next: Record<string, string>,
   previous: Record<string, string>,
@@ -145,6 +168,25 @@ function buildTurnProfilePatch(
     }
   }
 
+  return result
+}
+
+/**
+ * A rule as tools.approval.rules holds it: only the fields it sets, or, for
+ * a rule the form could not show, the rule as it came.
+ */
+function buildApprovalRulePatch(rule: ApprovalRuleForm): unknown {
+  if ("kept" in rule) {
+    return rule.kept
+  }
+  const result: Record<string, unknown> = {}
+  const tool = rule.tool.trim()
+  const source = rule.source.trim()
+  if (tool) result.tool = tool
+  if (source) result.source = source
+  if (rule.origin.length > 0) result.origin = rule.origin
+  if (rule.hints.length > 0) result.hints = rule.hints
+  result.action = rule.action
   return result
 }
 
@@ -201,51 +243,65 @@ export function ConfigPage() {
     queryFn: getAutoStartStatus,
   })
 
-  useEffect(() => {
-    if (!data) return
-    const parsed = buildFormFromConfig(data)
-    setForm(parsed)
-    setBaseline(parsed)
-  }, [data])
-
-  useEffect(() => {
-    if (!launcherConfig) return
-    const parsed: LauncherForm = {
-      port: String(launcherConfig.port),
-      publicAccess: launcherConfig.public,
-      allowedCIDRsText: (launcherConfig.allowed_cidrs ?? []).join("\n"),
-      allowLocalhostBypass: launcherConfig.allow_localhost_bypass ?? true,
-      trustedProxyCIDRsText: (launcherConfig.trusted_proxy_cidrs ?? []).join(
-        "\n",
-      ),
-      dashboardPassword: "",
-      dashboardPasswordConfirm: "",
-    }
-    setLauncherForm(parsed)
-    setLauncherBaseline(parsed)
-  }, [launcherConfig])
-
-  useEffect(() => {
-    if (!autoStartStatus) return
-    setAutoStartEnabled(autoStartStatus.enabled)
-    setAutoStartBaseline(autoStartStatus.enabled)
-  }, [autoStartStatus])
-
   const configDirty = JSON.stringify(form) !== JSON.stringify(baseline)
   const launcherSettingsDirty =
     launcherForm.port !== launcherBaseline.port ||
     launcherForm.publicAccess !== launcherBaseline.publicAccess ||
+    launcherForm.allowLANWithoutPassword !==
+      launcherBaseline.allowLANWithoutPassword ||
     launcherForm.allowedCIDRsText !== launcherBaseline.allowedCIDRsText ||
+    launcherForm.allowedHostsText !== launcherBaseline.allowedHostsText ||
     launcherForm.allowLocalhostBypass !==
       launcherBaseline.allowLocalhostBypass ||
     launcherForm.trustedProxyCIDRsText !==
-      launcherBaseline.trustedProxyCIDRsText
+      launcherBaseline.trustedProxyCIDRsText ||
+    launcherForm.remoteImages !== launcherBaseline.remoteImages
   const launcherPasswordDirty =
     launcherForm.dashboardPassword.trim() !== "" ||
     launcherForm.dashboardPasswordConfirm.trim() !== ""
   const launcherDirty = launcherSettingsDirty || launcherPasswordDirty
   const autoStartDirty = autoStartEnabled !== autoStartBaseline
   const isDirty = configDirty || launcherDirty || autoStartDirty
+
+  // Fresh server data replaces a form only while it holds no edits: a
+  // refetch or a gateway restart must not wipe what the user typed. Reset
+  // applies the latest data.
+  const applyConfig = (loaded: unknown) => {
+    const parsed = buildFormFromConfig(loaded)
+    setForm(parsed)
+    setBaseline(parsed)
+  }
+  const applyLauncherConfig = (loaded: LauncherConfig) => {
+    const parsed = launcherFormFromConfig(loaded)
+    setLauncherForm(parsed)
+    setLauncherBaseline(parsed)
+  }
+  const applyAutoStart = (loaded: AutoStartStatus) => {
+    setAutoStartEnabled(loaded.enabled)
+    setAutoStartBaseline(loaded.enabled)
+  }
+
+  const onConfigLoaded = useEffectEvent((loaded: unknown) => {
+    if (!configDirty) applyConfig(loaded)
+  })
+  const onLauncherConfigLoaded = useEffectEvent((loaded: LauncherConfig) => {
+    if (!launcherDirty) applyLauncherConfig(loaded)
+  })
+  const onAutoStartLoaded = useEffectEvent((loaded: AutoStartStatus) => {
+    if (!autoStartDirty) applyAutoStart(loaded)
+  })
+
+  useEffect(() => {
+    if (data) onConfigLoaded(data)
+  }, [data])
+
+  useEffect(() => {
+    if (launcherConfig) onLauncherConfigLoaded(launcherConfig)
+  }, [launcherConfig])
+
+  useEffect(() => {
+    if (autoStartStatus) onAutoStartLoaded(autoStartStatus)
+  }, [autoStartStatus])
 
   const autoStartSupported = autoStartStatus?.supported !== false
   const autoStartHint = autoStartError
@@ -313,10 +369,46 @@ export function ConfigPage() {
     updateField("turnProfile", { ...form.turnProfile, [key]: value })
   }
 
+  // A new rule goes last: the first rule a call matches decides it.
+  const handleApprovalRuleAdd = () => {
+    const rule: ApprovalRuleForm = {
+      id: `approval-rule-${Date.now()}-${form.approvalRules.length + 1}`,
+      tool: "",
+      source: "",
+      origin: [],
+      hints: [],
+      action: "ask",
+    }
+    updateField("approvalRules", [...form.approvalRules, rule])
+  }
+
+  const handleApprovalRuleRemove = (id: string) => {
+    updateField(
+      "approvalRules",
+      form.approvalRules.filter((rule) => rule.id !== id),
+    )
+  }
+
+  const handleApprovalRuleFieldChange = <K extends keyof ApprovalRuleForm>(
+    id: string,
+    key: K,
+    value: ApprovalRuleForm[K],
+  ) => {
+    updateField(
+      "approvalRules",
+      form.approvalRules.map((rule) =>
+        rule.id === id ? { ...rule, [key]: value } : rule,
+      ),
+    )
+  }
+
   const handleReset = () => {
-    setForm(baseline)
-    setLauncherForm(launcherBaseline)
-    setAutoStartEnabled(autoStartBaseline)
+    if (data) applyConfig(data)
+    else setForm(baseline)
+    if (launcherConfig) applyLauncherConfig(launcherConfig)
+    else setLauncherForm(launcherBaseline)
+    if (autoStartStatus) applyAutoStart(autoStartStatus)
+    else setAutoStartEnabled(autoStartBaseline)
     toast.info(t("pages.config.reset_success"))
   }
 
@@ -341,11 +433,17 @@ export function ConfigPage() {
     }
   }
 
+  const headersLabel = (name: string) =>
+    t("pages.config.errors.mcp_server_headers", { name })
+  const envLabel = (name: string) =>
+    t("pages.config.errors.mcp_server_env", { name })
+
   const handleSave = async () => {
     try {
       setSaving(true)
       const password = launcherForm.dashboardPassword.trim()
       const confirm = launcherForm.dashboardPasswordConfirm.trim()
+      const currentPassword = launcherForm.dashboardPasswordCurrent.trim()
       if (launcherPasswordDirty) {
         if (!password) {
           throw new Error(t("pages.config.dashboard_password_required"))
@@ -356,6 +454,9 @@ export function ConfigPage() {
         if (Array.from(password).length < 8) {
           throw new Error(t("pages.config.dashboard_password_min_length"))
         }
+        if (!currentPassword) {
+          throw new Error(t("pages.config.dashboard_password_current_required"))
+        }
       }
 
       if (configDirty) {
@@ -363,10 +464,10 @@ export function ConfigPage() {
         const dmScope = form.dmScope.trim()
 
         if (!workspace) {
-          throw new Error("Workspace path is required.")
+          throw new Error(t("pages.config.errors.workspace_required"))
         }
         if (!dmScope) {
-          throw new Error("Session scope is required.")
+          throw new Error(t("pages.config.errors.session_scope_required"))
         }
 
         if (
@@ -375,57 +476,74 @@ export function ConfigPage() {
           !form.mcpDiscoveryUseBM25 &&
           !form.mcpDiscoveryUseRegex
         ) {
-          throw new Error(
-            "MCP discovery requires at least one search method (BM25 or regex).",
-          )
+          throw new Error(t("pages.config.errors.mcp_discovery_method"))
         }
 
-        const maxTokens = parseIntField(form.maxTokens, "Max tokens", {
-          min: 1,
-        })
+        // Errors name each field by its label on this page.
+        const maxTokens = parseIntField(
+          form.maxTokens,
+          t("pages.config.max_tokens"),
+          { min: 1 },
+        )
         const contextWindow = form.contextWindow.trim()
-          ? parseIntField(form.contextWindow, "Context window", { min: 1 })
+          ? parseIntField(
+              form.contextWindow,
+              t("pages.config.context_window"),
+              {
+                min: 1,
+              },
+            )
           : undefined
         const maxToolIterations = parseIntField(
           form.maxToolIterations,
-          "Max tool iterations",
+          t("pages.config.max_tool_iterations"),
           { min: 1 },
         )
         const toolFeedbackMaxArgsLength = parseIntField(
           form.toolFeedbackMaxArgsLength,
-          "Tool feedback max args length",
+          t("pages.config.tool_feedback_max_args_length"),
           { min: 0 },
         )
         const summarizeMessageThreshold = parseIntField(
           form.summarizeMessageThreshold,
-          "Summarize message threshold",
+          t("pages.config.summarize_threshold"),
           { min: 1 },
         )
         const summarizeTokenPercent = parseIntField(
           form.summarizeTokenPercent,
-          "Summarize token percent",
+          t("pages.config.summarize_token_percent"),
           { min: 1, max: 100 },
         )
         const turnProfile = buildTurnProfilePatch(form.turnProfile)
         const heartbeatInterval = parseIntField(
           form.heartbeatInterval,
-          "Heartbeat interval",
+          t("pages.config.heartbeat_interval"),
           { min: 1 },
         )
         const cronExecTimeoutMinutes = parseIntField(
           form.cronExecTimeoutMinutes,
-          "Cron exec timeout",
+          t("pages.config.cron_exec_timeout"),
           { min: 0 },
         )
         const evolutionMinTaskCount = parseIntField(
           form.evolutionMinTaskCount,
-          "Evolution minimum task count",
+          t("pages.config.evolution_min_task_count"),
           { min: 1 },
         )
         const evolutionMinSuccessRatio = parseFloatField(
           form.evolutionMinSuccessRatio,
-          "Evolution minimum success ratio",
+          t("pages.config.evolution_min_success_ratio"),
           { min: 0.01, max: 1 },
+        )
+        const logMaxSizeMB = parseIntField(
+          form.logMaxSizeMB,
+          t("pages.config.log_max_size_mb"),
+          { min: 1 },
+        )
+        const logMaxFiles = parseIntField(
+          form.logMaxFiles,
+          t("pages.config.log_max_files"),
+          { min: 1 },
         )
         const mcpDiscoveryValidationEnabled =
           form.mcpEnabled && form.mcpDiscoveryEnabled
@@ -438,14 +556,12 @@ export function ConfigPage() {
         if (mcpDiscoveryValidationEnabled) {
           mcpDiscoveryPatch.ttl = parseIntField(
             form.mcpDiscoveryTTL,
-            "MCP discovery ttl",
-            {
-              min: 1,
-            },
+            t("pages.config.mcp_discovery_ttl"),
+            { min: 1 },
           )
           mcpDiscoveryPatch.max_search_results = parseIntField(
             form.mcpDiscoveryMaxSearchResults,
-            "MCP discovery max search results",
+            t("pages.config.mcp_discovery_max_results"),
             { min: 1 },
           )
         }
@@ -486,7 +602,9 @@ export function ConfigPage() {
 
           if (duplicateNames.length > 0) {
             throw new Error(
-              `MCP server names must be unique. Duplicates: ${duplicateNames.join(", ")}.`,
+              t("pages.config.errors.mcp_server_duplicates", {
+                names: duplicateNames.join(", "),
+              }),
             )
           }
 
@@ -515,7 +633,11 @@ export function ConfigPage() {
 
             if (server.type !== "stdio") {
               if (shouldValidateServer && server.url === "") {
-                throw new Error(`MCP server ${server.name} requires a URL.`)
+                throw new Error(
+                  t("pages.config.errors.mcp_server_url_required", {
+                    name: server.name,
+                  }),
+                )
               }
 
               if (shouldValidateServer) {
@@ -529,7 +651,9 @@ export function ConfigPage() {
                   }
                 } catch {
                   throw new Error(
-                    `MCP server ${server.name} requires a valid HTTP(S) URL.`,
+                    t("pages.config.errors.mcp_server_url_invalid", {
+                      name: server.name,
+                    }),
                   )
                 }
               }
@@ -537,7 +661,7 @@ export function ConfigPage() {
               const baselineHeaders = baselineServer
                 ? parseJSONObjectField(
                     baselineServer.headersText,
-                    `Saved MCP server ${server.name} headers`,
+                    headersLabel(server.name),
                   )
                 : {}
 
@@ -549,12 +673,14 @@ export function ConfigPage() {
                   type: server.type,
                   url: server.url,
                   headers: buildStringMapMergePatch(
-                    shouldValidateServer
-                      ? parseJSONObjectField(
-                          server.headersText,
-                          `MCP server ${server.name} headers`,
-                        )
-                      : baselineHeaders,
+                    unmaskSecretValues(
+                      shouldValidateServer
+                        ? parseJSONObjectField(
+                            server.headersText,
+                            headersLabel(server.name),
+                          )
+                        : baselineHeaders,
+                    ),
                     baselineHeaders,
                   ),
                   command: null,
@@ -566,13 +692,17 @@ export function ConfigPage() {
             }
 
             if (shouldValidateServer && server.command === "") {
-              throw new Error(`MCP server ${server.name} requires a command.`)
+              throw new Error(
+                t("pages.config.errors.mcp_server_command_required", {
+                  name: server.name,
+                }),
+              )
             }
 
             const baselineEnv = baselineServer
               ? parseJSONObjectField(
                   baselineServer.envText,
-                  `Saved MCP server ${server.name} env`,
+                  envLabel(server.name),
                 )
               : {}
 
@@ -585,12 +715,14 @@ export function ConfigPage() {
                 command: server.command,
                 args: parseMultilineList(server.argsText),
                 env: buildStringMapMergePatch(
-                  shouldValidateServer
-                    ? parseJSONObjectField(
-                        server.envText,
-                        `MCP server ${server.name} env`,
-                      )
-                    : baselineEnv,
+                  unmaskSecretValues(
+                    shouldValidateServer
+                      ? parseJSONObjectField(
+                          server.envText,
+                          envLabel(server.name),
+                        )
+                      : baselineEnv,
+                  ),
                   baselineEnv,
                 ),
                 env_file: server.envFile === "" ? null : server.envFile,
@@ -614,7 +746,7 @@ export function ConfigPage() {
           )
           execConfigPatch.timeout_seconds = parseIntField(
             form.execTimeoutSeconds,
-            "Exec timeout",
+            t("pages.config.exec_timeout_seconds"),
             { min: 0 },
           )
 
@@ -647,6 +779,14 @@ export function ConfigPage() {
           session: {
             dm_scope: dmScope,
           },
+          commands: {
+            owner_only: form.commandsOwnerOnly,
+          },
+          logging: {
+            redact_secrets: form.logRedactSecrets,
+            max_size_mb: logMaxSizeMB,
+            max_files: logMaxFiles,
+          },
           evolution: {
             enabled: form.evolutionEnabled,
             mode: form.evolutionMode,
@@ -662,6 +802,11 @@ export function ConfigPage() {
             ),
           },
           tools: {
+            // The whole list goes: a merge patch replaces an array.
+            approval: {
+              default: form.approvalDefault,
+              rules: form.approvalRules.map(buildApprovalRulePatch),
+            },
             cron: {
               allow_command: form.allowCommand,
               exec_timeout_minutes: cronExecTimeoutMinutes,
@@ -689,11 +834,13 @@ export function ConfigPage() {
 
       let savedLauncherForm: LauncherForm | null = null
       if (launcherSettingsDirty) {
-        const port = parseIntField(launcherForm.port, "Service port", {
-          min: 1,
-          max: 65535,
-        })
+        const port = parseIntField(
+          launcherForm.port,
+          t("pages.config.server_port"),
+          { min: 1, max: 65535 },
+        )
         const allowedCIDRs = parseCIDRText(launcherForm.allowedCIDRsText)
+        const allowedHosts = parseCIDRText(launcherForm.allowedHostsText)
         const trustedProxyCIDRs = parseCIDRText(
           launcherForm.trustedProxyCIDRsText,
         )
@@ -703,21 +850,11 @@ export function ConfigPage() {
           allowed_cidrs: allowedCIDRs,
           allow_localhost_bypass: launcherForm.allowLocalhostBypass,
           trusted_proxy_cidrs: trustedProxyCIDRs,
+          allowed_hosts: allowedHosts,
+          allow_lan_without_password: launcherForm.allowLANWithoutPassword,
+          remote_images: launcherForm.remoteImages,
         })
-        const parsedLauncher: LauncherForm = {
-          port: String(savedLauncherConfig.port),
-          publicAccess: savedLauncherConfig.public,
-          allowedCIDRsText: (savedLauncherConfig.allowed_cidrs ?? []).join(
-            "\n",
-          ),
-          allowLocalhostBypass:
-            savedLauncherConfig.allow_localhost_bypass ?? true,
-          trustedProxyCIDRsText: (
-            savedLauncherConfig.trusted_proxy_cidrs ?? []
-          ).join("\n"),
-          dashboardPassword: "",
-          dashboardPasswordConfirm: "",
-        }
+        const parsedLauncher = launcherFormFromConfig(savedLauncherConfig)
         savedLauncherForm = parsedLauncher
         setLauncherForm(parsedLauncher)
         setLauncherBaseline(parsedLauncher)
@@ -728,15 +865,22 @@ export function ConfigPage() {
       }
 
       if (launcherPasswordDirty) {
-        const result = await postLauncherDashboardSetup(password, confirm)
+        const result = await postLauncherDashboardSetup(password, confirm, {
+          currentPassword,
+        })
         if (!result.ok) {
-          throw new Error(result.error)
+          throw new Error(
+            result.status === 403
+              ? t("pages.config.dashboard_password_current_wrong")
+              : result.error,
+          )
         }
 
         const clearedLauncherForm = savedLauncherForm ?? {
           ...launcherForm,
           dashboardPassword: "",
           dashboardPasswordConfirm: "",
+          dashboardPasswordCurrent: "",
         }
         setLauncherForm(clearedLauncherForm)
         if (savedLauncherForm) {
@@ -818,6 +962,7 @@ export function ConfigPage() {
 
   return (
     <div className="flex h-full flex-col">
+      <UnsavedChangesGuard when={isDirty} />
       <PageHeader
         title={t("navigation.config")}
         titleExtra={
@@ -904,6 +1049,13 @@ export function ConfigPage() {
 
               <ConfigGroup group="tools">
                 <ExecSection form={form} onFieldChange={updateField} />
+                <ApprovalsSection
+                  form={form}
+                  onFieldChange={updateField}
+                  onAddRule={handleApprovalRuleAdd}
+                  onRemoveRule={handleApprovalRuleRemove}
+                  onRuleFieldChange={handleApprovalRuleFieldChange}
+                />
                 <CronSection form={form} onFieldChange={updateField} />
                 <MCPSection
                   form={form}
@@ -929,6 +1081,7 @@ export function ConfigPage() {
                   }
                   onAutoStartChange={setAutoStartEnabled}
                 />
+                <LoggingSection form={form} onFieldChange={updateField} />
               </ConfigGroup>
 
               {!isDirty && actionButtons}

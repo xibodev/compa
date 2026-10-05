@@ -8,23 +8,29 @@ import (
 	"github.com/xibodev/compa/pkg/cron"
 )
 
-func newAddCommand(storePath func() string) *cobra.Command {
+func newAddCommand(open openStore) *cobra.Command {
 	var (
 		name    string
 		message string
 		every   int64
 		cronExp string
+		tz      string
 		channel string
 		to      string
 	)
 
 	cmd := &cobra.Command{
-		Use:   "add",
+		Use:   "add --name <name> --message <text> (--every <seconds> | --cron <expr>)",
 		Short: "Add a new scheduled job",
-		Args:  cobra.NoArgs,
+		Example: `compa-kernel cron add --name standup --message "Remind me about standup" --cron "0 9 * * 1-5"
+compa-kernel cron add --name water --message "Drink water" --every 3600`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if every <= 0 && cronExp == "" {
 				return fmt.Errorf("either --every or --cron must be specified")
+			}
+			if tz != "" && cronExp == "" {
+				return fmt.Errorf("--tz applies only to --cron schedules")
 			}
 
 			var schedule cron.CronSchedule
@@ -32,16 +38,22 @@ func newAddCommand(storePath func() string) *cobra.Command {
 				everyMS := every * 1000
 				schedule = cron.CronSchedule{Kind: "every", EveryMS: &everyMS}
 			} else {
-				schedule = cron.CronSchedule{Kind: "cron", Expr: cronExp}
+				schedule = cron.CronSchedule{Kind: "cron", Expr: cronExp, TZ: tz}
+			}
+			if err := schedule.Validate(); err != nil {
+				return fmt.Errorf("invalid schedule: %w", err)
 			}
 
-			cs := cron.NewCronService(storePath(), nil)
+			cs, err := open()
+			if err != nil {
+				return err
+			}
 			job, err := cs.AddJob(name, schedule, message, channel, to)
 			if err != nil {
 				return fmt.Errorf("error adding job: %w", err)
 			}
 
-			fmt.Printf("✓ Added job '%s' (%s)\n", job.Name, job.ID)
+			fmt.Fprintf(cmd.OutOrStdout(), "✓ Added job '%s' (%s)\n", job.Name, job.ID)
 
 			return nil
 		},
@@ -49,8 +61,9 @@ func newAddCommand(storePath func() string) *cobra.Command {
 
 	cmd.Flags().StringVarP(&name, "name", "n", "", "Job name")
 	cmd.Flags().StringVarP(&message, "message", "m", "", "Message for agent")
-	cmd.Flags().Int64VarP(&every, "every", "e", 0, "Run every N seconds")
+	cmd.Flags().Int64VarP(&every, "every", "e", 0, "Run every N seconds (at least 60)")
 	cmd.Flags().StringVarP(&cronExp, "cron", "c", "", "Cron expression (e.g. '0 9 * * *')")
+	cmd.Flags().StringVar(&tz, "tz", "", "Time zone for --cron (e.g. 'Europe/Prague'); default: local time")
 	cmd.Flags().StringVar(&to, "to", "", "Recipient for delivery")
 	cmd.Flags().StringVar(&channel, "channel", "", "Channel for delivery")
 

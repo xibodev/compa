@@ -20,5 +20,15 @@ const (
 		INSERT INTO dashboard_credentials (id, bcrypt_hash) VALUES (1, ?)
 		ON CONFLICT(id) DO UPDATE SET bcrypt_hash = excluded.bcrypt_hash`
 
+	// sqlInsertFirstHash stores the first hash only: a row that exists
+	// already stays, and the insert affects no row.
+	sqlInsertFirstHash = `
+		INSERT INTO dashboard_credentials (id, bcrypt_hash) VALUES (1, ?)
+		ON CONFLICT(id) DO NOTHING`
+
+	// sqlBusyTimeout lets a write wait for another process (the -password
+	// command) instead of failing at once.
+	sqlBusyTimeout = `PRAGMA busy_timeout = 5000`
+
 	sqlSelectHash = `SELECT bcrypt_hash FROM dashboard_credentials WHERE id = 1`
 )

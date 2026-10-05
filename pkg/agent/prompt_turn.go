@@ -30,9 +30,22 @@ func promptBuildRequestForTurn(
 		Overlays:          append(promptOverlaysForOptions(ts.opts), moduleKnowledgePromptParts(ts.agent, ts.opts)...),
 		ModuleSummaries:   ts.agent.ModuleSummaries,
 	}
+	// The catalog names no tool the approval policy hides from the turn.
+	if ts.al != nil && len(req.ModuleSummaries) > 0 {
+		if hidden := ts.al.hiddenTools(ts); hidden != nil {
+			req.ModuleSummaries = offeredModuleSummaries(req.ModuleSummaries, func(name string) bool {
+				tool, _ := ts.agent.Tools.Get(name)
+				return hidden(name, tool)
+			})
+		}
+	}
 	hasCallableTools := true
 	if ts.profile.Enabled {
-		hasCallableTools = turnProfileHasCallableTools(ts.profile, ts.agent.Tools.ToProviderDefs()) ||
+		defs := ts.agent.Tools.ToProviderDefsForSession(ts.sessionKey)
+		if ts.al != nil {
+			defs = ts.al.offeredToolDefs(ts)
+		}
+		hasCallableTools = turnProfileHasCallableTools(ts.profile, defs) ||
 			turnProfileNativeSearchCallable(cfg, ts.profile, ts.agent)
 	}
 	if turnProfileSystemPromptOff(ts.profile) {
@@ -53,6 +66,41 @@ func promptBuildRequestForTurn(
 		req.AllowedTools = append([]string(nil), ts.profile.AllowedTools...)
 	}
 	return req
+}
+
+// moduleCapabilityPrefix starts a capability's line in a module's catalog
+// entry, which is a header line and then one "  - <tool> (<capability>): ..."
+// line per capability (moduletools' summarize).
+const moduleCapabilityPrefix = "  - "
+
+// offeredModuleSummaries returns the catalog entries of summaries without
+// the capabilities whose tools hidden reports, leaving out a module none of
+// whose capabilities are left. summaries is not modified.
+func offeredModuleSummaries(summaries []string, hidden func(name string) bool) []string {
+	offered := make([]string, 0, len(summaries))
+	for _, summary := range summaries {
+		lines := strings.Split(summary, "\n")
+		kept := []string{lines[0]}
+		capabilities, keptCapabilities := 0, 0
+		keep := true // a line that continues a capability's goes with it
+		for _, line := range lines[1:] {
+			if rest, ok := strings.CutPrefix(line, moduleCapabilityPrefix); ok {
+				capabilities++
+				name, _, _ := strings.Cut(rest, " (")
+				if keep = !hidden(name); keep {
+					keptCapabilities++
+				}
+			}
+			if keep {
+				kept = append(kept, line)
+			}
+		}
+		if capabilities > 0 && keptCapabilities == 0 {
+			continue
+		}
+		offered = append(offered, strings.Join(kept, "\n"))
+	}
+	return offered
 }
 
 func turnProfileNativeSearchCallable(
@@ -96,7 +144,7 @@ func promptBuildRequestForProcessOptions(
 	profile := opts.TurnProfile
 	hasCallableTools := true
 	if profile.Enabled && agent != nil {
-		hasCallableTools = turnProfileHasCallableTools(profile, agent.Tools.ToProviderDefs())
+		hasCallableTools = turnProfileHasCallableTools(profile, agent.Tools.ToProviderDefsForSession(opts.Dispatch.SessionKey))
 	}
 	if turnProfileSystemPromptOff(profile) {
 		req.SuppressDefaultSystemPrompt = true
@@ -230,6 +278,23 @@ func subTurnResultPromptMessage(content string) providers.Message {
 		PromptSlotSubTurn,
 		PromptSourceSubTurnResult,
 	)
+}
+
+// takeSubTurnResult returns the prompt message of a sub-turn result that is
+// waiting for ts, without blocking. The result is filtered by the turn's
+// config.
+func (p *Pipeline) takeSubTurnResult(ts *turnState) (providers.Message, bool) {
+	if ts == nil || ts.pendingResults == nil {
+		return providers.Message{}, false
+	}
+	select {
+	case result, ok := <-ts.pendingResults:
+		if ok && result != nil && result.ForLLM != "" {
+			return subTurnResultPromptMessage(p.Cfg.FilterSensitiveData(result.ForLLM)), true
+		}
+	default:
+	}
+	return providers.Message{}, false
 }
 
 // moduleKnowledgePromptParts loads a selected module's overlay and skills.

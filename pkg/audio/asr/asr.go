@@ -3,6 +3,7 @@ package asr
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -64,10 +65,14 @@ type coreTranscriber struct {
 
 func (t *coreTranscriber) Name() string { return "voice:" + t.client.Target }
 
+// maxAudioFileBytes bounds an audio file sent for transcription, the 25 MB
+// that speech-to-text APIs accept.
+const maxAudioFileBytes = 25 << 20
+
 func (t *coreTranscriber) Transcribe(ctx context.Context, audioFilePath string) (*TranscriptionResponse, error) {
-	data, err := os.ReadFile(audioFilePath)
+	data, err := readAudioFile(audioFilePath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read audio file %s: %w", audioFilePath, err)
+		return nil, err
 	}
 	result, err := t.client.Transcribe(ctx, data, filepath.Base(audioFilePath))
 	if err != nil {
@@ -81,4 +86,27 @@ func (t *coreTranscriber) Transcribe(ctx context.Context, audioFilePath string) 
 		"transcription_preview": utils.Truncate(result.Text, 50),
 	})
 	return result, nil
+}
+
+// readAudioFile reads an audio file of at most maxAudioFileBytes.
+func readAudioFile(path string) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read audio file %s: %w", path, err)
+	}
+	defer f.Close()
+
+	tooLarge := fmt.Errorf("audio file %s is larger than %d MB", filepath.Base(path), maxAudioFileBytes>>20)
+	if info, err := f.Stat(); err == nil && info.Size() > maxAudioFileBytes {
+		return nil, tooLarge
+	}
+	// The file may still be growing.
+	data, err := io.ReadAll(io.LimitReader(f, maxAudioFileBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read audio file %s: %w", path, err)
+	}
+	if len(data) > maxAudioFileBytes {
+		return nil, tooLarge
+	}
+	return data, nil
 }

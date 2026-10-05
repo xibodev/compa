@@ -31,7 +31,10 @@ func newSeahorseContextManager(_ json.RawMessage, al *AgentLoop) (ContextManager
 
 	// Resolve workspace for DB path
 	// DB stores session data, so it goes in sessions/ directory
-	agent := al.registry.GetDefaultAgent()
+	agent := al.GetRegistry().GetDefaultAgent()
+	if agent == nil {
+		return nil, fmt.Errorf("seahorse: no default agent")
+	}
 	dbPath := agent.Workspace + "/sessions/seahorse.db"
 
 	// Summaries run on the default agent's model as it is at each call, so
@@ -56,9 +59,7 @@ func newSeahorseContextManager(_ json.RawMessage, al *AgentLoop) (ContextManager
 	}
 
 	// Register seahorse tools with the agent's tool registry
-	retrieval := mgr.engine.GetRetrieval()
-	al.RegisterTool(seahorse.NewGrepTool(retrieval))
-	al.RegisterTool(seahorse.NewExpandTool(retrieval))
+	mgr.registerTools(al)
 
 	// Bootstrap all existing sessions at startup
 	if agent.Sessions != nil {
@@ -69,6 +70,14 @@ func newSeahorseContextManager(_ json.RawMessage, al *AgentLoop) (ContextManager
 	}
 
 	return mgr, nil
+}
+
+// registerTools registers the seahorse tools on the loop's agents; a reload
+// that keeps the manager registers them on its new agents.
+func (m *seahorseContextManager) registerTools(al *AgentLoop) {
+	retrieval := m.engine.GetRetrieval()
+	al.RegisterTool(seahorse.NewGrepTool(retrieval))
+	al.RegisterTool(seahorse.NewExpandTool(retrieval))
 }
 
 // providerToCompleteFn wraps providers.LLMProvider as a seahorse.CompleteFn.
@@ -230,13 +239,23 @@ func providerToSeahorseMessage(msg protocoltypes.Message) seahorse.Message {
 		CreatedAt:        normalizeSeahorseMessageCreatedAt(msg.CreatedAt),
 	}
 
-	// Convert ToolCalls → MessageParts
+	// Convert ToolCalls → MessageParts. A stored call may carry only the
+	// top-level name and arguments (no Function), so it must not be assumed.
 	for _, tc := range msg.ToolCalls {
 		part := seahorse.MessagePart{
 			Type:       "tool_use",
-			Name:       tc.Function.Name,
-			Arguments:  tc.Function.Arguments,
+			Name:       tc.Name,
 			ToolCallID: tc.ID,
+		}
+		if tc.Function != nil {
+			if tc.Function.Name != "" {
+				part.Name = tc.Function.Name
+			}
+			part.Arguments = tc.Function.Arguments
+		} else if len(tc.Arguments) > 0 {
+			if encoded, err := json.Marshal(tc.Arguments); err == nil {
+				part.Arguments = string(encoded)
+			}
 		}
 		result.Parts = append(result.Parts, part)
 	}

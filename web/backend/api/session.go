@@ -110,7 +110,14 @@ func (h *Handler) readSessionMeta(path, sessionKey string) (memory.SessionMeta, 
 	return meta, nil
 }
 
+// sessionHistoryRead, when a test sets it, observes every history file the
+// session API reads.
+var sessionHistoryRead func(path string)
+
 func (h *Handler) readSessionMessages(path string, skip int) ([]providers.Message, error) {
+	if sessionHistoryRead != nil {
+		sessionHistoryRead(path)
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -149,30 +156,27 @@ func (h *Handler) readSessionMessages(path string, skip int) ([]providers.Messag
 }
 
 func (h *Handler) readJSONLSession(dir, sessionKey string) (sessionFile, error) {
-	base := filepath.Join(dir, sanitizeSessionKey(sessionKey))
-	jsonlPath := base + ".jsonl"
-	metaPath := base + ".meta.json"
-
+	metaPath := filepath.Join(dir, sanitizeSessionKey(sessionKey)) + ".meta.json"
 	meta, err := h.readSessionMeta(metaPath, sessionKey)
 	if err != nil {
 		return sessionFile{}, err
 	}
+	return h.readJSONLSessionWithMeta(dir, sessionKey, meta)
+}
 
+// readJSONLSessionWithMeta reads the history of a session whose metadata has
+// already been read.
+func (h *Handler) readJSONLSessionWithMeta(dir, sessionKey string, meta memory.SessionMeta) (sessionFile, error) {
+	jsonlPath := filepath.Join(dir, sanitizeSessionKey(sessionKey)) + ".jsonl"
 	messages, err := h.readSessionMessages(jsonlPath, meta.Skip)
 	if err != nil {
 		return sessionFile{}, err
 	}
 
-	updated := meta.UpdatedAt
-	created := meta.CreatedAt
+	created, updated := meta.CreatedAt, meta.UpdatedAt
 	if created.IsZero() || updated.IsZero() {
 		if info, statErr := os.Stat(jsonlPath); statErr == nil {
-			if created.IsZero() {
-				created = info.ModTime()
-			}
-			if updated.IsZero() {
-				updated = info.ModTime()
-			}
+			created, updated = sessionTimes(meta, info.ModTime())
 		}
 	}
 
@@ -185,11 +189,26 @@ func (h *Handler) readJSONLSession(dir, sessionKey string) (sessionFile, error) 
 	}, nil
 }
 
+// sessionTimes returns a session's created and updated times, taking the
+// history file's modification time for any the metadata lacks.
+func sessionTimes(meta memory.SessionMeta, modTime time.Time) (time.Time, time.Time) {
+	created, updated := meta.CreatedAt, meta.UpdatedAt
+	if created.IsZero() {
+		created = modTime
+	}
+	if updated.IsZero() {
+		updated = modTime
+	}
+	return created, updated
+}
+
 // webChatJSONLSessionRef pairs the web chat session ID shown to the web UI with the
 // opaque session key its history is stored under.
 type webChatJSONLSessionRef struct {
 	ID  string
 	Key string
+	// meta is the metadata the session was found by.
+	meta memory.SessionMeta
 }
 
 func extractWebChatSessionIDFromScope(scope session.SessionScope) (string, bool) {
@@ -229,7 +248,7 @@ func sessionRefFromMeta(meta memory.SessionMeta) (webChatJSONLSessionRef, bool) 
 	if !ok {
 		return webChatJSONLSessionRef{}, false
 	}
-	return webChatJSONLSessionRef{ID: sessionID, Key: meta.Key}, true
+	return webChatJSONLSessionRef{ID: sessionID, Key: meta.Key, meta: meta}, true
 }
 
 func (h *Handler) findWebChatJSONLSessions(dir string) ([]webChatJSONLSessionRef, error) {
@@ -689,57 +708,85 @@ func (h *Handler) handleListSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := os.ReadDir(dir); err != nil {
-		// Directory doesn't exist yet = no sessions
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode([]sessionListItem{})
-		return
-	}
-
-	items := []sessionListItem{}
-	if refs, findErr := h.findWebChatJSONLSessions(dir); findErr == nil {
-		for _, ref := range refs {
-			sess, loadErr := h.readJSONLSession(dir, ref.Key)
-			if loadErr != nil || isEmptySession(sess) {
-				continue
-			}
-			items = append(items, buildSessionListItem(ref.ID, sess, toolFeedbackMaxArgsLength))
-		}
-	}
-
-	// Sort by updated descending (most recent first)
-	sort.Slice(items, func(i, j int) bool {
-		return items[i].Updated > items[j].Updated
-	})
-
 	// Pagination parameters
-	offsetStr := r.URL.Query().Get("offset")
-	limitStr := r.URL.Query().Get("limit")
-
 	offset := 0
 	limit := 20 // Default limit
-
-	if val, err := strconv.Atoi(offsetStr); err == nil && val >= 0 {
+	if val, err := strconv.Atoi(r.URL.Query().Get("offset")); err == nil && val >= 0 {
 		offset = val
 	}
-	if val, err := strconv.Atoi(limitStr); err == nil && val > 0 {
+	if val, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && val > 0 {
 		limit = val
 	}
 
-	totalItems := len(items)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(h.listWebChatSessions(dir, offset, limit, toolFeedbackMaxArgsLength))
+}
 
-	end := offset + limit
-	if offset >= totalItems {
-		items = []sessionListItem{} // Out of bounds, return empty
-	} else {
-		if end > totalItems {
-			end = totalItems
-		}
-		items = items[offset:end]
+// sessionListCandidate is a web chat session that may be listed, known from
+// its metadata and the size of its history file alone.
+type sessionListCandidate struct {
+	ref     webChatJSONLSessionRef
+	updated time.Time
+}
+
+// listWebChatSessions returns one page of web chat sessions, most recently
+// updated first. Sessions are ordered and paged by their metadata, so only the
+// histories of the sessions on the page are read.
+func (h *Handler) listWebChatSessions(dir string, offset, limit, toolFeedbackMaxArgsLength int) []sessionListItem {
+	items := []sessionListItem{}
+	refs, err := h.findWebChatJSONLSessions(dir)
+	if err != nil {
+		// The directory doesn't exist yet: no sessions.
+		return items
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(items)
+	candidates := make([]sessionListCandidate, 0, len(refs))
+	for _, ref := range refs {
+		info, statErr := os.Stat(filepath.Join(dir, sanitizeSessionKey(ref.Key)) + ".jsonl")
+		if statErr != nil || !sessionMayHaveContent(ref.meta, info.Size()) {
+			continue
+		}
+		_, updated := sessionTimes(ref.meta, info.ModTime())
+		candidates = append(candidates, sessionListCandidate{ref: ref, updated: updated})
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if !candidates[i].updated.Equal(candidates[j].updated) {
+			return candidates[i].updated.After(candidates[j].updated)
+		}
+		return candidates[i].ref.ID < candidates[j].ref.ID
+	})
+
+	if offset >= len(candidates) {
+		return items
+	}
+	for _, candidate := range candidates[offset:] {
+		if len(items) >= limit {
+			break
+		}
+		sess, loadErr := h.readJSONLSessionWithMeta(dir, candidate.ref.Key, candidate.ref.meta)
+		if loadErr != nil || isEmptySession(sess) {
+			// Metadata can't tell a history of only unreadable lines from a
+			// real one; the next session takes this one's place.
+			continue
+		}
+		items = append(items, buildSessionListItem(candidate.ref.ID, sess, toolFeedbackMaxArgsLength))
+	}
+	return items
+}
+
+// sessionMayHaveContent reports, from a session's metadata and the size of
+// its history file, whether the session can have anything to show.
+func sessionMayHaveContent(meta memory.SessionMeta, historySize int64) bool {
+	if strings.TrimSpace(meta.Summary) != "" {
+		return true
+	}
+	if historySize == 0 {
+		return false
+	}
+	// The store moves Skip past every line it truncates and counts every line
+	// it appends. A zero count is metadata from before the history was
+	// written, so it proves nothing.
+	return meta.Count == 0 || meta.Skip < meta.Count
 }
 
 // handleGetSession returns the full message history for a specific session.

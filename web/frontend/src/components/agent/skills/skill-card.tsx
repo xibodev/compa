@@ -10,6 +10,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
+import { safeExternalURL } from "@/lib/safe-url"
 
 interface SkillCardProps {
   skill: SkillSupportItem
@@ -19,6 +20,7 @@ interface SkillCardProps {
 
 export function SkillCard({ skill, onView, onDelete }: SkillCardProps) {
   const { t } = useTranslation()
+  const registryURL = safeExternalURL(skill.registry_url)
 
   return (
     <Card
@@ -68,11 +70,11 @@ export function SkillCard({ skill, onView, onDelete }: SkillCardProps) {
         </div>
       </CardHeader>
       <CardContent>
-        {skill.registry_url ? (
+        {registryURL ? (
           <a
-            href={skill.registry_url}
+            href={registryURL}
             target="_blank"
-            rel="noreferrer"
+            rel="noopener noreferrer"
             className="text-primary/80 hover:text-primary inline-flex items-center text-xs transition-colors hover:underline hover:underline-offset-4"
           >
             {skill.registry_url}

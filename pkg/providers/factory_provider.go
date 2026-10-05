@@ -76,7 +76,7 @@ func CreateProviderFromInstance(
 	if err != nil {
 		return nil, err
 	}
-	provider, err := NewCoreProvider(instance)
+	provider, httpClient, err := newCoreProvider(instance)
 	if err != nil {
 		return nil, err
 	}
@@ -107,10 +107,21 @@ func CreateProviderFromInstance(
 		// stream is assembled from the stream.
 		options = append(options, openai_compat.WithStreamedChat())
 	}
-	client := openai_compat.NewProvider(
-		instance.Endpoint,
-		coretransport.Client(&coretransport.Transport{Provider: provider, Credential: credential}),
-		options...,
-	)
+	if runtimeType, _ := InstanceRuntimeType(instance); runtimeType == "anthropic" {
+		// Anthropic caches prompt prefixes up to the system parts marked
+		// for it; translation carries their cache_control.
+		options = append(options, openai_compat.WithSystemParts())
+	}
+	transport := &coretransport.Transport{
+		Provider:   provider,
+		Credential: credential,
+		Refresh:    InstanceCredentialRefresher(instance),
+		// A stream may take as long to start as a response may.
+		FirstFrameTimeout: instanceRequestTimeout(instance),
+	}
+	if httpClient != nil {
+		transport.CloseIdle = httpClient.CloseIdleConnections
+	}
+	client := openai_compat.NewProvider(instance.Endpoint, coretransport.Client(transport), options...)
 	return wrapProviderWithToolSchemaTransform(client, spec.ToolSchemaTransform)
 }

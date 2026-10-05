@@ -10,7 +10,6 @@ import (
 	"github.com/ergochat/irc-go/ircmsg"
 
 	"github.com/xibodev/compa/pkg/bus"
-	"github.com/xibodev/compa/pkg/identity"
 	"github.com/xibodev/compa/pkg/logger"
 )
 
@@ -39,8 +38,8 @@ func (c *IRCChannel) onPrivmsg(conn *ircevent.Connection, e ircmsg.Message) {
 	nick := e.Nick()
 	currentNick := conn.CurrentNick()
 
-	// Ignore own messages
-	if strings.EqualFold(nick, currentNick) {
+	// Ignore our own messages and server notices.
+	if nick == "" || strings.EqualFold(nick, currentNick) {
 		return
 	}
 
@@ -50,23 +49,40 @@ func (c *IRCChannel) onPrivmsg(conn *ircevent.Connection, e ircmsg.Message) {
 	// Determine if this is a DM or channel message
 	isDM := !strings.HasPrefix(target, "#") && !strings.HasPrefix(target, "&")
 
-	var chatID string
+	sender := ircSender(nick, senderAccount(e))
 
+	var chatID, chatType string
 	if isDM {
-		chatID = nick
+		// A direct chat follows the sender's account across nick changes;
+		// replies go to the nick they last wrote from (see Send).
+		chatID, chatType = sender.PlatformID, "direct"
 	} else {
-		chatID = target
+		chatID, chatType = target, "group"
 	}
 
-	sender := bus.SenderInfo{
-		Platform:    "irc",
-		PlatformID:  nick,
-		CanonicalID: identity.BuildCanonicalID("irc", nick),
-		Username:    nick,
-		DisplayName: nick,
+	metadata := map[string]string{
+		"platform": "irc",
+		"server":   c.config.Server,
+	}
+	if !isDM {
+		metadata["channel"] = target
+	}
+	inboundCtx := bus.InboundContext{
+		Channel:   c.Name(),
+		ChatID:    chatID,
+		ChatType:  chatType,
+		SenderID:  sender.PlatformID,
+		MessageID: fmt.Sprintf("%s-%d", nick, time.Now().UnixNano()),
+		Raw:       metadata,
 	}
 
-	if !c.IsAllowedSender(sender) {
+	// A direct message the policy rejects still goes to it, so that an
+	// unpaired sender is recorded for the owner to approve; its nick is not
+	// remembered for replies.
+	if !c.Admits(chatType, sender, chatID) {
+		if isDM {
+			c.HandleInboundContext(c.ctx, chatID, content, nil, inboundCtx, sender)
+		}
 		return
 	}
 
@@ -89,28 +105,9 @@ func (c *IRCChannel) onPrivmsg(conn *ircevent.Connection, e ircmsg.Message) {
 		return
 	}
 
-	messageID := fmt.Sprintf("%s-%d", nick, time.Now().UnixNano())
-
-	metadata := map[string]string{
-		"platform": "irc",
-		"server":   c.config.Server,
-	}
-	if !isDM {
-		metadata["channel"] = target
-	}
-
-	inboundCtx := bus.InboundContext{
-		Channel:   "irc",
-		ChatID:    chatID,
-		SenderID:  nick,
-		MessageID: messageID,
-		Mentioned: isMentioned,
-		Raw:       metadata,
-	}
+	inboundCtx.Mentioned = isMentioned
 	if isDM {
-		inboundCtx.ChatType = "direct"
-	} else {
-		inboundCtx.ChatType = "group"
+		c.dmNicks.Store(chatID, nick)
 	}
 
 	c.HandleInboundContext(c.ctx, chatID, content, nil, inboundCtx, sender)

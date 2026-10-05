@@ -97,8 +97,10 @@ func (m *stubGitHubInstallRegistry) DownloadAndInstall(
 	if err := os.WriteFile(filepath.Join(targetDir, "SKILL.md"), []byte(validSkillMarkdown), 0o600); err != nil {
 		return nil, err
 	}
-	return &skills.InstallResult{Version: "main"}, nil
+	return &skills.InstallResult{Version: "main", Commit: stubGitHubCommit}, nil
 }
+
+const stubGitHubCommit = "0123456789abcdef0123456789abcdef01234567"
 
 type mockInvalidInstallRegistry struct{}
 
@@ -131,7 +133,9 @@ func (m *mockInvalidInstallRegistry) DownloadAndInstall(
 	}
 	if err := os.WriteFile(
 		filepath.Join(targetDir, "SKILL.md"),
-		[]byte("---\nname: bad_skill\ndescription: invalid name\n---\n# Invalid\n"),
+		// No description: a skill's name comes from its folder, so only a
+		// missing description makes this archive invalid.
+		[]byte("---\nname: bad_skill\n---\n# Invalid\n"),
 		0o600,
 	); err != nil {
 		return nil, err
@@ -291,6 +295,8 @@ func TestInstallSkillToolAllowsGitHubURLSlug(t *testing.T) {
 	assert.Equal(t, "synthetic-lab/octofriend/.agents/skills/pr-review", meta.Slug)
 	assert.Equal(t, slug, meta.RegistryURL)
 	assert.Equal(t, "main", meta.InstalledVersion)
+	assert.Equal(t, stubGitHubCommit, meta.Commit)
+	assert.False(t, meta.Unpinned)
 	assert.NotZero(t, meta.InstalledAt)
 }
 
@@ -346,7 +352,7 @@ func TestInstallSkillToolRollsBackOnOriginMetadataWriteFailure(t *testing.T) {
 	tool := NewInstallSkillTool(registryMgr, workspace)
 
 	previousPersist := persistInstalledSkillOriginMeta
-	persistInstalledSkillOriginMeta = func(string, skills.SkillRegistry, string, string) error {
+	persistInstalledSkillOriginMeta = func(string, skills.SkillRegistry, string, *skills.InstallResult) error {
 		return assert.AnError
 	}
 	defer func() {
@@ -401,7 +407,7 @@ func TestInstallSkillToolForceReinstallRestoresPreviousSkillAfterMetadataFailure
 	tool := NewInstallSkillTool(registryMgr, workspace)
 
 	previousPersist := persistInstalledSkillOriginMeta
-	persistInstalledSkillOriginMeta = func(string, skills.SkillRegistry, string, string) error {
+	persistInstalledSkillOriginMeta = func(string, skills.SkillRegistry, string, *skills.InstallResult) error {
 		return assert.AnError
 	}
 	defer func() {

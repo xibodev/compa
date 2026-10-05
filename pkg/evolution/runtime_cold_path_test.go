@@ -2,6 +2,7 @@ package evolution_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -14,6 +15,12 @@ import (
 	"github.com/xibodev/compa/pkg/providers"
 	"github.com/xibodev/compa/pkg/skills"
 )
+
+// recordsClock is the clock of the runtimes whose records are dated around
+// time.Unix(1700000000, 0), so record retention keeps them.
+func recordsClock() time.Time {
+	return time.Unix(1700001000, 0).UTC()
+}
 
 type stubDraftGenerator struct {
 	draft evolution.SkillDraft
@@ -152,6 +159,114 @@ func TestRuntime_RunColdPathOnce_GeneratesCandidateDraft(t *testing.T) {
 	}
 }
 
+// A record is judged once; later runs reuse the saved decision (EV-07).
+func TestRuntime_RunColdPathOnce_DoesNotRejudgeRecords(t *testing.T) {
+	root := t.TempDir()
+	store := evolution.NewStore(evolution.NewPaths(root, ""))
+	ok := true
+	if err := store.AppendLearningRecords([]evolution.LearningRecord{{
+		ID: "task-1", Kind: evolution.RecordKindTask, WorkspaceID: root,
+		CreatedAt: time.Unix(1700000000, 0).UTC(), Summary: "weather answer",
+		UserGoal: "check weather", FinalOutput: "sunny", Status: evolution.RecordStatus("new"),
+		Success: &ok, UsedSkillNames: []string{"weather"}, ToolKinds: []string{"read_file"},
+		ToolExecutions: []evolution.ToolExecutionRecord{{Name: "read_file", Success: true}},
+	}}); err != nil {
+		t.Fatalf("AppendLearningRecords: %v", err)
+	}
+	judge := &stubSuccessJudge{decisions: map[string]evolution.TaskSuccessDecision{
+		"task-1": {Success: false, Reason: "not achieved"},
+	}}
+	rt, err := evolution.NewRuntime(evolution.RuntimeOptions{
+		Config:         config.EvolutionConfig{Enabled: true, Mode: "draft", MinTaskCount: 5},
+		Now:            func() time.Time { return time.Unix(1700001000, 0).UTC() },
+		Store:          store,
+		SuccessJudge:   judge,
+		SkillsRecaller: evolution.NewSkillsRecaller(root),
+	})
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		if runErr := rt.RunColdPathOnce(context.Background(), root); runErr != nil {
+			t.Fatalf("RunColdPathOnce: %v", runErr)
+		}
+	}
+	if len(judge.calls) != 1 {
+		t.Fatalf("judge calls = %v, want one", judge.calls)
+	}
+	records, err := store.LoadTaskRecords()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if records[0].JudgedSuccess == nil || *records[0].JudgedSuccess {
+		t.Fatalf("JudgedSuccess = %v, want saved false", records[0].JudgedSuccess)
+	}
+}
+
+// A run drops the task and pattern records older than 30 days from the store,
+// and keeps the newer ones (EV-23).
+func TestRuntime_RunColdPathOnce_DropsRecordsOlderThan30Days(t *testing.T) {
+	root := t.TempDir()
+	paths := evolution.NewPaths(root, "")
+	store := evolution.NewStore(paths)
+	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	task := func(id string, created time.Time) evolution.LearningRecord {
+		return evolution.LearningRecord{
+			ID: id, Kind: evolution.RecordKindTask, WorkspaceID: root, CreatedAt: created,
+			Summary: "answer " + id, Status: evolution.RecordStatus("clustered"),
+		}
+	}
+	oldPatternUpdate := now.Add(-40 * 24 * time.Hour)
+	recentPatternUpdate := now.Add(-2 * 24 * time.Hour)
+	if err := store.AppendLearningRecords([]evolution.LearningRecord{
+		task("task-old", now.Add(-31*24*time.Hour)),
+		task("task-new", now.Add(-29*24*time.Hour)),
+		{
+			ID: "pattern-old", Kind: evolution.RecordKindPattern, WorkspaceID: root, Label: "old-path",
+			CreatedAt: now.Add(-60 * 24 * time.Hour), UpdatedAt: &oldPatternUpdate, Status: evolution.RecordStatus("done"),
+		},
+		{
+			ID: "pattern-updated", Kind: evolution.RecordKindPattern, WorkspaceID: root, Label: "updated-path",
+			CreatedAt: now.Add(-60 * 24 * time.Hour), UpdatedAt: &recentPatternUpdate, Status: evolution.RecordStatus("done"),
+		},
+	}); err != nil {
+		t.Fatalf("AppendLearningRecords: %v", err)
+	}
+	rt, err := evolution.NewRuntime(evolution.RuntimeOptions{
+		Config:         config.EvolutionConfig{Enabled: true, Mode: "draft"},
+		Now:            func() time.Time { return now },
+		Store:          store,
+		SkillsRecaller: evolution.NewSkillsRecaller(root),
+	})
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+	if runErr := rt.RunColdPathOnce(context.Background(), root); runErr != nil {
+		t.Fatalf("RunColdPathOnce: %v", runErr)
+	}
+
+	for path, want := range map[string]string{
+		paths.TaskRecords:    "task-new",
+		paths.PatternRecords: "pattern-updated",
+	} {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var ids []string
+		for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+			var record evolution.LearningRecord
+			if err := json.Unmarshal([]byte(line), &record); err != nil {
+				t.Fatalf("%s: %v", path, err)
+			}
+			ids = append(ids, record.ID)
+		}
+		if strings.Join(ids, ",") != want {
+			t.Fatalf("%s holds %v, want only %s", filepath.Base(path), ids, want)
+		}
+	}
+}
+
 func TestRuntime_RunColdPathOnce_AdmitsOnlyRecordsApprovedBySuccessJudge(t *testing.T) {
 	root := t.TempDir()
 	store := evolution.NewStore(evolution.NewPaths(root, ""))
@@ -224,6 +339,7 @@ func TestRuntime_RunColdPathOnce_AdmitsOnlyRecordsApprovedBySuccessJudge(t *test
 	}
 
 	rt, err := evolution.NewRuntime(evolution.RuntimeOptions{
+		Now:            recordsClock,
 		Config:         config.EvolutionConfig{Enabled: true, Mode: "draft", MinTaskCount: 1},
 		Store:          store,
 		SuccessJudge:   judge,
@@ -335,6 +451,7 @@ func TestRuntime_RunColdPathOnce_RejectsClusterBelowMinSuccessRatio(t *testing.T
 	}
 
 	rt, err := evolution.NewRuntime(evolution.RuntimeOptions{
+		Now:            recordsClock,
 		Config:         config.EvolutionConfig{Enabled: true, Mode: "draft", MinTaskCount: 1, MinSuccessRatio: 0.8},
 		Store:          store,
 		SuccessJudge:   &stubSuccessJudge{},
@@ -422,6 +539,7 @@ func TestRuntime_RunColdPathOnce_FallbackUsesJudgeAdjustedSuccessRatio(t *testin
 	)
 
 	rt, err := evolution.NewRuntime(evolution.RuntimeOptions{
+		Now:              recordsClock,
 		Config:           config.EvolutionConfig{Enabled: true, Mode: "draft", MinTaskCount: 1, MinSuccessRatio: 0.8},
 		Store:            store,
 		PatternClusterer: clusterer,
@@ -510,6 +628,7 @@ func TestRuntime_RunColdPathOnce_FallbackMarksAcceptedFailureEvidenceClustered(t
 	)
 
 	rt, err := evolution.NewRuntime(evolution.RuntimeOptions{
+		Now:              recordsClock,
 		Config:           config.EvolutionConfig{Enabled: true, Mode: "draft", MinTaskCount: 1, MinSuccessRatio: 0.5},
 		Store:            store,
 		PatternClusterer: clusterer,
@@ -606,6 +725,7 @@ func TestRuntime_RunColdPathOnce_DraftEvidenceDoesNotCrossWorkspaceWithDuplicate
 
 	generator := &evidenceCaptureDraftGenerator{}
 	rt, err := evolution.NewRuntime(evolution.RuntimeOptions{
+		Now:            recordsClock,
 		Config:         config.EvolutionConfig{Enabled: true, Mode: "draft", StateDir: sharedState},
 		Store:          store,
 		SkillsRecaller: evolution.NewSkillsRecaller(workspaceA),
@@ -669,6 +789,7 @@ func TestRuntime_RunColdPathOnce_AdmitsSingleSkillTaskButWaitsForMinTaskCount(t 
 
 	judge := &stubSuccessJudge{}
 	rt, err := evolution.NewRuntime(evolution.RuntimeOptions{
+		Now:            recordsClock,
 		Config:         config.EvolutionConfig{Enabled: true, Mode: "draft"},
 		Store:          store,
 		SuccessJudge:   judge,
@@ -743,6 +864,7 @@ func TestRuntime_RunColdPathOnce_RejectsTaskWhenSuccessJudgeRejects(t *testing.T
 	}
 
 	rt, err := evolution.NewRuntime(evolution.RuntimeOptions{
+		Now:            recordsClock,
 		Config:         config.EvolutionConfig{Enabled: true, Mode: "draft"},
 		Store:          store,
 		SuccessJudge:   judge,
@@ -803,6 +925,7 @@ func TestRuntime_RunColdPathOnce_QuarantinesInvalidDraft(t *testing.T) {
 	}
 
 	rt, err := evolution.NewRuntime(evolution.RuntimeOptions{
+		Now:    recordsClock,
 		Config: config.EvolutionConfig{Enabled: true, Mode: "draft"},
 		DraftGenerator: stubDraftGenerator{
 			draft: evolution.SkillDraft{
@@ -876,6 +999,7 @@ func TestRuntime_RunColdPathOnce_DoesNotWriteSkillFile(t *testing.T) {
 	}
 
 	rt, err := evolution.NewRuntime(evolution.RuntimeOptions{
+		Now:    recordsClock,
 		Config: config.EvolutionConfig{Enabled: true, Mode: "apply"},
 		DraftGenerator: stubDraftGenerator{
 			draft: evolution.SkillDraft{
@@ -929,6 +1053,7 @@ func TestRuntime_RunColdPathOnce_UsesDefaultDraftGenerator(t *testing.T) {
 	}
 
 	rt, err := evolution.NewRuntime(evolution.RuntimeOptions{
+		Now:    recordsClock,
 		Config: config.EvolutionConfig{Enabled: true, Mode: "draft"},
 		Store:  store,
 	})
@@ -983,6 +1108,7 @@ func TestRuntime_RunColdPathOnce_UsesLLMDraftGeneratorWhenProviderAvailable(t *t
 		},
 	}
 	rt, err := evolution.NewRuntime(evolution.RuntimeOptions{
+		Now:            recordsClock,
 		Config:         config.EvolutionConfig{Enabled: true, Mode: "draft"},
 		Store:          store,
 		DraftGenerator: evolution.NewDraftGeneratorForWorkspace(root, provider, "runtime-explicit-model"),
@@ -1030,6 +1156,7 @@ func TestRuntime_RunColdPathOnce_UsesDefaultDraftGeneratorWhenFactoryHasNoProvid
 	}
 
 	rt, err := evolution.NewRuntime(evolution.RuntimeOptions{
+		Now:            recordsClock,
 		Config:         config.EvolutionConfig{Enabled: true, Mode: "draft"},
 		Store:          store,
 		DraftGenerator: evolution.NewDraftGeneratorForWorkspace(root, nil, ""),
@@ -1090,6 +1217,7 @@ func TestRuntime_RunColdPathOnce_UsesGeneratorFactoryWorkspaceForFallback(t *tes
 	}
 
 	rt, err := evolution.NewRuntime(evolution.RuntimeOptions{
+		Now:    recordsClock,
 		Config: config.EvolutionConfig{Enabled: true, Mode: "draft"},
 		Store:  store,
 		GeneratorFactory: func(workspace string) evolution.DraftGenerator {
@@ -1166,6 +1294,7 @@ func TestRuntime_RunColdPathOnce_PersistsEarlierDraftWhenLaterRuleFails(t *testi
 	}
 
 	rt, err := evolution.NewRuntime(evolution.RuntimeOptions{
+		Now:            recordsClock,
 		Config:         config.EvolutionConfig{Enabled: true, Mode: "draft"},
 		Store:          store,
 		DraftGenerator: generator,
@@ -1225,6 +1354,7 @@ func TestRuntime_RunColdPathOnce_RegeneratesAfterQuarantinedDraft(t *testing.T) 
 	}
 
 	rt, err := evolution.NewRuntime(evolution.RuntimeOptions{
+		Now:    recordsClock,
 		Config: config.EvolutionConfig{Enabled: true, Mode: "draft"},
 		Store:  store,
 		DraftGenerator: stubDraftGenerator{

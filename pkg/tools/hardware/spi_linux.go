@@ -8,16 +8,25 @@ import (
 	"unsafe"
 )
 
-// SPI ioctl constants from Linux kernel headers.
-// Calculated from _IOW('k', nr, size) macro:
-//
-//	direction(1)<<30 | size<<16 | type(0x6B)<<8 | nr
-const (
-	spiIocWrMode        = 0x40016B01 // _IOW('k', 1, __u8)
-	spiIocWrBitsPerWord = 0x40016B03 // _IOW('k', 3, __u8)
-	spiIocWrMaxSpeedHz  = 0x40046B04 // _IOW('k', 4, __u32)
-	spiIocMessage1      = 0x40206B00 // _IOW('k', 0, struct spi_ioc_transfer) — 32 bytes
+// SPI ioctl numbers from Linux kernel headers, _IOW('k', nr, size).
+var (
+	spiIocWrMode        = spiIOW(1, 1)                            // _IOW('k', 1, __u8)
+	spiIocWrBitsPerWord = spiIOW(3, 1)                            // _IOW('k', 3, __u8)
+	spiIocWrMaxSpeedHz  = spiIOW(4, 4)                            // _IOW('k', 4, __u32)
+	spiIocMessage1      = spiIOW(0, unsafe.Sizeof(spiTransfer{})) // _IOW('k', 0, struct spi_ioc_transfer)
 )
+
+// spiIOW encodes _IOW for the running architecture. Most use a 2-bit
+// direction at bit 30 with write = 1; mips, powerpc and sparc use a 3-bit
+// direction at bit 29 with write = 4.
+func spiIOW(nr, size uintptr) uintptr {
+	write, dirShift := uintptr(1), uintptr(30)
+	switch runtime.GOARCH {
+	case "mips", "mipsle", "mips64", "mips64le", "ppc", "ppc64", "ppc64le", "sparc64":
+		write, dirShift = 4, 29
+	}
+	return write<<dirShift | size<<16 | uintptr('k')<<8 | nr
+}
 
 // spiTransfer matches Linux kernel struct spi_ioc_transfer (32 bytes on all architectures).
 type spiTransfer struct {
@@ -141,7 +150,8 @@ func (t *SPITool) transfer(args map[string]any) *ToolResult {
 	return SilentResult(string(result))
 }
 
-// readDevice reads bytes from SPI by sending zeros (read-only, no confirm needed)
+// readDevice reads bytes from SPI by sending zeros; Execute asks for confirm,
+// since the device receives those zeros as data.
 func (t *SPITool) readDevice(args map[string]any) *ToolResult {
 	dev, speed, mode, bits, errMsg := parseSPIArgs(args)
 	if errMsg != "" {

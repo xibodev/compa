@@ -30,13 +30,15 @@ func useUpdater(t *testing.T, fn func(context.Context, updater.Options) (*update
 }
 
 // useFakeRelease makes /api/update install from srv into dir, instead of from
-// GitHub into the directory of the test binary.
+// GitHub into the directory of the test binary. The fake programs are text,
+// so the check that the new kernel runs is skipped.
 func useFakeRelease(t *testing.T, srv *httptest.Server, dir string) {
 	t.Helper()
 	useUpdater(t, func(ctx context.Context, opts updater.Options) (*updater.Result, error) {
 		opts.Dir = dir
 		opts.APIBaseURL = srv.URL
 		opts.HTTPClient = srv.Client()
+		opts.SelfTest = func(context.Context, string) error { return nil }
 		return updater.Update(ctx, opts)
 	})
 }
@@ -106,12 +108,12 @@ func TestUpdateInstallsBothProgramsFromTheLatestRelease(t *testing.T) {
 	assertPrograms(t, dir, "launcher 1.2.3", "kernel 1.2.3")
 }
 
-func TestUpdateInstallsTheRequestedReleaseWhateverBinaryIsNamed(t *testing.T) {
+func TestUpdateInstallsTheRequestedRelease(t *testing.T) {
 	srv := updatertest.Server(t, fakeRelease(t, "v1.2.3"), fakeRelease(t, "v1.1.0"))
 
 	for _, body := range []string{
 		`{"version":"1.1.0"}`,
-		`{"url":"https://github.com/xibodev/compa/releases/tag/v1.1.0","binary":"compa-kernel"}`,
+		`{"url":"https://github.com/xibodev/compa/releases/tag/v1.1.0"}`,
 	} {
 		t.Run(body, func(t *testing.T) {
 			dir := installedCompa(t, "launcher 1.0.0", "kernel 1.0.0")

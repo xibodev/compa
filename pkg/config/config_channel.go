@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -221,15 +222,21 @@ func (r *RawNode) IsEmpty() bool {
 //
 //nolint:recvcheck
 type Channel struct {
-	name               string
-	Enabled            bool                `json:"enabled"                 yaml:"-"`
-	Type               string              `json:"type"                    yaml:"-"`
-	AllowFrom          FlexibleStringSlice `json:"allow_from,omitempty"    yaml:"-"`
-	ReasoningChannelID string              `json:"reasoning_channel_id"    yaml:"-"`
-	GroupTrigger       GroupTriggerConfig  `json:"group_trigger,omitempty" yaml:"-"`
-	Typing             TypingConfig        `json:"typing,omitempty"        yaml:"-"`
-	Placeholder        PlaceholderConfig   `json:"placeholder,omitempty"   yaml:"-"`
-	Settings           RawNode             `json:"settings,omitzero"       yaml:"settings,omitempty"`
+	name      string
+	Enabled   bool                `json:"enabled"                 yaml:"-"`
+	Type      string              `json:"type"                    yaml:"-"`
+	AllowFrom FlexibleStringSlice `json:"allow_from,omitempty"    yaml:"-"`
+	// DMPolicy decides which direct messages are processed: "pairing",
+	// "allowlist", "open" or "disabled". See EffectiveDMPolicy.
+	DMPolicy string `json:"dm_policy,omitempty" yaml:"-"`
+	// GroupPolicy decides which group messages are processed: "allowlist",
+	// "open" or "disabled". See EffectiveGroupPolicy.
+	GroupPolicy        string             `json:"group_policy,omitempty"  yaml:"-"`
+	ReasoningChannelID string             `json:"reasoning_channel_id"    yaml:"-"`
+	GroupTrigger       GroupTriggerConfig `json:"group_trigger,omitempty" yaml:"-"`
+	Typing             TypingConfig       `json:"typing,omitempty"        yaml:"-"`
+	Placeholder        PlaceholderConfig  `json:"placeholder,omitempty"   yaml:"-"`
+	Settings           RawNode            `json:"settings,omitzero"       yaml:"settings,omitempty"`
 	extend             any
 }
 
@@ -241,6 +248,9 @@ func (b Channel) MarshalJSON() ([]byte, error) {
 	if b.extend != nil {
 		raw, err := json.Marshal(b.extend)
 		if err != nil {
+			return nil, err
+		}
+		if raw, err = withoutSecretPlaceholders(raw); err != nil {
 			return nil, err
 		}
 		raw = preserveExplicitDisabledStreaming(raw, b.Settings)
@@ -255,6 +265,45 @@ func (b Channel) MarshalJSON() ([]byte, error) {
 	// Use type alias to bypass our custom MarshalJSON (infinite recursion)
 	type Alias Channel
 	return json.Marshal((*Alias)(&out))
+}
+
+// withoutSecretPlaceholders drops the secrets, which marshal as the
+// placeholder, from a channel's settings JSON: the channel API reports which
+// are set, and an edit that sends settings back must not send a placeholder
+// for a value.
+func withoutSecretPlaceholders(settings []byte) ([]byte, error) {
+	if !bytes.Contains(settings, []byte(notHere)) {
+		return settings, nil
+	}
+	dec := json.NewDecoder(bytes.NewReader(settings))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil {
+		return nil, err
+	}
+	return json.Marshal(dropSecretPlaceholders(v))
+}
+
+func dropSecretPlaceholders(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		for k, e := range t {
+			if e == SecretPlaceholder {
+				delete(t, k)
+				continue
+			}
+			t[k] = dropSecretPlaceholders(e)
+		}
+	case []any:
+		kept := t[:0]
+		for _, e := range t {
+			if e != SecretPlaceholder {
+				kept = append(kept, dropSecretPlaceholders(e))
+			}
+		}
+		return kept
+	}
+	return v
 }
 
 func preserveExplicitDisabledStreaming(settings, original RawNode) RawNode {
@@ -341,11 +390,17 @@ func (b *Channel) Decode(target any) error {
 	return nil
 }
 
+// decodeMu serializes GetDecoded's decoding on first use: turns running at
+// the same time read the same channel's settings.
+var decodeMu sync.Mutex
+
 // GetDecoded returns the previously decoded settings struct.
 // If Decode hasn't been called yet, it lazily decodes using the channel Type prototype.
 // Returns an error if decoding fails; the decoded value (possibly nil) is still returned
 // so callers can distinguish between "not decoded" and "decode failed".
 func (b *Channel) GetDecoded() (any, error) {
+	decodeMu.Lock()
+	defer decodeMu.Unlock()
 	if b.extend == nil {
 		// fallback to prototype-based creation
 		if target := newChannelSettings(b.Type); target != nil {
@@ -452,9 +507,7 @@ func (c *ChannelsConfig) UnmarshalYAML(value *yaml.Node) error {
 // UnmarshalJSON implements json.Unmarshaler for ChannelsConfig.
 // Sets the channel name from the map key after unmarshaling.
 func (c *ChannelsConfig) UnmarshalJSON(data []byte) error {
-	// Use a type alias to avoid infinite recursion
-	type channelsConfigAlias map[string]*Channel
-	var raw channelsConfigAlias
+	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
@@ -463,10 +516,18 @@ func (c *ChannelsConfig) UnmarshalJSON(data []byte) error {
 		*c = make(ChannelsConfig)
 	}
 
-	for name, bc := range raw {
-		if bc != nil {
-			bc.SetName(name)
+	for name, entry := range raw {
+		if string(bytes.TrimSpace(entry)) == "null" {
+			(*c)[name] = nil
+			continue
 		}
+		// A channel answers in groups only when mentioned unless its entry
+		// says otherwise, as the default channels do.
+		bc := &Channel{GroupTrigger: GroupTriggerConfig{MentionOnly: true}}
+		if err := json.Unmarshal(entry, bc); err != nil {
+			return err
+		}
+		bc.SetName(name)
 		(*c)[name] = bc
 	}
 
@@ -714,6 +775,12 @@ func isValidChannelType(channelType string) bool {
 // After calling this method, callers can safely use b.extend via Decode()
 // without re-parsing raw Settings.
 func InitChannelList(channels ChannelsConfig) error {
+	return initChannelList(channels, channelEnvRecorder{})
+}
+
+// initChannelList is InitChannelList, recording the environment's changes to
+// each channel's settings with rec.
+func initChannelList(channels ChannelsConfig, rec channelEnvRecorder) error {
 	// Step 1 & 3: validate type and decode into typed settings
 	for name, bc := range channels {
 		if bc == nil {
@@ -729,17 +796,26 @@ func InitChannelList(channels ChannelsConfig) error {
 		if !isValidChannelType(bc.Type) {
 			return fmt.Errorf("channel %q has unknown type %q", name, bc.Type)
 		}
+		if err := validateChannelPolicies(name, bc); err != nil {
+			return err
+		}
 		// Decode into the correct typed settings
 		if target := newChannelSettings(bc.Type); target != nil {
 			if err := bc.Decode(target); err != nil {
 				return fmt.Errorf("channel %q failed to decode settings: %w", name, err)
 			}
+			settings := reflect.ValueOf(target).Elem()
+			fromFiles := deepCopy(settings)
 			// Apply env overrides for channel-specific fields via struct tags
 			if err := env.Parse(target); err != nil {
-				// Non-fatal: some env vars may not apply
+				return fmt.Errorf("channel %q: environment override: %w", name, err)
 			}
 			applyTelegramStreamingEnvOverrides(target)
+			rec.record(name, fromFiles, settings)
 			if err := validateChannelStreamingConfig(name, target); err != nil {
+				return err
+			}
+			if err := validateChannelSettingsValues(name, target); err != nil {
 				return err
 			}
 		}

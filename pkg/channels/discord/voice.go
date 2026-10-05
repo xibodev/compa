@@ -10,6 +10,7 @@ import (
 
 	"github.com/xibodev/compa/pkg/audio"
 	"github.com/xibodev/compa/pkg/bus"
+	"github.com/xibodev/compa/pkg/channels"
 	"github.com/xibodev/compa/pkg/identity"
 	"github.com/xibodev/compa/pkg/logger"
 )
@@ -139,9 +140,11 @@ func streamOggOpusToDiscord(ctx context.Context, vc *discordgo.VoiceConnection, 
 }
 
 func (c *DiscordChannel) receiveVoice(vc *discordgo.VoiceConnection, guildID string, chatID string) {
+	defer channels.RecoverPanic(c.Name(), "voice")
 	logger.InfoCF("discord", "Started listening for voice", map[string]any{"guild": guildID})
 
 	vc.AddHandler(func(_ *discordgo.VoiceConnection, vs *discordgo.VoiceSpeakingUpdate) {
+		defer channels.RecoverPanic(c.Name(), "voice speaking update")
 		if vs == nil {
 			return
 		}
@@ -241,6 +244,31 @@ func (c *DiscordChannel) receiveVoice(vc *discordgo.VoiceConnection, guildID str
 				"len":  len(p.Opus),
 				"ssrc": p.SSRC,
 			})
+
+			// Only admitted speakers count: anyone else in the voice
+			// channel is ignored, and cannot cut off the reply either.
+			userID := c.voiceUserID(guildID, p.SSRC)
+			if userID == "" {
+				logger.DebugCF("discord", "Dropping voice packet without user mapping", map[string]any{
+					"ssrc":  p.SSRC,
+					"guild": guildID,
+				})
+				continue
+			}
+
+			sender := bus.SenderInfo{
+				Platform:    "discord",
+				PlatformID:  userID,
+				CanonicalID: identity.BuildCanonicalID("discord", userID),
+			}
+			if !c.Admits("channel", sender, chatID) {
+				logger.DebugCF("discord", "Voice packet rejected by the access policy", map[string]any{
+					"user_id": userID,
+					"guild":   guildID,
+				})
+				continue
+			}
+
 			// Interruption detection: if user sends voice while TTS is playing,
 			// cancel TTS after a short debounce (3 packets in 200ms)
 			now := time.Now()
@@ -259,28 +287,6 @@ func (c *DiscordChannel) receiveVoice(vc *discordgo.VoiceConnection, guildID str
 				}
 				c.ttsMu.Unlock()
 				interruptCount = 0
-			}
-
-			userID := c.voiceUserID(guildID, p.SSRC)
-			if userID == "" {
-				logger.DebugCF("discord", "Dropping voice packet without user mapping", map[string]any{
-					"ssrc":  p.SSRC,
-					"guild": guildID,
-				})
-				continue
-			}
-
-			sender := bus.SenderInfo{
-				Platform:    "discord",
-				PlatformID:  userID,
-				CanonicalID: identity.BuildCanonicalID("discord", userID),
-			}
-			if !c.IsAllowedSender(sender) {
-				logger.DebugCF("discord", "Voice packet rejected by allowlist", map[string]any{
-					"user_id": userID,
-					"guild":   guildID,
-				})
-				continue
 			}
 
 			sequence++

@@ -9,11 +9,14 @@ import (
 	"net"
 	"net/http"
 	"net/http/cookiejar"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -42,12 +45,15 @@ func TestSpawnedBackendPersistsDisabledModuleAcrossRestart(t *testing.T) {
 	port := reserveProcessTestPort(t)
 	password := "isolated-test-password"
 
-	process := startProcessBackend(t, backend, kernel, home, configPath, port)
+	process, output := startProcessBackend(t, backend, kernel, home, configPath, port)
 	defer func() { stopProcessBackend(t, process) }()
 	client := newProcessTestClient(t)
 	baseURL := fmt.Sprintf("http://127.0.0.1:%d", port)
 	waitProcessBackend(t, client, baseURL)
-	processJSON(t, client, http.MethodPost, baseURL+"/api/auth/setup", map[string]string{"password": password, "confirm": password}, http.StatusOK, nil)
+	// The first password needs the setup token, which a console launcher
+	// prints in its setup link.
+	setupToken := waitSetupToken(t, output)
+	processJSON(t, client, http.MethodPost, baseURL+"/api/auth/setup", map[string]string{"password": password, "confirm": password, "setup_token": setupToken}, http.StatusOK, nil)
 	processJSON(t, client, http.MethodPost, baseURL+"/api/auth/login", map[string]string{"password": password}, http.StatusOK, nil)
 	processJSON(t, client, http.MethodPost, baseURL+"/api/modules/install", map[string]string{"path": fake}, http.StatusOK, nil)
 	processJSON(t, client, http.MethodPost, baseURL+"/api/modules/fake/enabled", map[string]bool{"enabled": false}, http.StatusOK, nil)
@@ -58,7 +64,7 @@ func TestSpawnedBackendPersistsDisabledModuleAcrossRestart(t *testing.T) {
 	}
 	stopProcessBackend(t, process)
 
-	process = startProcessBackend(t, backend, kernel, home, configPath, port)
+	process, _ = startProcessBackend(t, backend, kernel, home, configPath, port)
 	client = newProcessTestClient(t)
 	waitProcessBackend(t, client, baseURL)
 	processJSON(t, client, http.MethodPost, baseURL+"/api/auth/login", map[string]string{"password": password}, http.StatusOK, nil)
@@ -122,18 +128,58 @@ func reserveProcessTestPort(t *testing.T) int {
 	return listener.Addr().(*net.TCPAddr).Port
 }
 
-func startProcessBackend(t *testing.T, binary, kernel, home, configPath string, port int) *exec.Cmd {
+// processOutput collects what a spawned backend prints.
+type processOutput struct {
+	mu   sync.Mutex
+	data bytes.Buffer
+}
+
+func (o *processOutput) Write(p []byte) (int, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.data.Write(p)
+}
+
+func (o *processOutput) String() string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.data.String()
+}
+
+var setupLinkPattern = regexp.MustCompile(`/launcher-setup\?token=([A-Za-z0-9_\-%]+)`)
+
+// waitSetupToken returns the setup token from the setup link the backend
+// printed.
+func waitSetupToken(t *testing.T, output *processOutput) string {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		if match := setupLinkPattern.FindStringSubmatch(output.String()); match != nil {
+			token, err := url.QueryUnescape(match[1])
+			if err != nil {
+				t.Fatalf("setup link token %q: %v", match[1], err)
+			}
+			return token
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("the backend printed no setup link: %s", output.String())
+	return ""
+}
+
+func startProcessBackend(t *testing.T, binary, kernel, home, configPath string, port int) (*exec.Cmd, *processOutput) {
 	t.Helper()
 	command := exec.Command(binary, "-console", "-no-browser", "-host", "127.0.0.1", "-port", fmt.Sprint(port), configPath)
 	// Deliberately omit COMPA_HOME: the explicit config path must bind
 	// launcher state to its directory across process restarts.
 	command.Env = append(environmentWithout(config.EnvHome), config.EnvBinary+"="+kernel)
-	command.Stdout = io.Discard
+	output := &processOutput{}
+	command.Stdout = output
 	command.Stderr = io.Discard
 	if err := command.Start(); err != nil {
 		t.Fatal(err)
 	}
-	return command
+	return command, output
 }
 
 func environmentWithout(name string) []string {

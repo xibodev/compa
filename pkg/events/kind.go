@@ -103,10 +103,14 @@ const (
 	KindMCPToolCallStart Kind = "mcp.tool.call.start"
 	// KindMCPToolCallEnd is emitted when an MCP tool call ends.
 	KindMCPToolCallEnd Kind = "mcp.tool.call.end"
+	// KindMCPToolCallProgress is emitted when the server reports the
+	// progress of an MCP tool call, at most once a second per call.
+	KindMCPToolCallProgress Kind = "mcp.tool.call.progress"
 
 	// KindArtifactProduced is emitted when an authoritative artifact is produced.
 	KindArtifactProduced Kind = "artifact.produced"
-	// KindApprovalRequested is emitted when an action requires human approval.
+	// KindApprovalRequested is emitted when the approval policy asks about a
+	// tool call, before the approvers or the owner answer.
 	KindApprovalRequested Kind = "approval.requested"
 	// KindApprovalResolved is emitted when an approval request is decided.
 	KindApprovalResolved Kind = "approval.resolved"
@@ -159,6 +163,7 @@ var knownKinds = []Kind{
 	KindMCPToolDiscovered,
 	KindMCPToolCallStart,
 	KindMCPToolCallEnd,
+	KindMCPToolCallProgress,
 	KindArtifactProduced,
 	KindApprovalRequested,
 	KindApprovalResolved,

@@ -5,7 +5,11 @@ export function createVoiceActivityDetector() {
   let voicedMs = 0
   let silenceMs = 0
 
-  return (level: number, elapsedMs: number, frameMs: number): VoiceActivityState => {
+  return (
+    level: number,
+    elapsedMs: number,
+    frameMs: number,
+  ): VoiceActivityState => {
     if (elapsedMs < 500) {
       noiseFloor = noiseFloor * 0.8 + level * 0.2
       return "waiting"

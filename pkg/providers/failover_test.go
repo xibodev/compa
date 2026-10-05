@@ -42,13 +42,23 @@ func instanceCandidate(instance string) FallbackCandidate {
 	}
 }
 
+// healthKey is the health key of instanceCandidate(instance).
+func healthKey(instance string) string { return instanceCandidate(instance).HealthKey() }
+
+// statusError is an upstream status as core's providers report it: 408, 429,
+// 500, 502, 503 and 504 are transient, any other status ends the request.
 func statusError(status int, retryAfter time.Duration) error {
-	transient := status == http.StatusTooManyRequests || status >= 500
+	transient := false
+	switch status {
+	case http.StatusRequestTimeout, http.StatusTooManyRequests, http.StatusInternalServerError,
+		http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		transient = true
+	}
 	return &core.ProviderError{
 		Message: http.StatusText(status),
 		Class:   core.ClassifyProviderFailure(core.ProviderFailure{StatusCode: status}).ErrorClass,
 		Classification: core.ProviderErrorClassification{
-			StatusCode: status, Retryable: transient, FailoverEligible: transient, CircuitFailure: status >= 500,
+			StatusCode: status, Retryable: transient, FailoverEligible: transient, CircuitFailure: transient,
 			RetryAfter: retryAfter,
 		},
 	}
@@ -64,10 +74,9 @@ func transportError() error {
 // scripted runs each candidate with the next error scripted for its display
 // name; a candidate with no script left serves.
 type scripted struct {
-	mu      sync.Mutex
-	errs    map[string][]error
-	calls   []string
-	respond func(FallbackCandidate) *LLMResponse
+	mu    sync.Mutex
+	errs  map[string][]error
+	calls []string
 }
 
 func (s *scripted) run(_ context.Context, candidate FallbackCandidate) (*LLMResponse, error) {
@@ -87,6 +96,11 @@ func TestFailoverMovesOnAfterRetryableAndFailoverErrors(t *testing.T) {
 		"retryable transport":  transportError(),
 		"failover config":      core.NewConfigurationError("no key", nil),
 		"failover unavailable": &execution.UnavailableError{},
+		"auth 401":             statusError(http.StatusUnauthorized, 0),
+		"payment 402":          statusError(http.StatusPaymentRequired, 0),
+		"forbidden 403":        statusError(http.StatusForbidden, 0),
+		"model not found 404":  statusError(http.StatusNotFound, 0),
+		"overloaded 529":       statusError(statusOverloaded, 0),
 	} {
 		t.Run(name, func(t *testing.T) {
 			clock := newTestClock()
@@ -103,12 +117,34 @@ func TestFailoverMovesOnAfterRetryableAndFailoverErrors(t *testing.T) {
 	}
 }
 
+func TestFailoverRejectionsDoNotCountAgainstHealth(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusPaymentRequired, http.StatusForbidden, http.StatusNotFound} {
+		clock := newTestClock()
+		failover := newTestFailover(clock, nil)
+		run := &scripted{errs: map[string][]error{"a/m": {
+			statusError(status, 0), statusError(status, 0), statusError(status, 0), statusError(status, 0),
+		}}}
+		for range healthFailureThreshold + 1 {
+			if _, err := failover.Execute(context.Background(),
+				[]FallbackCandidate{instanceCandidate("a"), instanceCandidate("b")}, run.run); err != nil {
+				t.Fatalf("%d: %v", status, err)
+			}
+		}
+		if state := failover.Health().State(healthKey("a")); state.Streak != 0 || !state.OpenUntil.IsZero() {
+			t.Fatalf("%d counted against the target's health: %+v", status, state)
+		}
+	}
+}
+
 func TestFailoverStopsAtTerminalErrors(t *testing.T) {
 	for name, err := range map[string]error{
 		"invalid request": statusError(http.StatusBadRequest, 0),
-		"auth":            statusError(http.StatusUnauthorized, 0),
+		"unprocessable":   statusError(http.StatusUnprocessableEntity, 0),
 		"unclassified":    errors.New("boom"),
 		"after output":    &execution.AfterOutputError{Err: transportError()},
+		"auth after output": &execution.AfterOutputError{
+			Err: statusError(http.StatusUnauthorized, 0),
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			clock := newTestClock()
@@ -119,7 +155,7 @@ func TestFailoverStopsAtTerminalErrors(t *testing.T) {
 			if gotErr != err || len(run.calls) != 1 {
 				t.Fatalf("err = %v calls = %v, want the terminal error from the first candidate only", gotErr, run.calls)
 			}
-			if available, _ := failover.Health().Available("provider_instance:a"); !available {
+			if available, _ := failover.Health().Available(healthKey("a")); !available {
 				t.Fatal("a terminal failure made the instance unavailable")
 			}
 		})
@@ -140,7 +176,7 @@ func TestFailoverCanceledContextStopsUnrecorded(t *testing.T) {
 	if !errors.Is(err, context.Canceled) || calls != 1 {
 		t.Fatalf("err = %v calls = %d", err, calls)
 	}
-	if state := failover.Health().State("provider_instance:a"); state.Streak != 0 {
+	if state := failover.Health().State(healthKey("a")); state.Streak != 0 {
 		t.Fatalf("a canceled request was recorded: %+v", state)
 	}
 }
@@ -172,17 +208,25 @@ func TestFailoverHonoursRetryAfterAsCooldown(t *testing.T) {
 	}
 }
 
-func TestFailoverCooldownCoversEveryTargetOfTheInstance(t *testing.T) {
+// A model the upstream cannot serve for a while holds back that model only:
+// a route over two models of one aggregator still reaches the other.
+func TestFailoverCooldownHoldsBackOnlyThatModel(t *testing.T) {
 	clock := newTestClock()
 	failover := newTestFailover(clock, nil)
 	first := instanceCandidate("a")
 	second := first
 	second.Model, second.DisplayName, second.ConfigKey = "other", "a/other", "instance_target:a/other"
 	run := &scripted{errs: map[string][]error{"a/m": {statusError(http.StatusTooManyRequests, time.Minute)}}}
-	_, _ = failover.Execute(context.Background(), []FallbackCandidate{first, instanceCandidate("b")}, run.run)
-	result, err := failover.Execute(context.Background(), []FallbackCandidate{second, instanceCandidate("b")}, run.run)
-	if err != nil || !result.Attempts[0].Unavailable || result.Candidate.DisplayName != "b/m" {
-		t.Fatalf("result = %+v err = %v, want the instance's other target skipped", result, err)
+	if result, err := failover.Execute(context.Background(), []FallbackCandidate{first, second}, run.run); err != nil ||
+		result.Candidate.DisplayName != "a/other" {
+		t.Fatalf("result = %+v err = %v, want the instance's other model", result, err)
+	}
+	run.calls = nil
+	result, err := failover.Execute(context.Background(), []FallbackCandidate{first, second}, run.run)
+	if err != nil || !result.Attempts[0].Unavailable || result.Candidate.DisplayName != "a/other" ||
+		len(run.calls) != 1 || run.calls[0] != "a/other" {
+		t.Fatalf("result = %+v calls = %v err = %v, want the cooling model skipped and its sibling served",
+			result, run.calls, err)
 	}
 }
 
@@ -194,7 +238,7 @@ func TestFailoverNeverHoldsBackASingleCandidate(t *testing.T) {
 	if _, err := failover.Execute(context.Background(), only, run.run); err == nil {
 		t.Fatal("the scripted rate limit did not fail the call")
 	}
-	if available, _ := failover.Health().Available("provider_instance:a"); available {
+	if available, _ := failover.Health().Available(healthKey("a")); available {
 		t.Fatal("the single candidate's Retry-After was not recorded")
 	}
 	if result, err := failover.Execute(context.Background(), only, run.run); err != nil || result.Candidate.DisplayName != "a/m" {
@@ -206,13 +250,16 @@ func TestFailoverCircuitOpensAndSkipsTheUnhealthyInstance(t *testing.T) {
 	clock := newTestClock()
 	failover := newTestFailover(clock, nil)
 	candidates := []FallbackCandidate{instanceCandidate("a"), instanceCandidate("b")}
-	run := &scripted{errs: map[string][]error{"a/m": {transportError()}}}
-	for range healthFailureThreshold {
+	run := &scripted{errs: map[string][]error{"a/m": {transportError(), transportError(), transportError()}}}
+	for i := range healthFailureThreshold {
+		if available, _ := failover.Health().Available(healthKey("a")); !available {
+			t.Fatalf("the circuit opened after %d failures, want %d", i, healthFailureThreshold)
+		}
 		if _, err := failover.Execute(context.Background(), candidates, run.run); err != nil {
 			t.Fatal(err)
 		}
 	}
-	state := failover.Health().State("provider_instance:a")
+	state := failover.Health().State(healthKey("a"))
 	if state.Streak != healthFailureThreshold || state.OpenUntil.Sub(clock.Now()) != healthOpenDuration {
 		t.Fatalf("state = %+v, want an open circuit for %v", state, healthOpenDuration)
 	}
@@ -228,14 +275,14 @@ func TestFailoverCircuitOpensAndSkipsTheUnhealthyInstance(t *testing.T) {
 	if result, err = failover.Execute(context.Background(), candidates, run.run); err != nil || result.Candidate.DisplayName != "a/m" {
 		t.Fatalf("result = %+v err = %v", result, err)
 	}
-	if state := failover.Health().State("provider_instance:a"); state.Streak != 0 {
+	if state := failover.Health().State(healthKey("a")); state.Streak != 0 {
 		t.Fatalf("state after success = %+v", state)
 	}
 }
 
 func TestHealthPolicyBackoffEscalatesToItsCap(t *testing.T) {
 	backoff := HealthPolicy().Backoff
-	for streak, want := range map[int]time.Duration{1: time.Minute, 2: 5 * time.Minute, 3: 25 * time.Minute, 4: time.Hour, 40: time.Hour} {
+	for streak, want := range map[int]time.Duration{3: time.Minute, 4: 5 * time.Minute, 5: 25 * time.Minute, 6: time.Hour, 40: time.Hour} {
 		if got := backoff(execution.Failure{Streak: streak}); got != want {
 			t.Fatalf("streak %d: open for %v, want %v", streak, got, want)
 		}
@@ -245,8 +292,8 @@ func TestHealthPolicyBackoffEscalatesToItsCap(t *testing.T) {
 func TestFailoverEveryInstanceUnavailable(t *testing.T) {
 	clock := newTestClock()
 	failover := newTestFailover(clock, nil)
-	failover.Health().Record("provider_instance:a", statusError(http.StatusTooManyRequests, 30*time.Second))
-	failover.Health().Record("provider_instance:b", statusError(http.StatusTooManyRequests, 10*time.Second))
+	failover.Health().Record(healthKey("a"), statusError(http.StatusTooManyRequests, 30*time.Second))
+	failover.Health().Record(healthKey("b"), statusError(http.StatusTooManyRequests, 10*time.Second))
 	run := &scripted{}
 	_, err := failover.Execute(context.Background(), []FallbackCandidate{instanceCandidate("a"), instanceCandidate("b")}, run.run)
 	failure := DescribeFailure(err)
@@ -269,7 +316,7 @@ func TestFailoverRateLimitMovesOnThenLastWaits(t *testing.T) {
 	if err != nil || result.Candidate.DisplayName != "b/m" {
 		t.Fatalf("saturated request: result = %+v err = %v, want b", result, err)
 	}
-	if state := failover.Health().State("provider_instance:a"); state.Streak != 0 || !state.CooldownUntil.IsZero() {
+	if state := failover.Health().State(healthKey("a")); state.Streak != 0 || !state.CooldownUntil.IsZero() {
 		t.Fatalf("a local rate limit was recorded as health: %+v", state)
 	}
 
@@ -300,7 +347,13 @@ func TestDescribeFailure(t *testing.T) {
 			Class: core.ProviderErrorRateLimited, StatusCode: 429, RetryAfter: 7 * time.Second, Disposition: core.DispositionRetryable,
 		}},
 		"auth": {statusError(http.StatusUnauthorized, 0), Failure{
-			Class: core.ProviderErrorAuth, StatusCode: 401, Disposition: core.DispositionTerminal,
+			Class: core.ProviderErrorAuth, StatusCode: 401, Disposition: core.DispositionFailover,
+		}},
+		"overloaded": {statusError(statusOverloaded, 0), Failure{
+			Class: core.ProviderErrorUpstream, StatusCode: 529, Disposition: core.DispositionRetryable,
+		}},
+		"unprocessable": {statusError(http.StatusUnprocessableEntity, 0), Failure{
+			Class: core.ProviderErrorUpstream, StatusCode: 422, Disposition: core.DispositionTerminal,
 		}},
 		"server": {statusError(http.StatusBadGateway, 0), Failure{
 			Class: core.ProviderErrorUpstream, StatusCode: 502, Disposition: core.DispositionRetryable,
@@ -336,6 +389,8 @@ func TestRetryDelay(t *testing.T) {
 		"retry-after longer than backoff":   {statusError(http.StatusTooManyRequests, 9*time.Second), 9 * time.Second, true},
 		"retry-after beyond the wait limit": {statusError(http.StatusTooManyRequests, 5*time.Minute), 0, false},
 		"failover only":                     {core.NewConfigurationError("x", nil), 0, false},
+		"auth fails over, never retried":    {statusError(http.StatusUnauthorized, 0), 0, false},
+		"overloaded is retried":             {statusError(statusOverloaded, 0), 2 * time.Second, true},
 		"terminal":                          {statusError(http.StatusBadRequest, 0), 0, false},
 		"after output":                      {&execution.AfterOutputError{Err: transportError()}, 0, false},
 	}

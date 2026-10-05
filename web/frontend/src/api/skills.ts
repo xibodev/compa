@@ -1,4 +1,4 @@
-import { launcherFetch } from "@/api/http"
+import { HttpError, launcherFetch } from "@/api/http"
 
 export interface SkillSupportItem {
   name: string
@@ -64,7 +64,7 @@ export interface InstallSkillResponse {
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await launcherFetch(path, options)
   if (!res.ok) {
-    throw new Error(await extractErrorMessage(res))
+    throw new HttpError(await extractErrorMessage(res), res.status)
   }
   return res.json() as Promise<T>
 }

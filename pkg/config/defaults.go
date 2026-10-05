@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 
 	"github.com/xibodev/compa/pkg"
+	"github.com/xibodev/compa/pkg/approval"
 )
 
 // DefaultConfig returns the default configuration for Compa. It
@@ -74,6 +75,7 @@ func DefaultConfig() *Config {
 		Tools: ToolsConfig{
 			FilterSensitiveData: true,
 			FilterMinLength:     8,
+			Approval:            approval.DefaultPolicy(),
 			MediaCleanup: MediaCleanupConfig{
 				ToolConfig: ToolConfig{
 					Enabled: true,
@@ -222,6 +224,7 @@ func DefaultConfig() *Config {
 					Enabled: true,
 				},
 				MediaEnabled: false,
+				Targets:      MessageTargetsCurrentChat,
 			},
 			ReadFile: ReadFileToolConfig{
 				Enabled:         true,
@@ -263,6 +266,14 @@ func DefaultConfig() *Config {
 		Voice: VoiceConfig{
 			EchoTranscription: false,
 		},
+		Commands: CommandsConfig{
+			OwnerOnly: true,
+		},
+		Logging: LoggingConfig{
+			RedactSecrets: true,
+			MaxSizeMB:     DefaultLogMaxSizeMB,
+			MaxFiles:      DefaultLogMaxFiles,
+		},
 		BuildInfo: BuildInfo{
 			Version:   Version,
 			GitCommit: GitCommit,
@@ -290,7 +301,7 @@ func defaultChannels() ChannelsConfig {
 		"feishu":  map[string]any{},
 		"discord": map[string]any{},
 		"maixcam": map[string]any{
-			"settings": map[string]any{"host": "0.0.0.0", "port": 18790},
+			"settings": map[string]any{"host": defaultMaixCamHost, "port": defaultMaixCamPort},
 		},
 		"qq": map[string]any{
 			"settings": map[string]any{"max_message_length": 2000},
@@ -298,25 +309,20 @@ func defaultChannels() ChannelsConfig {
 		"dingtalk": map[string]any{},
 		"slack":    map[string]any{},
 		"matrix": map[string]any{
-			"group_trigger": map[string]any{"mention_only": true},
-			"placeholder":   map[string]any{"enabled": true, "text": []string{"Thinking... 💭"}},
+			"placeholder": map[string]any{"enabled": true, "text": []string{"Thinking... 💭"}},
 			"settings": map[string]any{
 				"homeserver":     "https://matrix.org",
 				"join_on_invite": true,
 			},
 		},
 		"deltachat": map[string]any{
-			"group_trigger": map[string]any{"mention_only": true},
 			"settings": map[string]any{
 				"email":        "@nine.testrun.org",
 				"display_name": "Compa Bot",
 			},
 		},
 		"line": map[string]any{
-			"group_trigger": map[string]any{"mention_only": true},
 			"settings": map[string]any{
-				"webhook_host": "0.0.0.0",
-				"webhook_port": 18791,
 				"webhook_path": "/webhook/line",
 			},
 		},
@@ -371,7 +377,25 @@ func defaultChannels() ChannelsConfig {
 		if bc.Type == "" {
 			bc.Type = name
 		}
+		if bc.Type == ChannelWeb {
+			// The browser chat is the owner's own dashboard, behind its own
+			// sign-in; who may use it is not a channel policy.
+			bc.DMPolicy = DMPolicyOpen
+			bc.GroupPolicy = GroupPolicyOpen
+		} else {
+			// A chat app answers its owner, once paired, and in groups only
+			// when mentioned.
+			bc.DMPolicy = DMPolicyPairing
+			bc.GroupPolicy = GroupPolicyAllowlist
+			bc.GroupTrigger.MentionOnly = true
+		}
 		channels[name] = bc
 	}
 	return channels
 }
+
+// The MaixCam channel listens on this computer only, on a port of its own.
+const (
+	defaultMaixCamHost = "127.0.0.1"
+	defaultMaixCamPort = 18792
+)

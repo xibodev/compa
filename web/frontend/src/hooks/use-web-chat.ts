@@ -36,17 +36,21 @@ export function useWebChat() {
     messages,
     connectionState,
     isTyping,
+    isTurnActive,
     activeSessionId,
     contextUsage,
     selectionBySession,
+    failedDraft,
   } = useAtomValue(chatAtom)
 
   return {
     messages,
     connectionState,
     isTyping,
+    isTurnActive,
     activeSessionId,
     contextUsage,
+    failedDraft,
     selection: selectionBySession[activeSessionId] || "",
     setSelection: (selection: string) =>
       setChatSelection(activeSessionId, selection),

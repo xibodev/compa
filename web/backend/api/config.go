@@ -22,12 +22,25 @@ func (h *Handler) registerConfigRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/config/test-command-patterns", h.handleTestCommandPatterns)
 }
 
+// applyRuntimeLogLevel applies the saved config's logging settings to the
+// launcher's own log after a save: the level (unless -d forces debug),
+// redaction and rotation. The gateway applies them to its log itself.
 func (h *Handler) applyRuntimeLogLevel() {
 	if h.debug {
 		logger.SetLevel(logger.DEBUG)
-		return
+	} else {
+		logger.SetLevelFromString(config.ResolveGatewayLogLevel(h.configPath))
 	}
-	logger.SetLevelFromString(config.ResolveGatewayLogLevel(h.configPath))
+	if cfg, err := config.LoadConfig(h.configPath); err == nil {
+		ApplyLoggingSettings(cfg)
+	}
+}
+
+// ApplyLoggingSettings applies cfg's logging settings, redaction and
+// rotation, to this process's log.
+func ApplyLoggingSettings(cfg *config.Config) {
+	logger.SetRedaction(cfg.Logging.RedactSecrets)
+	logger.SetRotation(cfg.Logging.EffectiveMaxSizeMB(), cfg.Logging.EffectiveMaxFiles())
 }
 
 // handleGetConfig returns the complete system configuration.
@@ -284,26 +297,25 @@ func (h *Handler) handlePatchConfig(w http.ResponseWriter, r *http.Request) {
 //	POST /api/config/reset
 func (h *Handler) handleResetConfig(w http.ResponseWriter, r *http.Request) {
 	h.configMu.Lock()
-	defer h.configMu.Unlock()
-	if err := config.ResetToDefaults(h.configPath); err != nil {
-		http.Error(w, fmt.Sprintf("Failed to reset config: %v", err), http.StatusInternalServerError)
+	err := config.ResetToDefaults(h.configPath)
+	h.configMu.Unlock()
+	if err != nil {
+		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to reset config: %v", err))
 		return
 	}
 
 	h.applyRuntimeLogLevel()
 	logger.Infof("configuration reset to factory defaults")
 
-	// Restart gateway if running
-	status := h.gatewayStatusData()
-	gatewayStatus, _ := status["gateway_status"].(string)
-	if gatewayStatus == "running" {
+	// Restart gateway if running. configMu is released first: a start takes
+	// it after gatewayLifecycleMu (see updateConfig).
+	if gatewayRestartsOnConfigChange(h.gatewayStatusData()) {
 		if _, err := h.RestartGateway(); err != nil {
 			logger.ErrorF("failed to restart gateway after config reset", map[string]any{"error": err.Error()})
 		}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 // handleTestCommandPatterns tests a command against whitelist and blacklist patterns.
@@ -336,38 +348,56 @@ func (h *Handler) handleTestCommandPatterns(w http.ResponseWriter, r *http.Reque
 		MatchedBlacklist *string `json:"matched_blacklist,omitempty"`
 	}
 
+	// A pattern that does not compile is named, not skipped: skipping it
+	// would show "no match" for a rule the exec tool cannot apply either.
+	allow, invalidAllow := compileCommandPatterns(req.AllowPatterns)
+	deny, invalidDeny := compileCommandPatterns(req.DenyPatterns)
+	if invalid := append(invalidAllow, invalidDeny...); len(invalid) > 0 {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error":            "invalid pattern: " + strings.Join(invalid, "; "),
+			"invalid_patterns": invalid,
+		})
+		return
+	}
+
 	resp := result{Allowed: false, Blocked: false}
 
 	// Check whitelist first
-	for _, pattern := range req.AllowPatterns {
-		re, err := regexp.Compile(pattern)
-		if err != nil {
-			continue // skip invalid patterns
-		}
+	for i, re := range allow {
 		if re.MatchString(lower) {
 			resp.Allowed = true
-			resp.MatchedWhitelist = &pattern
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(resp)
+			resp.MatchedWhitelist = &req.AllowPatterns[i]
+			writeJSON(w, http.StatusOK, resp)
 			return
 		}
 	}
 
 	// Check blacklist
-	for _, pattern := range req.DenyPatterns {
-		re, err := regexp.Compile(pattern)
-		if err != nil {
-			continue
-		}
+	for i, re := range deny {
 		if re.MatchString(lower) {
 			resp.Blocked = true
-			resp.MatchedBlacklist = &pattern
+			resp.MatchedBlacklist = &req.DenyPatterns[i]
 			break
 		}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// compileCommandPatterns compiles patterns in order, and names each one that
+// does not compile with the reason.
+func compileCommandPatterns(patterns []string) ([]*regexp.Regexp, []string) {
+	compiled := make([]*regexp.Regexp, len(patterns))
+	var invalid []string
+	for i, pattern := range patterns {
+		re, err := regexp.Compile(pattern)
+		if err != nil {
+			invalid = append(invalid, fmt.Sprintf("%q: %v", pattern, err))
+			continue
+		}
+		compiled[i] = re
+	}
+	return compiled, invalid
 }
 
 // validateConfig checks the config for common errors before saving.
@@ -391,6 +421,11 @@ func validateConfig(cfg *config.Config) []string {
 	if err := cfg.ValidateTurnProfile(); err != nil {
 		errs = append(errs, err.Error())
 	}
+	// The enumerated settings (exec approval, message targets, logging, ...)
+	// that loading rejects when unknown.
+	if err := cfg.ValidateSettings(); err != nil {
+		errs = append(errs, err.Error())
+	}
 
 	// Gateway port range
 	if cfg.Gateway.Port != 0 && (cfg.Gateway.Port < 1 || cfg.Gateway.Port > 65535) {
@@ -398,6 +433,10 @@ func validateConfig(cfg *config.Config) []string {
 	}
 
 	for name, bc := range cfg.Channels {
+		if bc == nil {
+			continue
+		}
+		errs = append(errs, validateChannelPolicyValues(name, bc)...)
 		streaming, ok := channelStreamingConfig(bc)
 		if !ok {
 			continue
@@ -481,6 +520,33 @@ func validateRegexPatterns(field string, patterns []string) []string {
 	for index, pattern := range patterns {
 		if _, err := regexp.Compile(pattern); err != nil {
 			errs = append(errs, fmt.Sprintf("%s[%d] is not a valid regular expression: %v", field, index, err))
+		}
+	}
+	return errs
+}
+
+// validateChannelPolicyValues rejects the dm_policy, group_policy and
+// (native WhatsApp) settings.chats values loading the config would reject,
+// so a typo is refused when saved rather than breaking the next start.
+func validateChannelPolicyValues(name string, bc *config.Channel) []string {
+	var errs []string
+	switch p := strings.TrimSpace(bc.DMPolicy); p {
+	case "", config.DMPolicyPairing, config.DMPolicyAllowlist, config.DMPolicyOpen, config.DMPolicyDisabled:
+	default:
+		errs = append(errs, fmt.Sprintf("channel %q dm_policy %q must be one of pairing, allowlist, open, disabled", name, p))
+	}
+	switch p := strings.TrimSpace(bc.GroupPolicy); p {
+	case "", config.GroupPolicyAllowlist, config.GroupPolicyOpen, config.GroupPolicyDisabled:
+	default:
+		errs = append(errs, fmt.Sprintf("channel %q group_policy %q must be one of allowlist, open, disabled", name, p))
+	}
+	if decoded, err := bc.GetDecoded(); err == nil {
+		if wa, ok := decoded.(*config.WhatsAppSettings); ok {
+			switch c := strings.TrimSpace(wa.Chats); c {
+			case "", config.WhatsAppChatsSelf, config.WhatsAppChatsAllowed, config.WhatsAppChatsAll:
+			default:
+				errs = append(errs, fmt.Sprintf("channel %q settings.chats %q must be one of self, allowed, all", name, c))
+			}
 		}
 	}
 	return errs
@@ -693,20 +759,14 @@ func normalizeStringArrayItems(items []string, options stringArrayParserOptions)
 	return result
 }
 
+// getSecretString returns the value m gives for the secret key. The
+// placeholder gives none: it stands for the value already kept.
 func getSecretString(m map[string]any, key string) (string, bool) {
-	if raw, exists := m[key]; exists {
-		s, isString := raw.(string)
-		if isString {
-			return s, true
-		}
+	s, ok := m[key].(string)
+	if !ok || s == config.SecretPlaceholder {
+		return "", false
 	}
-	if raw, exists := m["_"+key]; exists {
-		s, isString := raw.(string)
-		if isString {
-			return s, true
-		}
-	}
-	return "", false
+	return s, true
 }
 
 func applyConfigSecretsFromMap(cfg *config.Config, raw map[string]any) {
@@ -807,8 +867,12 @@ func applySecureStringsToStruct(rv reflect.Value, rawMap map[string]any) {
 			if !sf.CanSet() {
 				continue
 			}
-			// Direct SecureString field
+			// Direct SecureString field; the placeholder keeps the value
+			// already kept.
 			if s, ok := rawVal.(string); ok {
+				if s == config.SecretPlaceholder {
+					continue
+				}
 				if f.Type == reflect.TypeOf(config.SecureString{}) {
 					sf.Set(reflect.ValueOf(*config.NewSecureString(s)))
 				} else if f.Type == reflect.TypeOf(&config.SecureString{}) {

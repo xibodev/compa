@@ -73,7 +73,7 @@ func loadSecurityConfig(cfg *Config, securityPath string) error {
 	}
 
 	// Unmarshal non-channel fields from security.yml
-	// This resolves encrypted values for tools, skills, etc.
+	// This resolves the secrets of tools, skills, etc.
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return fmt.Errorf("failed to parse security config %s: %w", securityPath, err)
 	}
@@ -91,19 +91,48 @@ func loadSecurityConfig(cfg *Config, securityPath string) error {
 		}
 	}
 
+	// The secret maps' values fill the placeholders config.json holds.
+	var secrets secretMapsFile
+	if err := yaml.Unmarshal(data, &secrets); err != nil {
+		return fmt.Errorf("failed to parse security config %s: %w", securityPath, err)
+	}
+	cfg.applySecretMaps(secrets, false)
+
 	return nil
 }
 
 // saveSecurityConfig saves the security configuration to security.yml
 func saveSecurityConfig(securityPath string, sec *Config) error {
+	data, err := marshalSecurityConfig(sec, secretMapsFile{})
+	if err != nil {
+		return err
+	}
+	return fileutil.WriteFileAtomic(securityPath, data, 0o600)
+}
+
+// marshalSecurityConfig renders the .security.yml content of sec: its
+// SecureString fields and the values of its secret maps, given the map
+// values the file holds now (see storedSecrets).
+func marshalSecurityConfig(sec *Config, stored secretMapsFile) ([]byte, error) {
+	var doc yaml.Node
+	if err := doc.Encode(sec); err != nil {
+		return nil, fmt.Errorf("failed to marshal security config: %w", err)
+	}
+	if maps := sec.secretMapsForSave(stored); !maps.empty() {
+		if err := appendYAMLMapping(&doc, maps); err != nil {
+			return nil, fmt.Errorf("failed to marshal security config: %w", err)
+		}
+	}
 	var buf bytes.Buffer
 	enc := yaml.NewEncoder(&buf)
 	enc.SetIndent(2)
-	err := enc.Encode(sec)
-	if err != nil {
-		return fmt.Errorf("failed to marshal security config: %w", err)
+	if err := enc.Encode(&doc); err != nil {
+		return nil, fmt.Errorf("failed to marshal security config: %w", err)
 	}
-	return fileutil.WriteFileAtomic(securityPath, buf.Bytes(), 0o600)
+	if err := enc.Close(); err != nil {
+		return nil, fmt.Errorf("failed to marshal security config: %w", err)
+	}
+	return buf.Bytes(), nil
 }
 
 // SensitiveDataCache holds the config's own secrets, collected once, and the
@@ -233,7 +262,7 @@ func filterableSensitiveValues(groups ...[]string) []string {
 func (sec *Config) collectSensitiveValues() []string {
 	var values []string
 	collectSensitive(reflect.ValueOf(sec), &values)
-	return values
+	return append(values, sec.secretMapValues()...)
 }
 
 // collectSensitive recursively traverses the value and collects SecureString/SecureStrings values.

@@ -201,6 +201,100 @@ func TestResolveContextManager_RegisteredFactory(t *testing.T) {
 	}
 }
 
+// reloadTestContextManager records the tool registrations a reload asks of
+// it, and its close.
+type reloadTestContextManager struct {
+	noopContextManager
+	registered atomic.Int32
+	closed     atomic.Bool
+}
+
+func (m *reloadTestContextManager) registerTools(*AgentLoop) { m.registered.Add(1) }
+
+func (m *reloadTestContextManager) Close() error {
+	m.closed.Store(true)
+	return nil
+}
+
+// AG-16: a reload keeps the context manager when its settings are the same,
+// registering its tools on the new agents, and replaces (and closes) it when
+// they change.
+func TestReloadRebuildsTheContextManagerWhenItsSettingsChange(t *testing.T) {
+	cleanup := resetCMRegistry()
+	defer cleanup()
+
+	var built []*reloadTestContextManager
+	if err := RegisterContextManager("reload_cm", func(json.RawMessage, *AgentLoop) (ContextManager, error) {
+		m := &reloadTestContextManager{}
+		built = append(built, m)
+		return m, nil
+	}); err != nil {
+		t.Fatalf("register failed: %v", err)
+	}
+	workspace := t.TempDir()
+	newConfig := func(settings string) *config.Config {
+		cfg := config.DefaultConfig()
+		cfg.Agents.Defaults.Workspace = workspace
+		cfg.Agents.Defaults.ContextManager = "reload_cm"
+		cfg.Agents.Defaults.ContextManagerConfig = json.RawMessage(settings)
+		return cfg
+	}
+
+	al := NewAgentLoop(newConfig(`{"budget":1}`), bus.NewMessageBus(), &mockProvider{})
+	defer al.Close()
+	if len(built) != 1 || al.currentContextManager() != built[0] {
+		t.Fatalf("built %d context managers at start, want 1 in use", len(built))
+	}
+
+	if err := al.ReloadProviderAndConfig(context.Background(), &mockProvider{}, newConfig(`{"budget":1}`)); err != nil {
+		t.Fatalf("ReloadProviderAndConfig() error = %v", err)
+	}
+	if len(built) != 1 || al.currentContextManager() != built[0] || built[0].closed.Load() {
+		t.Fatal("a reload with the same context manager settings replaced the manager")
+	}
+	if built[0].registered.Load() != 1 {
+		t.Fatalf("tools registered %d times on the reloaded agents, want 1", built[0].registered.Load())
+	}
+
+	if err := al.ReloadProviderAndConfig(context.Background(), &mockProvider{}, newConfig(`{"budget":2}`)); err != nil {
+		t.Fatalf("ReloadProviderAndConfig() error = %v", err)
+	}
+	if len(built) != 2 || al.currentContextManager() != built[1] {
+		t.Fatal("a reload with changed context manager settings kept the old manager")
+	}
+	al.closingReplaced.Wait()
+	if !built[0].closed.Load() || built[1].closed.Load() {
+		t.Fatal("the replaced context manager was not closed, or the new one was")
+	}
+}
+
+// AG-16: hook timeouts can be configured while hooks run.
+func TestHookManagerConfigureTimeoutsWhileHooksRun(t *testing.T) {
+	hm := NewHookManager(nil)
+	defer hm.Close()
+	if err := hm.Mount(NamedHook("slow", forUserRespondHook{})); err != nil {
+		t.Fatalf("Mount() error = %v", err)
+	}
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := range 200 {
+			hm.ConfigureTimeouts(time.Duration(i+1)*time.Millisecond, time.Second, time.Second)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for range 200 {
+			hm.BeforeTool(context.Background(), &ToolCallHookRequest{Tool: "echo_text"})
+		}
+	}()
+	wg.Wait()
+	if got := hm.interceptorTimeoutValue(); got != time.Second {
+		t.Fatalf("interceptor timeout = %v, want 1s", got)
+	}
+}
+
 func TestResolveContextManager_FactoryError(t *testing.T) {
 	cleanup := resetCMRegistry()
 	defer cleanup()

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -799,7 +800,7 @@ func TestSend_HTMLFallback_PerChunk(t *testing.T) {
 	assert.Equal(t, 2, len(caller.calls), "should have HTML attempt + plain text fallback")
 }
 
-func TestSend_HTMLFallback_BothFail(t *testing.T) {
+func TestSend_NonParseErrorIsNotResentAsPlainText(t *testing.T) {
 	caller := &stubCaller{
 		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
 			return nil, errors.New("send failed")
@@ -814,12 +815,153 @@ func TestSend_HTMLFallback_BothFail(t *testing.T) {
 
 	assert.Error(t, err)
 	assert.True(t, errors.Is(err, channels.ErrTemporary), "error should wrap ErrTemporary")
-	assert.Equal(t, 2, len(caller.calls), "should have HTML attempt + plain text attempt")
+	assert.Equal(t, 1, len(caller.calls), "a failure that is not a parse error must not be resent as plain text")
+}
+
+func apiErrorResponse(code int, description string, retryAfter int) *ta.Response {
+	apiErr := &ta.Error{ErrorCode: code, Description: description}
+	if retryAfter > 0 {
+		apiErr.Parameters = &ta.ResponseParameters{RetryAfter: retryAfter}
+	}
+	return &ta.Response{Ok: false, Error: apiErr}
+}
+
+func TestSend_ClassifiesRateLimitAndForbidden(t *testing.T) {
+	tests := []struct {
+		name string
+		resp *ta.Response
+		want error
+	}{
+		{"rate limited", apiErrorResponse(429, "Too Many Requests: retry after 7", 7), channels.ErrRateLimit},
+		{"blocked by the user", apiErrorResponse(403, "Forbidden: bot was blocked by the user", 0), channels.ErrSendFailed},
+		{"server error", apiErrorResponse(502, "Bad Gateway", 0), channels.ErrTemporary},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			caller := &stubCaller{
+				callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+					return tt.resp, nil
+				},
+			}
+			ch := newTestChannel(t, caller)
+
+			_, err := ch.Send(context.Background(), bus.OutboundMessage{ChatID: "12345", Content: "Hello **world**"})
+
+			require.Error(t, err)
+			assert.ErrorIs(t, err, tt.want)
+			assert.Len(t, caller.calls, 1, "no plain-text resend")
+		})
+	}
+}
+
+func TestSend_RateLimitCarriesRetryAfter(t *testing.T) {
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			return apiErrorResponse(429, "Too Many Requests: retry after 7", 7), nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+
+	_, err := ch.Send(context.Background(), bus.OutboundMessage{ChatID: "12345", Content: "Hello"})
+
+	var limited *channels.RateLimitError
+	require.ErrorAs(t, err, &limited)
+	assert.Equal(t, 7*time.Second, limited.RetryAfter)
+}
+
+func TestSend_ParseErrorFallsBackToPlainText(t *testing.T) {
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			if strings.Contains(string(data.BodyRaw), `"parse_mode"`) {
+				return apiErrorResponse(400, "Bad Request: can't parse entities: unsupported start tag", 0), nil
+			}
+			return successResponse(t), nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+
+	_, err := ch.Send(context.Background(), bus.OutboundMessage{ChatID: "12345", Content: "Hello **world**"})
+
+	require.NoError(t, err)
+	require.Len(t, caller.calls, 2)
+	assert.NotContains(t, string(caller.calls[1].Data.BodyRaw), `"parse_mode"`)
+	assert.Contains(t, string(caller.calls[1].Data.BodyRaw), "Hello **world**")
+}
+
+func TestSafeErrRemovesBotToken(t *testing.T) {
+	ch := newTestChannel(t, &stubCaller{})
+	raw := errors.New(`Post "https://api.telegram.org/bot` + testToken + `/getFile": dial tcp: i/o timeout`)
+
+	err := ch.safeErr(fmt.Errorf("telegram: %w", raw))
+
+	assert.NotContains(t, err.Error(), testToken)
+	assert.NotContains(t, ch.redactToken("https://api.telegram.org/file/bot"+testToken+"/photos/x.jpg"), testToken)
+	assert.ErrorIs(t, err, raw, "redaction keeps the error chain")
+}
+
+func TestDownloadFileWithInfo_RefusesFilesOverTheLimit(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		_, _ = w.Write([]byte(strings.Repeat("x", 64)))
+	}))
+	defer server.Close()
+
+	ch, err := NewTelegramChannel(
+		&config.Channel{Type: config.ChannelTelegram, Enabled: true},
+		&config.TelegramSettings{Token: *config.NewSecureString(testToken), BaseURL: server.URL},
+		nil,
+	)
+	require.NoError(t, err)
+	ch.maxMediaBytes = 32
+
+	if path := ch.downloadFileWithInfo(&telego.File{FileID: "f1", FilePath: "a.jpg", FileSize: 64}, ""); path != "" {
+		os.Remove(path)
+		t.Fatal("a file declared over the limit must not be downloaded")
+	}
+	assert.Equal(t, 0, requests, "no request for a file declared over the limit")
+
+	if path := ch.downloadFileWithInfo(&telego.File{FileID: "f2", FilePath: "b.jpg"}, ""); path != "" {
+		os.Remove(path)
+		t.Fatal("a body over the limit must be refused")
+	}
+}
+
+func TestBeginStream_FinalizeSplitsLongAnswers(t *testing.T) {
+	var texts []string
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			if strings.Contains(url, "sendMessageDraft") {
+				return &ta.Response{Ok: true, Result: []byte("true")}, nil
+			}
+			var params struct {
+				Text string `json:"text"`
+			}
+			require.NoError(t, json.Unmarshal(data.BodyRaw, &params))
+			texts = append(texts, params.Text)
+			return successResponse(t), nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+	ch.tgCfg.Streaming.Enabled = true
+
+	streamer, err := ch.BeginStream(context.Background(), "12345")
+	require.NoError(t, err)
+	answer := strings.Repeat("word ", 2000) // 10000 characters
+	require.NoError(t, streamer.Finalize(context.Background(), answer))
+
+	require.Greater(t, len(texts), 1, "an answer over 4096 characters is split")
+	total := 0
+	for _, text := range texts {
+		assert.LessOrEqual(t, len([]rune(text)), telegramMessageLimit)
+		total += strings.Count(text, "word")
+	}
+	assert.Equal(t, 2000, total, "splitting keeps every word")
 }
 
 func TestSend_LongMessage_HTMLFallback_StopsOnError(t *testing.T) {
-	// With a long message that gets split into 2 chunks, if both HTML and
-	// plain text fail on the first chunk, Send should return early.
+	// With a long message that gets split into 2 chunks, if the first chunk
+	// fails, Send should return early.
 	caller := &stubCaller{
 		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
 			return nil, errors.New("send failed")
@@ -835,8 +977,8 @@ func TestSend_LongMessage_HTMLFallback_StopsOnError(t *testing.T) {
 	})
 
 	assert.Error(t, err)
-	// Should fail on the first chunk (2 calls: HTML + fallback), never reaching the second chunk.
-	assert.Equal(t, 2, len(caller.calls), "should stop after first chunk fails both HTML and plain text")
+	// Should fail on the first chunk, never reaching the second chunk.
+	assert.Equal(t, 1, len(caller.calls), "should stop after the first chunk fails")
 }
 
 func TestSend_MarkdownShortButHTMLLong_MultipleCalls(t *testing.T) {

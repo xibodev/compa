@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -179,17 +180,165 @@ func TestToolRegistry_Get_NotFound(t *testing.T) {
 	}
 }
 
-func TestToolRegistry_RegisterOverwrite(t *testing.T) {
+func TestToolRegistry_RegisterKeepsFirstTool(t *testing.T) {
 	r := NewToolRegistry()
 	r.Register(newMockTool("dup", "first"))
 	r.Register(newMockTool("dup", "second"))
+	r.RegisterHidden(newMockTool("dup", "hidden"))
+	r.RegisterExtension(newMockTool("dup", "extension"))
 
 	if r.Count() != 1 {
-		t.Errorf("expected count 1 after overwrite, got %d", r.Count())
+		t.Errorf("expected count 1 after a refused registration, got %d", r.Count())
 	}
 	tool, _ := r.Get("dup")
-	if tool.Description() != "second" {
-		t.Errorf("expected overwritten description 'second', got %q", tool.Description())
+	if tool.Description() != "first" {
+		t.Errorf("expected the first tool to stay registered, got %q", tool.Description())
+	}
+}
+
+func TestToolRegistry_BuiltinReplacesExtension(t *testing.T) {
+	r := NewToolRegistry()
+	r.RegisterExtension(newMockTool("message", "module message"))
+	r.Register(newMockTool("message", "built-in message"))
+
+	tool, ok := r.Get("message")
+	if !ok || tool.Description() != "built-in message" {
+		t.Fatalf("expected the built-in tool to replace the extension, got %v", tool)
+	}
+
+	// An extension never replaces anything.
+	r.RegisterExtension(newMockTool("exec", "module exec"))
+	r.Register(newMockTool("read_file", "built-in read"))
+	r.RegisterExtension(newMockTool("read_file", "module read"))
+	if tool, _ := r.Get("read_file"); tool.Description() != "built-in read" {
+		t.Fatalf("an extension replaced a built-in tool: %q", tool.Description())
+	}
+}
+
+func TestToolRegistry_Unregister(t *testing.T) {
+	r := NewToolRegistry()
+	r.Register(newMockTool("gone", "first"))
+	before := r.Version()
+
+	if !r.Unregister("gone") {
+		t.Fatal("Unregister reported the tool missing")
+	}
+	if r.HasRegistered("gone") {
+		t.Fatal("tool still registered after Unregister")
+	}
+	if r.Version() == before {
+		t.Fatal("Unregister should bump the registry version")
+	}
+	if r.Unregister("gone") {
+		t.Fatal("Unregister of a missing tool reported success")
+	}
+	r.Register(newMockTool("gone", "second"))
+	if tool, _ := r.Get("gone"); tool.Description() != "second" {
+		t.Fatal("a name freed by Unregister could not be registered again")
+	}
+}
+
+type unavailableTool struct {
+	mockRegistryTool
+}
+
+func (t *unavailableTool) Available() bool { return false }
+
+func TestToolRegistry_SkipsUnavailableTools(t *testing.T) {
+	r := NewToolRegistry()
+	r.Register(&unavailableTool{mockRegistryTool: *newMockTool("i2c", "hardware")})
+	if r.HasRegistered("i2c") {
+		t.Fatal("a tool reporting itself unavailable was registered")
+	}
+	r.Register(nil)
+	if r.Count() != 0 {
+		t.Fatal("registering nil added a tool")
+	}
+}
+
+func TestToolRegistry_SessionUnlocksStayInTheirSession(t *testing.T) {
+	r := NewToolRegistry()
+	r.Register(newMockTool("core", "always there"))
+	r.RegisterHidden(newMockTool("mcp_a", "hidden a"))
+	r.RegisterHidden(newMockTool("mcp_b", "hidden b"))
+
+	r.PromoteToolsForSession("session-1", []string{"mcp_a"}, 2)
+	r.PromoteToolsForSession("session-2", []string{"mcp_b"}, 1)
+
+	names := func(defs []providers.ToolDefinition) []string {
+		out := make([]string, 0, len(defs))
+		for _, def := range defs {
+			out = append(out, def.Function.Name)
+		}
+		return out
+	}
+
+	if got := names(r.ToProviderDefsForSession("session-1")); !slices.Equal(got, []string{"core", "mcp_a"}) {
+		t.Fatalf("session-1 tools = %v", got)
+	}
+	if got := names(r.ToProviderDefsForSession("session-2")); !slices.Equal(got, []string{"core", "mcp_b"}) {
+		t.Fatalf("session-2 tools = %v", got)
+	}
+	if got := names(r.ToProviderDefsForSession("session-3")); !slices.Equal(got, []string{"core"}) {
+		t.Fatalf("session-3 tools = %v", got)
+	}
+
+	// A round of session-2 does not count down session-1's unlock.
+	r.TickTTLForSession("session-2")
+	if got := names(r.ToProviderDefsForSession("session-2")); !slices.Equal(got, []string{"core"}) {
+		t.Fatalf("session-2 tools after its round = %v", got)
+	}
+	if got := names(r.ToProviderDefsForSession("session-1")); !slices.Equal(got, []string{"core", "mcp_a"}) {
+		t.Fatalf("session-1 tools after session-2's round = %v", got)
+	}
+
+	// Without a session key, any session's unlock counts, as before.
+	if _, ok := r.Get("mcp_a"); !ok {
+		t.Fatal("a tool unlocked by a session is not callable")
+	}
+	r.TickTTLForSession("session-1")
+	r.TickTTLForSession("session-1")
+	if _, ok := r.Get("mcp_a"); ok {
+		t.Fatal("a session unlock outlived its TTL")
+	}
+}
+
+func TestToolRegistry_DiscoveryUnlocksForTheCallingSession(t *testing.T) {
+	r := NewToolRegistry()
+	r.RegisterHidden(newMockTool("mcp_weather", "get the weather forecast"))
+	search := NewRegexSearchTool(r, 3, 5)
+
+	ctx := WithToolSessionContext(context.Background(), "main", "session-1", nil)
+	result := search.Execute(ctx, map[string]any{"pattern": "weather"})
+	if result.IsError {
+		t.Fatalf("search failed: %s", result.ForLLM)
+	}
+	if len(r.ToProviderDefsForSession("session-1")) != 1 {
+		t.Fatal("the searching session did not get the tool")
+	}
+	if len(r.ToProviderDefsForSession("session-2")) != 0 {
+		t.Fatal("another session got a tool it did not search for")
+	}
+}
+
+func TestToolRegistry_ArgumentLogging(t *testing.T) {
+	sizes := argumentSizes(map[string]any{"command": "echo hi", "count": float64(3)})
+	if sizes["command"] != len(`"echo hi"`) || sizes["count"] != 1 {
+		t.Fatalf("argumentSizes = %v", sizes)
+	}
+
+	r := NewToolRegistry()
+	r.SetSensitiveDataFilter(func(s string) string {
+		return strings.ReplaceAll(s, "sk-secret", "[FILTERED]")
+	})
+	logged := r.loggableArgs(map[string]any{"header": "Bearer sk-secret"})
+	if strings.Contains(logged, "sk-secret") || !strings.Contains(logged, "[FILTERED]") {
+		t.Fatalf("loggableArgs did not filter the secret: %s", logged)
+	}
+
+	long := r.loggableText(strings.Repeat("x", maxLoggedErrorChars+10), maxLoggedErrorChars)
+	if !strings.HasSuffix(long, "(10 more chars)") {
+		t.Fatalf("loggableText did not bound the text: %s", long[len(long)-40:])
 	}
 }
 
@@ -413,7 +562,7 @@ func TestToolRegistry_Count(t *testing.T) {
 
 	r.Register(newMockTool("a", "replaced"))
 	if r.Count() != 2 {
-		t.Errorf("expected 2 after overwrite, got %d", r.Count())
+		t.Errorf("expected 2 after a refused re-registration, got %d", r.Count())
 	}
 }
 

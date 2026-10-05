@@ -8,6 +8,10 @@ import (
 type ReactionCallback func(ctx context.Context, channel, chatID, messageID string) error
 
 type ReactionTool struct {
+	// chatTargets gives SetTargets: the reaction tool follows
+	// tools.message.targets too.
+	chatTargets
+
 	reactionCallback ReactionCallback
 }
 
@@ -52,11 +56,9 @@ func (t *ReactionTool) Execute(ctx context.Context, args map[string]any) *ToolRe
 	chatID, _ := args["chat_id"].(string)
 	messageID, _ := args["message_id"].(string)
 
-	if channel == "" {
-		channel = ToolChannel(ctx)
-	}
-	if chatID == "" {
-		chatID = ToolChatID(ctx)
+	channel, chatID, err := t.resolve(ctx, "reaction", channel, chatID)
+	if err != nil {
+		return &ToolResult{ForLLM: err.Error(), IsError: true, Err: err}
 	}
 	if messageID == "" {
 		messageID = ToolMessageID(ctx)

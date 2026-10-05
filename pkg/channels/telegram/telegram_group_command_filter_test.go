@@ -70,10 +70,9 @@ func TestHandleMessage_GroupMentionOnly_BotCommandEntity(t *testing.T) {
 			wantContent:   "/new",
 		},
 		{
-			name:          "bare command",
+			name:          "bare command goes to every bot, not a mention",
 			text:          "/new",
-			wantForwarded: true,
-			wantContent:   "/new",
+			wantForwarded: false,
 		},
 		{
 			name:          "command for another bot",
@@ -145,5 +144,80 @@ func TestIsBotMentioned_MentionEntityUnaffected(t *testing.T) {
 
 	if !ch.isBotMentioned(msg) {
 		t.Fatal("expected mention entity to be treated as bot mention")
+	}
+}
+
+// fileCountingCaller answers getMe and counts getFile requests.
+type fileCountingCaller struct {
+	getMeCaller
+	getFiles *int
+}
+
+func (c fileCountingCaller) Call(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+	if strings.HasSuffix(url, "/getFile") {
+		*c.getFiles++
+		return &ta.Response{Ok: true, Result: []byte(`{"file_id":"p1","file_path":""}`)}, nil
+	}
+	return c.getMeCaller.Call(ctx, url, data)
+}
+
+func TestHandleMessage_GroupIgnoredBeforeDownloadingMedia(t *testing.T) {
+	ch, messageBus := newGroupMentionOnlyChannel(t, "testbot")
+	getFiles := 0
+	bot, err := telego.NewBot("123456:"+strings.Repeat("a", 35),
+		telego.WithAPICaller(fileCountingCaller{getMeCaller: getMeCaller{username: "testbot"}, getFiles: &getFiles}),
+		telego.WithDiscardLogger(),
+	)
+	if err != nil {
+		t.Fatalf("NewBot: %v", err)
+	}
+	ch.bot = bot
+
+	msg := &telego.Message{
+		Caption:   "look at this",
+		Photo:     []telego.PhotoSize{{FileID: "p1"}},
+		MessageID: 7,
+		Chat:      telego.Chat{ID: 123, Type: "group"},
+		From:      &telego.User{ID: 7, FirstName: "Alice"},
+	}
+	if err := ch.handleMessage(context.Background(), msg); err != nil {
+		t.Fatalf("handleMessage: %v", err)
+	}
+
+	select {
+	case inbound := <-messageBus.InboundChan():
+		t.Fatalf("an unaddressed group message is ignored: %#v", inbound)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if getFiles != 0 {
+		t.Fatalf("media of an ignored message was requested %d times", getFiles)
+	}
+}
+
+func TestHandleMessage_ReplyToBotIsAMention(t *testing.T) {
+	ch, messageBus := newGroupMentionOnlyChannel(t, "testbot")
+
+	msg := &telego.Message{
+		Text:      "and tomorrow?",
+		MessageID: 8,
+		Chat:      telego.Chat{ID: 123, Type: "group"},
+		From:      &telego.User{ID: 7, FirstName: "Alice"},
+		ReplyToMessage: &telego.Message{
+			MessageID: 5,
+			Text:      "Sunny today.",
+			From:      &telego.User{ID: 1, IsBot: true, Username: "testbot"},
+		},
+	}
+	if err := ch.handleMessage(context.Background(), msg); err != nil {
+		t.Fatalf("handleMessage: %v", err)
+	}
+
+	select {
+	case inbound := <-messageBus.InboundChan():
+		if !inbound.Context.Mentioned {
+			t.Fatal("a reply to the bot counts as a mention")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("a reply to the bot's message is answered in mention-only groups")
 	}
 }

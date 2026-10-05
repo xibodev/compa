@@ -1,4 +1,5 @@
 import { IconCheck, IconCopy } from "@tabler/icons-react"
+import { memo } from "react"
 import { useTranslation } from "react-i18next"
 
 import { Button } from "@/components/ui/button"
@@ -13,9 +14,13 @@ interface UserMessageProps {
   timestamp?: string | number
 }
 
-export function UserMessage({
+const EMPTY_ATTACHMENTS: ChatAttachment[] = []
+
+// Memoized like AssistantMessage, so typing in the composer or a streamed
+// reply does not re-render the whole transcript.
+export const UserMessage = memo(function UserMessage({
   content,
-  attachments = [],
+  attachments = EMPTY_ATTACHMENTS,
   timestamp = "",
 }: UserMessageProps) {
   const { t } = useTranslation()
@@ -93,4 +98,4 @@ export function UserMessage({
       )}
     </div>
   )
-}
+})

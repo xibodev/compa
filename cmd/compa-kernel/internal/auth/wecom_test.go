@@ -132,15 +132,18 @@ func TestApplyWeComAuthResult(t *testing.T) {
 	weCfg := decoded.(*config.WeComSettings)
 	weCfg.WebSocketURL = ""
 
-	applyWeComAuthResult(cfg, wecomQRBotInfo{
+	require.NoError(t, applyWeComAuthResult(cfg, wecomQRBotInfo{
 		BotID:  "bot-1",
 		Secret: "secret-1",
-	})
+	}))
 
 	assert.True(t, wecom.Enabled)
 	assert.Equal(t, "bot-1", weCfg.BotID)
 	assert.Equal(t, "secret-1", weCfg.Secret.String())
 	assert.Equal(t, wecomDefaultWebSocketURL, weCfg.WebSocketURL)
+
+	// No secret: an error, not a channel that can't connect (PR-25).
+	assert.Error(t, applyWeComAuthResult(cfg, wecomQRBotInfo{BotID: "bot-2"}))
 }
 
 func TestAuthWeComCmdWithScanner(t *testing.T) {

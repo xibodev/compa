@@ -13,6 +13,7 @@ import (
 
 	"github.com/xibodev/compa/internal/module"
 	"github.com/xibodev/compa/internal/moduletools"
+	"github.com/xibodev/compa/pkg/approval"
 	"github.com/xibodev/compa/pkg/config"
 	"github.com/xibodev/compa/pkg/modproto"
 )
@@ -82,9 +83,8 @@ type CapabilityView struct {
 	// ToolName is what the agent calls this capability in chat, so a person can
 	// see the connection between a capability here and a tool the agent used.
 	ToolName string `json:"tool_name"`
-	// NeedsApproval is the host's judgement, computed once so every surface
-	// agrees. Unknown cost, external writes, and network reach each mean a
-	// person should see the call before it runs.
+	// NeedsApproval is true when the approval policy (tools.approval) asks
+	// before a run from this page, which then offers "Approve and run".
 	NeedsApproval bool `json:"needs_approval"`
 }
 
@@ -111,6 +111,12 @@ func (h *Handler) handleModulesList(w http.ResponseWriter, r *http.Request) {
 	views := []ModuleView{}
 	// Read at most once, and only if a module declares a source root.
 	configured := sync.OnceValues(h.configuredSourceRoots)
+	// A policy that cannot be read refuses every run, saying why; the list
+	// shows what the default policy asks.
+	policy, err := h.moduleApprovalPolicy()
+	if err != nil {
+		policy = approval.DefaultPolicy()
+	}
 	for _, in := range moduletools.Discover(r.Context(), config.GetHome()) {
 		if in.Err != nil {
 			// A broken module is reported, never fatal: one bad install must
@@ -118,8 +124,8 @@ func (h *Handler) handleModulesList(w http.ResponseWriter, r *http.Request) {
 			views = append(views, ModuleView{
 				Binary: filepath.Base(in.Runner.Binary),
 				Name:   filepath.Base(in.Runner.Binary),
-				Error:  in.Err.Error(),
-				Dir:    filepath.Base(filepath.Dir(in.Runner.Binary)),
+				Error:  module.BoundText(in.Err.Error(), module.MaxErrorText),
+				Dir:    brokenModuleDir(in.Runner.Binary),
 			})
 			continue
 		}
@@ -127,9 +133,56 @@ func (h *Handler) handleModulesList(w http.ResponseWriter, r *http.Request) {
 			sources, err := configured()
 			in.HostWarnings = append(in.HostWarnings, sourceRootHostWarnings(in.Descriptor, sources, err)...)
 		}
-		views = append(views, moduleView(in))
+		views = append(views, moduleView(in, policy))
 	}
 	writeJSON(w, http.StatusOK, views)
+}
+
+// brokenModuleDir is the install directory a broken module's card may offer
+// to remove: the module's own directory, never the modules directory a bare
+// binary sits in.
+func brokenModuleDir(binary string) string {
+	dir := filepath.Base(filepath.Dir(binary))
+	if !module.ValidID(dir) || filepath.Base(binary) != module.BinaryName(dir) {
+		return ""
+	}
+	return dir
+}
+
+// moduleApprovalPolicy is the owner's approval policy (tools.approval), read
+// from the saved config on every request so a change applies at once.
+func (h *Handler) moduleApprovalPolicy() (approval.Policy, error) {
+	cfg, err := config.LoadConfig(h.configPath)
+	if err != nil {
+		return approval.Policy{}, fmt.Errorf("could not read the approval policy from %s: %w", h.configPath, err)
+	}
+	return cfg.Tools.Approval, nil
+}
+
+// moduleWorkspace is the workspace module invocations and artefacts use: the
+// one the config gives the agents, so the cockpit and the agent read and
+// write the same folder.
+func (h *Handler) moduleWorkspace() (string, error) {
+	workspace := ""
+	if cfg, err := config.LoadConfig(h.configPath); err == nil {
+		workspace = cfg.WorkspacePath()
+	}
+	if strings.TrimSpace(workspace) == "" {
+		workspace = filepath.Join(config.GetHome(), "workspace")
+	}
+	return filepath.Abs(workspace)
+}
+
+// pathModuleID is the module ID in the request path, refused before anything
+// turns it into a path unless it is one the host could have installed.
+// DELETE /api/modules/%2E%2E used to reach Remove with "..".
+func pathModuleID(w http.ResponseWriter, r *http.Request) (string, bool) {
+	id := r.PathValue("id")
+	if err := module.CheckID(id); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return "", false
+	}
+	return id, true
 }
 
 // configuredSourceRoots reads the operator's named source roots from the config
@@ -158,7 +211,7 @@ func sourceRootHostWarnings(d *modproto.Descriptor, sources map[string]string, e
 	return moduletools.SourceRootWarnings(d, sources)
 }
 
-func moduleView(in moduletools.Installed) ModuleView {
+func moduleView(in moduletools.Installed, policy approval.Policy) ModuleView {
 	d := in.Descriptor
 
 	caps := make([]CapabilityView, 0, len(d.Capabilities))
@@ -170,7 +223,9 @@ func moduleView(in moduletools.Installed) ModuleView {
 			Provider:       c.Effects.Provider,
 			CostKnown:      c.Effects.CostKnown,
 			ToolName:       moduletools.ToolName(d.Module, c.ID),
-			NeedsApproval:  !c.Effects.CostKnown || c.Effects.ExternalWrites || c.Effects.Network,
+			// The decision invoke enforces, so the page never promises an
+			// approval step the host skips.
+			NeedsApproval: policy.Decide(moduletools.ApprovalTool(d, c), approval.OriginWeb).Action == approval.Ask,
 		}
 		if doc, ok := d.RequestSchemas[c.RequestSchema]; ok {
 			cv.RequestSchema = doc
@@ -259,7 +314,10 @@ func (h *Handler) handleModuleInstall(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleModuleRemove(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
+	id, ok := pathModuleID(w, r)
+	if !ok {
+		return
+	}
 	if err := module.Remove(config.GetHome(), id); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
@@ -277,7 +335,10 @@ func (h *Handler) handleModuleRemove(w http.ResponseWriter, r *http.Request) {
 // session. Removing the module to reclaim that also discards its state and its
 // declared content, which is too big a hammer.
 func (h *Handler) handleModuleSetEnabled(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
+	id, ok := pathModuleID(w, r)
+	if !ok {
+		return
+	}
 
 	var body struct {
 		// The DESIRED state, not a toggle: a toggle races with whatever the
@@ -318,13 +379,8 @@ type invokeRequest struct {
 	Capability string          `json:"capability"`
 	Input      json.RawMessage `json:"input"`
 	// Approved records that a person clicked "Approve and run" on a capability
-	// whose declared effects were shown to them first.
-	//
-	// It is the ONLY way a consent claim survives into a module request. An
-	// agent tool call cannot set it -- the model was observed minting
-	// paid_generation_approved from a chat sentence, so approval arriving
-	// through the model is stripped. A click here is a person acting on what
-	// the page told them, which is a different fact.
+	// the approval policy asks about, whose declared effects were shown to them
+	// first. It answers that ask; a run the policy allows or refuses ignores it.
 	Approved bool `json:"approved"`
 }
 
@@ -355,7 +411,10 @@ type InvokeResult struct {
 }
 
 func (h *Handler) handleModuleInvoke(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
+	id, ok := pathModuleID(w, r)
+	if !ok {
+		return
+	}
 
 	var req invokeRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -382,8 +441,20 @@ func (h *Handler) handleModuleInvoke(w http.ResponseWriter, r *http.Request) {
 		})
 		return
 	}
+	// Decided before anything is prepared or run: an artefact that already
+	// exists cannot be un-produced by an error, and a provider already charged
+	// cannot be un-charged.
+	approved, status, err := h.invokeApproval(target.Descriptor, req.Capability, req.Approved)
+	if err != nil {
+		writeJSON(w, status, map[string]string{"error": err.Error()})
+		return
+	}
 
-	workspace := filepath.Join(home, "workspace")
+	workspace, err := h.moduleWorkspace()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
 	if err := os.MkdirAll(workspace, 0o755); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -409,19 +480,14 @@ func (h *Handler) handleModuleInvoke(w http.ResponseWriter, r *http.Request) {
 		Roots:      moduletools.GrantRoots(target.Descriptor, home, workspace, sources),
 		DeadlineMS: module.DefaultInvokeDeadlineMS,
 	}
-	// Refuse before running, not after. An artefact that already exists cannot
-	// be un-produced by an error, and a provider already charged cannot be
-	// un-charged.
-	if err := approvalGate(target.Descriptor, capabilityByID(target.Descriptor, req.Capability), req.Approved); err != nil {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
-		return
-	}
-	if err := moduletools.PlaceInput(modReq, req.Input, req.Approved); err != nil {
+	if err := moduletools.PlaceInput(modReq, req.Input, approved); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
 	module.GrantBinaries(target.Descriptor, modReq)
-	module.ApplyGrants(target.Descriptor, modReq, module.GrantAll())
+	// Publishing is granted per approved call, as on the agent path: any other
+	// run gets only what the module declared.
+	module.ApplyGrants(target.Descriptor, modReq, module.GrantsFor(approved))
 
 	res, err := moduleInvokeRunner(r.Context(), target.Runner, target.Descriptor, modReq)
 	if res != nil {
@@ -431,6 +497,11 @@ func (h *Handler) handleModuleInvoke(w http.ResponseWriter, r *http.Request) {
 		if res.Envelope != nil {
 			out.OK = res.Envelope.OK
 			out.Error = res.Envelope.Error
+			if out.Error != nil {
+				bounded := *out.Error
+				bounded.Message = module.BoundText(bounded.Message, module.MaxErrorText)
+				out.Error = &bounded
+			}
 			out.Execution = res.Envelope.Execution
 			out.Warnings = res.Envelope.Warnings
 			out.Result = res.Envelope.Result
@@ -471,6 +542,10 @@ func (h *Handler) handleArtifact(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "module, root and path are required"})
 		return
 	}
+	if err := module.CheckID(moduleID); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
 
 	// Resolve through the real descriptor: a root the module never declared is
 	// never granted, so it cannot be read even if a caller names it.
@@ -488,9 +563,14 @@ func (h *Handler) handleArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 
 	home := config.GetHome()
-	// No source roots: they are granted read-only, and an artefact is only ever
-	// served from a root the module could write, so none can hold one.
-	roots := moduletools.GrantRoots(target.Descriptor, home, filepath.Join(home, "workspace"), nil)
+	workspace, err := h.moduleWorkspace()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	// The roots the module is granted, resolved without creating anything: a
+	// GET used to create the module's state directories as a side effect.
+	roots := moduletools.ArtifactRoots(target.Descriptor, home, workspace)
 	abs, err := module.ResolveArtifact(&modproto.Request{Roots: roots},
 		modproto.Artifact{Root: rootName, Path: rel})
 	if err != nil {
@@ -627,45 +707,47 @@ func applyHostRefusal(out *InvokeResult, err error) {
 	}
 }
 
-// approvalGate refuses an unpriced capability that nobody approved.
+// invokeApproval decides a run from the Modules page by the approval policy
+// (tools.approval), with origin web, as the agent's calls are decided. It
+// returns whether the run is approved, or the status and error that refuse it.
 //
-// The README promises "anything that may bill needs your approval before it
-// runs", and for a long time nothing enforced it: the Approved flag chose only
-// whether a consent claim was STRIPPED or RECORDED, which is a different
-// question. An unapproved content.produce ran and produced an artefact.
-//
-// The Modules page already computed needs_approval and showed it. That was
-// advice; this is the gate.
-//
-// Only cost_known:false gates. Network and external writes are declared effects
-// the operator can see, but they are not spending -- and asking for approval on
-// every call would train someone to click through the ones that matter.
-//
-// A capability the descriptor does not declare gates too: the host cannot read
-// the effects of something it has never been told about, and refusing an
-// unknown name is the same rule that keeps an undeclared capability from
-// running at all.
-func approvalGate(d *modproto.Descriptor, c modproto.Capability, approved bool) error {
-	if !moduletools.NeedsApproval(d, c, approved) {
-		return nil
+// A run the policy allows goes ahead, approved when a rule allows it rather
+// than the default. One it asks about goes ahead only when the person pressed
+// "Approve and run", and is then approved. One it denies or hides does not run.
+// Neither does a capability the module does not declare: the host cannot read
+// the effects of something it has never been told about.
+func (h *Handler) invokeApproval(d *modproto.Descriptor, capability string, requested bool) (bool, int, error) {
+	c, ok := declaredCapability(d, capability)
+	if !ok {
+		return false, http.StatusForbidden,
+			fmt.Errorf("module %q declares no capability %q, so it was not started", d.Module, capability)
 	}
-	return fmt.Errorf(
-		"%s declares an unknown cost, so it may bill real money and needs your"+
-			" approval before it runs. Press \"Approve and run\" on the Modules"+
-			" page, against the effects it declares. An approval cannot arrive"+
-			" through the agent: the model was observed minting one from a chat"+
-			" sentence, naming a user who never saw a prompt.", c.ID)
+	policy, err := h.moduleApprovalPolicy()
+	if err != nil {
+		return false, http.StatusInternalServerError, err
+	}
+	decision := policy.Decide(moduletools.ApprovalTool(d, c), approval.OriginWeb)
+	switch decision.Action {
+	case approval.Allow:
+		return decision.Approved(), 0, nil
+	case approval.Ask:
+		if !requested {
+			return false, http.StatusForbidden, fmt.Errorf(
+				"%s needs your approval before it runs. Press \"Approve and run\" on the"+
+					" Modules page, against the effects it declares", c.ID)
+		}
+		return true, 0, nil
+	default:
+		return false, http.StatusForbidden, fmt.Errorf("%s is denied by the approval policy", c.ID)
+	}
 }
 
-// capabilityByID finds a declared capability, or returns a zero value whose
-// CostKnown is false -- so an unknown name gates rather than sails through.
-func capabilityByID(d *modproto.Descriptor, id string) modproto.Capability {
-	if d != nil {
-		for _, c := range d.Capabilities {
-			if c.ID == id {
-				return c
-			}
+// declaredCapability finds the capability d declares under id.
+func declaredCapability(d *modproto.Descriptor, id string) (modproto.Capability, bool) {
+	for _, c := range d.Capabilities {
+		if c.ID == id {
+			return c, true
 		}
 	}
-	return modproto.Capability{ID: id}
+	return modproto.Capability{}, false
 }

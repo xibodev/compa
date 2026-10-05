@@ -1,4 +1,4 @@
-import { launcherFetch } from "@/api/http"
+import { HttpError, launcherFetch } from "@/api/http"
 
 // API client for gateway process management.
 
@@ -31,7 +31,10 @@ const BASE_URL = ""
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await launcherFetch(`${BASE_URL}${path}`, options)
   if (!res.ok) {
-    throw new Error(`API error: ${res.status} ${res.statusText}`)
+    throw new HttpError(
+      `API error: ${res.status} ${res.statusText}`,
+      res.status,
+    )
   }
   return res.json() as Promise<T>
 }

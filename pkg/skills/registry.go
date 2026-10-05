@@ -42,6 +42,12 @@ type InstallResult struct {
 	IsMalwareBlocked bool
 	IsSuspicious     bool
 	Summary          string
+	// Commit is the commit SHA a GitHub install was made from (empty for
+	// other registries). Record it with the install.
+	Commit string
+	// Unpinned is set for a GitHub install whose ref couldn't be resolved to
+	// a commit, so it was downloaded from the ref itself (Commit is empty).
+	Unpinned bool
 }
 
 // RegistryProvider creates a registry instance from configuration.

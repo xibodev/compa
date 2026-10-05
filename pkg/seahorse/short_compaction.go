@@ -2,6 +2,7 @@ package seahorse
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -35,11 +36,31 @@ func (e *CompactionEngine) NeedsCompaction(ctx context.Context, convID int64, co
 	return tokens >= threshold, nil
 }
 
-// Close cancels the shutdown context, stopping async goroutines.
+// Close cancels the shutdown context and waits for the async goroutines.
 func (e *CompactionEngine) Close() {
+	e.bgMu.Lock()
+	e.closed = true
+	e.bgMu.Unlock()
 	if e.shutdownCancel != nil {
 		e.shutdownCancel()
 	}
+	e.bg.Wait()
+}
+
+// goBackground runs fn on a goroutine that Close waits for. It returns false,
+// without running fn, once Close has started.
+func (e *CompactionEngine) goBackground(fn func()) bool {
+	e.bgMu.Lock()
+	defer e.bgMu.Unlock()
+	if e.closed {
+		return false
+	}
+	e.bg.Add(1)
+	go func() {
+		defer e.bg.Done()
+		fn()
+	}()
+	return true
 }
 
 // Compact runs leaf compaction (sync) and optionally condensed compaction.
@@ -77,10 +98,13 @@ func (e *CompactionEngine) Compact(ctx context.Context, convID int64, input Comp
 	if input.Force || (tokensBefore > budget && budget > 0) {
 		// Launch async condensed compaction with dedup
 		if _, loaded := e.condensing.LoadOrStore(convID, struct{}{}); !loaded {
-			go func() {
+			started := e.goBackground(func() {
 				defer e.condensing.Delete(convID)
 				e.runCondensedLoop(e.shutdownCtx, convID)
-			}()
+			})
+			if !started {
+				e.condensing.Delete(convID)
+			}
 		}
 	}
 
@@ -293,14 +317,33 @@ func (e *CompactionEngine) compactLeaf(ctx context.Context, convID int64, force 
 		return nil, err
 	}
 
-	// Replace context range with summary
-	if err := e.store.ReplaceContextRangeWithSummary(
-		ctx, convID, chunk[0].Ordinal, chunk[len(chunk)-1].Ordinal, summary.SummaryID,
-	); err != nil {
-		return nil, err
+	// Replace the chunk with the summary, unless the context changed during
+	// the LLM call (another compaction, a reset or a bootstrap repair); then
+	// the summary is dropped and the next pass starts from the new state.
+	if err := e.store.ReplaceContextChunkWithSummary(ctx, convID, chunk, summary.SummaryID); err != nil {
+		return nil, e.discardSummary(ctx, convID, summary.SummaryID, err)
 	}
 
 	return &summary.SummaryID, nil
+}
+
+// discardSummary removes a summary that could not be put in the context.
+// ErrContextChanged becomes a nil error: nothing was compacted this time.
+func (e *CompactionEngine) discardSummary(ctx context.Context, convID int64, summaryID string, cause error) error {
+	if delErr := e.store.DeleteSummary(ctx, summaryID); delErr != nil {
+		logger.WarnCF("seahorse", "compact: delete unused summary", map[string]any{
+			"conv_id":    convID,
+			"summary_id": summaryID,
+			"error":      delErr.Error(),
+		})
+	}
+	if errors.Is(cause, ErrContextChanged) {
+		logger.InfoCF("seahorse", "compact: context changed during summary, skipped", map[string]any{
+			"conv_id": convID,
+		})
+		return nil
+	}
+	return cause
 }
 
 // compactCondensed compresses multiple summaries into one higher-level summary.
@@ -431,7 +474,7 @@ func (e *CompactionEngine) compactCondensed(ctx context.Context, convID int64) (
 	}
 
 	if startOrd == -1 || endOrd == -1 {
-		return nil, nil
+		return nil, e.discardSummary(ctx, convID, summary.SummaryID, ErrContextChanged)
 	}
 
 	// Collect candidate summary IDs
@@ -443,12 +486,22 @@ func (e *CompactionEngine) compactCondensed(ctx context.Context, convID int64) (
 	if hasNonCandidate {
 		// Use safe per-item deletion to avoid deleting non-candidate items
 		if err := e.store.ReplaceContextItemsWithSummary(ctx, convID, candidateIDs, summary.SummaryID); err != nil {
-			return nil, err
+			return nil, e.discardSummary(ctx, convID, summary.SummaryID, err)
 		}
 	} else {
-		// Candidates are consecutive, use efficient range deletion
-		if err := e.store.ReplaceContextRangeWithSummary(ctx, convID, startOrd, endOrd, summary.SummaryID); err != nil {
-			return nil, err
+		// Candidates are consecutive: replace exactly the items read above,
+		// re-checked in the same transaction.
+		var chunk []ContextItem
+		for _, item := range items {
+			if item.Ordinal >= startOrd && item.Ordinal <= endOrd {
+				chunk = append(chunk, item)
+			}
+		}
+		if len(chunk) != len(candidateIDs) {
+			return nil, e.discardSummary(ctx, convID, summary.SummaryID, ErrContextChanged)
+		}
+		if err := e.store.ReplaceContextChunkWithSummary(ctx, convID, chunk, summary.SummaryID); err != nil {
+			return nil, e.discardSummary(ctx, convID, summary.SummaryID, err)
 		}
 	}
 

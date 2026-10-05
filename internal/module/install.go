@@ -2,6 +2,8 @@ package module
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -9,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/xibodev/compa/pkg/modproto"
 )
@@ -28,8 +31,16 @@ import (
 //     protocol is refused rather than installed and discovered broken later;
 //  2. derive the module ID from the DESCRIPTOR, never from the filename or the
 //     caller, so a binary cannot be installed under a name it does not claim;
-//  3. copy into a host-chosen path;
-//  4. re-describe the INSTALLED copy, so what was verified is what will run.
+//  3. copy everything into a staging directory beside the install;
+//  4. re-describe the STAGED copy, so what was verified is what will run, and
+//     record its digest in an install manifest;
+//  5. swap the staged directory into place, keeping the previous install until
+//     the swap has succeeded.
+//
+// Nothing an earlier install left is touched before step 5, so a failed
+// upgrade leaves the working module exactly as it was. Installs of the same
+// module are serialised, across processes too, so the CLI and the dashboard
+// cannot interleave.
 //
 // It is idempotent: installing over an existing module replaces it, which is
 // how upgrade works.
@@ -73,45 +84,42 @@ func Install(ctx context.Context, home, binaryPath string) (string, error) {
 	if d.Module == "" {
 		return "", fmt.Errorf("%q describes itself without a module ID", filepath.Base(abs))
 	}
-	// 2. Identity comes from the descriptor.
-	id := d.Module
-	if id != filepath.Base(id) || strings.ContainsAny(id, `/\`) {
-		return "", fmt.Errorf("module ID %q is not a single path segment", id)
-	}
 
-	// 3. Host chooses the destination.
-	destDir := filepath.Join(ModulesDir(home), id)
-	// Whether something was already installed here decides what cleanup may
-	// remove: this command's own mess, never a working install it replaced.
-	replacedExisting := false
-	if entries, readErr := os.ReadDir(destDir); readErr == nil && len(entries) > 0 {
-		replacedExisting = true
+	// 2. Identity comes from the descriptor, held to the one ID grammar.
+	id := d.Module
+	destDir, err := InstallDir(home, id)
+	if err != nil {
+		return "", fmt.Errorf("%q describes itself as a module the host cannot install: %w",
+			filepath.Base(abs), err)
 	}
-	if err := os.MkdirAll(destDir, 0o755); err != nil {
+	root := filepath.Dir(destDir)
+
+	unlock, err := lockModule(home, id)
+	if err != nil {
 		return "", err
 	}
-	name := id
-	if runtime.GOOS == "windows" {
-		name += ".exe"
-	}
-	dest := filepath.Join(destDir, name)
+	defer unlock()
+	defer InvalidateDescribeCache()
 
-	// Installing a module from its own installed copy is a re-registration, not
-	// a copy. Attempting it produced a bare "Access is denied" -- Windows will
-	// not rename a file onto itself while it is the running source -- which a
-	// module author reasonably read as the host being broken.
-	//
-	// The verification below still runs, so a re-register genuinely re-checks
-	// the module rather than trusting that it was fine last time.
-	sameFile := false
-	if destInfo, statErr := os.Stat(dest); statErr == nil {
-		sameFile = os.SameFile(info, destInfo)
+	// 3. Stage. The staging directory is a dotfile beside the install, so
+	// discovery never runs it and the final rename stays on one filesystem.
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		return "", err
 	}
-
-	if !sameFile {
-		if err := copyExecutable(abs, dest); err != nil {
-			return "", fmt.Errorf("install %s: %w", id, err)
+	stage, err := os.MkdirTemp(root, ".install-"+id+"-")
+	if err != nil {
+		return "", fmt.Errorf("install %s: %w", id, err)
+	}
+	staged := false
+	defer func() {
+		if !staged {
+			_ = os.RemoveAll(stage)
 		}
+	}()
+
+	stagedBinary := filepath.Join(stage, BinaryName(id))
+	if err := copyExecutable(abs, stagedBinary); err != nil {
+		return "", fmt.Errorf("install %s: %w", id, err)
 	}
 
 	// A module's declared overlays and skills travel WITH the binary.
@@ -121,41 +129,103 @@ func Install(ctx context.Context, home, binaryPath string) (string, error) {
 	// failure is quiet: the agent simply behaves as if the module documented
 	// nothing. Missing content is reported rather than fatal, because a module
 	// whose binary works is still useful.
-	warnings := copyDeclaredContent(filepath.Dir(abs), destDir, d)
+	srcRoot := filepath.Dir(abs)
+	warnings := copyDeclaredContent(srcRoot, stage, d)
 
 	// A module's declared REQUIREMENTS may name a directory it ships beside its
-	// binary -- a renderer's composition bundle, a pack's templates. Those are
-	// resolved relative to the module's working directory at run time, so
-	// without them an installed module reports a dependency it actually shipped
-	// with.
+	// binary -- a renderer's composition bundle, a pack's templates. The module
+	// reaches them through its bundle root, so without them an installed
+	// module reports a dependency it actually shipped with.
 	//
 	// Only requirements the module DECLARED are considered, and only when the
 	// named directory exists beside the source binary. The host never goes
 	// looking for undeclared content: what a module declares is what the host
 	// carries, and nothing else.
-	warnings = append(warnings, copyDeclaredRuntimeDirs(filepath.Dir(abs), destDir, d)...)
+	warnings = append(warnings, copyDeclaredRuntimeDirs(srcRoot, stage, d, root)...)
 
-	// 4. Confirm the installed copy behaves like the one that was verified.
-	installed := &Runner{Binary: dest, ModuleID: id}
-	if _, _, err := installed.Describe(ctx); err != nil {
-		// Remove ONLY what this command created. A module author lost a working
-		// install to this line: their re-register failed, and the cleanup took
-		// the previous, working copy with it. Replacing something that worked
-		// with nothing is worse than refusing.
-		if !replacedExisting {
-			os.RemoveAll(destDir)
-			return "", fmt.Errorf("installed copy of %s failed verification and was removed: %w", id, err)
-		}
-		return "", fmt.Errorf(
-			"installed copy of %s failed verification: %w\n"+
-				"the previous install was left in place; remove it explicitly if"+
-				" you want it gone", id, err)
+	// 4. Confirm the staged copy behaves like the one that was verified.
+	verify := &Runner{Binary: stagedBinary, ModuleID: id, WorkDir: ScratchDir(home, id)}
+	if _, _, err := verify.Describe(ctx); err != nil {
+		return "", fmt.Errorf("the copy of %s failed verification, so nothing was changed: %w", id, err)
 	}
+	digest, err := FileDigest(stagedBinary)
+	if err != nil {
+		return "", fmt.Errorf("install %s: %w", id, err)
+	}
+	if err := writeManifest(stage, Manifest{ID: id, Dir: id, SHA256: digest}); err != nil {
+		return "", fmt.Errorf("install %s: %w", id, err)
+	}
+	// A module the user turned off stays off when it is upgraded.
+	if exists(filepath.Join(destDir, DisabledMarker)) {
+		if err := copyFile(filepath.Join(destDir, DisabledMarker), filepath.Join(stage, DisabledMarker), 0o644); err != nil {
+			return "", fmt.Errorf("install %s: %w", id, err)
+		}
+	}
+
+	// 5. Swap.
+	if err := swapInto(destDir, stage); err != nil {
+		return "", fmt.Errorf("install %s: %w; the previous install was left in place", id, err)
+	}
+	staged = true
 
 	if len(warnings) > 0 {
 		return id, &PartialInstall{Module: id, Warnings: warnings}
 	}
 	return id, nil
+}
+
+// swapInto replaces dest with the staged directory. The previous install is
+// moved aside first and restored if the staged one cannot take its place, so
+// at every moment either the old or the new install is complete.
+func swapInto(dest, stage string) error {
+	old := ""
+	if exists(dest) {
+		old = sideName(dest, ".old-")
+		if err := renameRetry(dest, old); err != nil {
+			return fmt.Errorf("could not move the installed copy aside (is it running?): %w", err)
+		}
+	}
+	if err := renameRetry(stage, dest); err != nil {
+		if old != "" {
+			_ = renameRetry(old, dest)
+		}
+		return fmt.Errorf("could not move the new copy into place: %w", err)
+	}
+	if old != "" {
+		// Best effort: the old copy is inert once it is out of the way, and a
+		// leftover is a dotfile discovery never runs.
+		_ = os.RemoveAll(old)
+	}
+	return nil
+}
+
+// sideName is a hidden, unique name beside path, for a directory on its way
+// in or out.
+func sideName(path, prefix string) string {
+	var buf [6]byte
+	_, _ = rand.Read(buf[:])
+	return filepath.Join(filepath.Dir(path), prefix+filepath.Base(path)+"-"+hex.EncodeToString(buf[:]))
+}
+
+// renameRetry renames, retrying briefly on Windows, where a file that was just
+// written or run can stay locked for a moment while a scanner or the loader
+// lets go of it.
+func renameRetry(from, to string) error {
+	attempts := 1
+	if runtime.GOOS == "windows" {
+		attempts = 20
+	}
+	var err error
+	for i := 0; i < attempts; i++ {
+		if err = os.Rename(from, to); err == nil {
+			return nil
+		}
+		if errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		time.Sleep(time.Duration(i+1) * 10 * time.Millisecond)
+	}
+	return err
 }
 
 // PartialInstall reports a module that installed and runs, but whose declared
@@ -191,7 +261,7 @@ func copyDeclaredContent(srcRoot, destRoot string, d *modproto.Descriptor) []str
 			return
 		}
 		src := filepath.Clean(filepath.Join(srcRoot, filepath.FromSlash(rel)))
-		if !withinRoot(filepath.Clean(srcRoot), src) {
+		if !withinRoot(filepath.Clean(srcRoot), src) || src == filepath.Clean(srcRoot) {
 			warnings = append(warnings, fmt.Sprintf("%s %q declares a path outside the module tree", kind, id))
 			return
 		}
@@ -255,7 +325,11 @@ func copyDeclaredContent(srcRoot, destRoot string, d *modproto.Descriptor) []str
 // tree. A requirement naming something absent is reported rather than assumed
 // harmless, because the failure is otherwise a confusing "missing dependency"
 // for something the module believed it shipped.
-func copyDeclaredRuntimeDirs(srcRoot, destRoot string, d *modproto.Descriptor) []string {
+//
+// modulesRoot is the host's modules directory, which a declared directory may
+// not contain: copying it would copy every installed module, and the staging
+// directory inside it, into this one.
+func copyDeclaredRuntimeDirs(srcRoot, destRoot string, d *modproto.Descriptor, modulesRoot string) []string {
 	var warnings []string
 
 	for _, req := range d.Requirements {
@@ -276,8 +350,20 @@ func copyDeclaredRuntimeDirs(srcRoot, destRoot string, d *modproto.Descriptor) [
 		}
 
 		src := filepath.Clean(filepath.Join(srcRoot, filepath.FromSlash(rel)))
+		// "." names the binary's own folder, which would copy whatever else
+		// happens to sit beside it -- a whole download folder, a source tree.
+		if src == filepath.Clean(srcRoot) {
+			warnings = append(warnings, fmt.Sprintf(
+				"requirement %q names the folder the module binary is in; declare the subdirectory it needs", req.Name))
+			continue
+		}
 		if !withinRoot(filepath.Clean(srcRoot), src) {
 			warnings = append(warnings, fmt.Sprintf("requirement %q resolves outside the module tree", req.Name))
+			continue
+		}
+		if modulesRoot != "" && withinRoot(src, filepath.Clean(modulesRoot)) {
+			warnings = append(warnings, fmt.Sprintf(
+				"requirement %q contains the host's modules directory and was not copied", req.Name))
 			continue
 		}
 		info, err := os.Stat(src)
@@ -305,14 +391,10 @@ func copyDir(src, dest string) error {
 		if info.IsDir() {
 			return os.MkdirAll(target, 0o755)
 		}
-		blob, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return err
 		}
-		return os.WriteFile(target, blob, info.Mode().Perm())
+		return copyFile(path, target, info.Mode().Perm())
 	})
 }
 
@@ -321,60 +403,77 @@ func copyDir(src, dest string) error {
 // A module's own state under <home>/state/<id>/ is deliberately left alone:
 // uninstalling should not destroy a user's work, and reinstalling should find
 // it again. Removing state is a separate, explicit action.
+//
+// The ID is checked against the one ID grammar and the target must be a
+// direct child of the modules directory. The check this replaces accepted
+// "..", and Remove("..") deleted the whole Compa home.
 func Remove(home, id string) error {
-	if id == "" || id != filepath.Base(id) || strings.ContainsAny(id, `/\`) {
-		return fmt.Errorf("invalid module ID %q", id)
+	dir, err := InstallDir(home, id)
+	if err != nil {
+		return err
 	}
-	dir := filepath.Join(ModulesDir(home), id)
-	if _, err := os.Stat(dir); err != nil {
+	unlock, err := lockModule(home, id)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	defer InvalidateDescribeCache()
+
+	info, err := os.Lstat(dir)
+	if err != nil {
 		return fmt.Errorf("module %q is not installed", id)
 	}
-	return os.RemoveAll(dir)
+	if !info.IsDir() {
+		// A link, a junction or a stray file where a module directory belongs:
+		// remove the entry itself, never what it points at.
+		return os.Remove(dir)
+	}
+
+	// Moved aside first, so the module disappears at once and completely
+	// even when Windows will not delete a file that is still in use; what
+	// cannot be deleted then is a dotfile discovery never runs.
+	trash := sideName(dir, ".removing-")
+	if !isDirectChild(filepath.Dir(dir), trash) {
+		return fmt.Errorf("refusing to remove %s", dir)
+	}
+	if err := renameRetry(dir, trash); err != nil {
+		return fmt.Errorf("could not remove module %q (is it running?): %w", id, err)
+	}
+	if err := os.RemoveAll(trash); err != nil {
+		return fmt.Errorf("module %q was removed, but some of its files could not be deleted from %s: %w",
+			id, trash, err)
+	}
+	return nil
 }
 
-// ModulesDir is where installed modules live under the host state root.
-func ModulesDir(home string) string { return filepath.Join(home, "modules") }
-
 func copyExecutable(src, dest string) error {
+	return copyFile(src, dest, 0o755)
+}
+
+func copyFile(src, dest string, perm os.FileMode) error {
 	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
 	defer in.Close()
 
-	// Replace rather than truncate: on Windows an executable that is currently
-	// running cannot be overwritten, and a failed partial write would leave a
-	// corrupt module installed.
-	tmp := dest + ".installing"
-	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+	out, err := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
 	if err != nil {
 		return err
 	}
 	if _, err := io.Copy(out, in); err != nil {
 		out.Close()
-		os.Remove(tmp)
 		return err
 	}
-	if err := out.Close(); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-
-	os.Remove(dest) // ignore: absent is fine, in-use surfaces on rename
-	if err := os.Rename(tmp, dest); err != nil {
-		os.Remove(tmp)
-		return fmt.Errorf("could not replace %s (is it running?): %w", filepath.Base(dest), err)
-	}
-	return nil
+	return out.Close()
 }
 
 // DescribeInstalled returns the descriptor of one installed module.
 func DescribeInstalled(ctx context.Context, home, id string) (*modproto.Descriptor, error) {
-	name := id
-	if runtime.GOOS == "windows" {
-		name += ".exe"
+	r, err := NewRunner(home, id)
+	if err != nil {
+		return nil, err
 	}
-	r := &Runner{Binary: filepath.Join(ModulesDir(home), id, name), ModuleID: id}
 	d, _, err := r.Describe(ctx)
 	return d, err
 }

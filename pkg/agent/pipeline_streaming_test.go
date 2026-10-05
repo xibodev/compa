@@ -691,7 +691,7 @@ func TestConfiguredStreamingUpdateFailureThenStreamErrorFallsBackToChat(t *testi
 	}
 }
 
-func TestConfiguredStreamingUpdateFailureThenStreamSuccessFallsBackToChat(t *testing.T) {
+func TestConfiguredStreamingUpdateFailureThenStreamSuccessKeepsStreamResponse(t *testing.T) {
 	cfg := newConfiguredStreamingTestConfig(t, true, true, nil)
 	msgBus := bus.NewMessageBus()
 	streamer := &failingUpdateStreamer{err: errors.New("draft failed")}
@@ -707,26 +707,28 @@ func TestConfiguredStreamingUpdateFailureThenStreamSuccessFallsBackToChat(t *tes
 
 	got := runConfiguredStreamingTurn(t, al, "web")
 
-	if got != "chat fallback after invisible update" {
-		t.Fatalf("response = %q, want chat fallback", got)
+	// The stream delivered the whole answer; a failed preview update must
+	// neither discard it nor pay for a second call.
+	if got != "stream response" {
+		t.Fatalf("response = %q, want stream response", got)
 	}
-	if provider.streamCalls != 1 || provider.chatCalls != 1 {
-		t.Fatalf("calls = stream:%d chat:%d, want stream:1 chat:1", provider.streamCalls, provider.chatCalls)
+	if provider.streamCalls != 1 || provider.chatCalls != 0 {
+		t.Fatalf("calls = stream:%d chat:%d, want stream:1 chat:0", provider.streamCalls, provider.chatCalls)
 	}
 	if len(streamer.finalized) != 0 {
 		t.Fatalf("stream finalized = %v, want none", streamer.finalized)
 	}
 	select {
 	case outbound := <-msgBus.OutboundChan():
-		if outbound.Content != "chat fallback after invisible update" {
-			t.Fatalf("fallback outbound content = %q, want chat fallback after invisible update", outbound.Content)
+		if outbound.Content != "stream response" {
+			t.Fatalf("fallback outbound content = %q, want stream response", outbound.Content)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("expected fallback outbound after update failure and stream success")
 	}
 }
 
-func TestConfiguredStreamingLaterUpdateFailureThenStreamSuccessReturnsVisibleError(t *testing.T) {
+func TestConfiguredStreamingLaterUpdateFailureThenStreamSuccessKeepsAnswer(t *testing.T) {
 	cfg := newConfiguredStreamingTestConfig(t, true, true, nil)
 	msgBus := bus.NewMessageBus()
 	streamer := &failNthUpdateStreamer{failOn: 2, err: errors.New("draft failed")}
@@ -739,14 +741,15 @@ func TestConfiguredStreamingLaterUpdateFailureThenStreamSuccessReturnsVisibleErr
 		chatResponse: &providers.LLMResponse{Content: "chat fallback after later update failure"},
 	}
 	al := newConfiguredStreamingLoop(cfg, msgBus, provider)
+	opts := configuredStreamingProcessOptions("web")
+	opts.NoHistory = false
 
-	_, err := al.runAgentLoop(
-		context.Background(),
-		al.GetRegistry().GetDefaultAgent(),
-		configuredStreamingProcessOptions("web"),
-	)
-	if err == nil {
-		t.Fatal("expected post-visible update failure to return an error")
+	got, err := al.runAgentLoop(context.Background(), al.GetRegistry().GetDefaultAgent(), opts)
+	if err != nil {
+		t.Fatalf("runAgentLoop() error = %v, want the completed answer", err)
+	}
+	if got != "stream response" {
+		t.Fatalf("response = %q, want stream response", got)
 	}
 	if provider.streamCalls != 1 || provider.chatCalls != 0 {
 		t.Fatalf("calls = stream:%d chat:%d, want stream:1 chat:0", provider.streamCalls, provider.chatCalls)
@@ -754,13 +757,12 @@ func TestConfiguredStreamingLaterUpdateFailureThenStreamSuccessReturnsVisibleErr
 	if streamer.canceled != 0 {
 		t.Fatalf("streamer canceled = %d, want 0", streamer.canceled)
 	}
-	if len(streamer.finalized) != 0 {
-		t.Fatalf("stream finalized = %v, want none", streamer.finalized)
+	if len(streamer.finalized) != 1 || streamer.finalized[0] != "stream response" {
+		t.Fatalf("stream finalized = %v, want the whole answer", streamer.finalized)
 	}
-	select {
-	case outbound := <-msgBus.OutboundChan():
-		t.Fatalf("unexpected fallback outbound after post-visible update failure: %#v", outbound)
-	default:
+	history := al.GetRegistry().GetDefaultAgent().Sessions.GetHistory(opts.Dispatch.SessionKey)
+	if len(history) == 0 || history[len(history)-1].Content != "stream response" {
+		t.Fatalf("history = %+v, want the answer persisted", history)
 	}
 }
 

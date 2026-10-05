@@ -49,7 +49,9 @@ func TestProviderInstanceResponsesRedactProxyPassword(t *testing.T) {
 		if recorder.Code != http.StatusOK {
 			t.Fatalf("GET %s status = %d", path, recorder.Code)
 		}
-		if strings.Contains(recorder.Body.String(), "secret") || !strings.Contains(recorder.Body.String(), redactedProxy) {
+		// The password itself: the config also has settings such as
+		// logging.redact_secrets whose names hold the word.
+		if strings.Contains(recorder.Body.String(), "user:secret") || !strings.Contains(recorder.Body.String(), redactedProxy) {
 			t.Fatalf("GET %s does not redact the proxy: %s", path, recorder.Body.String())
 		}
 	}

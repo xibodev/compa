@@ -211,32 +211,30 @@ func (h *Handler) handlePollWecomFlow(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) saveWecomBinding(botID, secret string) error {
-	cfg, err := config.LoadConfig(h.configPath)
+	_, err := h.updateConfig(func(cfg *config.Config) error {
+		bc := cfg.Channels.Get(config.ChannelWeCom)
+		if bc == nil {
+			bc = &config.Channel{Type: config.ChannelWeCom}
+			cfg.Channels["wecom"] = bc
+		}
+		bc.Enabled = true
+
+		var wecomCfg config.WeComSettings
+		if err := bc.Decode(&wecomCfg); err != nil {
+			return fmt.Errorf("decode wecom settings: %w", err)
+		}
+		wecomCfg.BotID = botID
+		wecomCfg.Secret = *config.NewSecureString(secret)
+		if strings.TrimSpace(wecomCfg.WebSocketURL) == "" {
+			wecomCfg.WebSocketURL = wecomDefaultWebSocketURL
+		}
+		return nil
+	})
 	if err != nil {
-		return fmt.Errorf("load config: %w", err)
-	}
-
-	bc := cfg.Channels.Get(config.ChannelWeCom)
-	if bc == nil {
-		bc = &config.Channel{Type: config.ChannelWeCom}
-		cfg.Channels["wecom"] = bc
-	}
-	bc.Enabled = true
-
-	var wecomCfg config.WeComSettings
-	bc.Decode(&wecomCfg)
-	wecomCfg.BotID = botID
-	wecomCfg.Secret = *config.NewSecureString(secret)
-	if strings.TrimSpace(wecomCfg.WebSocketURL) == "" {
-		wecomCfg.WebSocketURL = wecomDefaultWebSocketURL
-	}
-	if err := config.SaveConfig(h.configPath, cfg); err != nil {
 		return err
 	}
 
-	status := h.gatewayStatusData()
-	gatewayStatus, _ := status["gateway_status"].(string)
-	if gatewayStatus != "running" {
+	if !gatewayRestartsOnConfigChange(h.gatewayStatusData()) {
 		return nil
 	}
 

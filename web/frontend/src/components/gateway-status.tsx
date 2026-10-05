@@ -54,16 +54,8 @@ const DOT_CLASS: Record<GatewayState, string> = {
  */
 export function GatewayStatusControl() {
   const { t } = useTranslation()
-  const {
-    state,
-    loading,
-    canStart,
-    startReason,
-    start,
-    restart,
-    stop,
-    error,
-  } = useGateway()
+  const { state, loading, canStart, startReason, start, restart, stop, error } =
+    useGateway()
   const [confirmStop, setConfirmStop] = React.useState(false)
 
   const isRunning = state === "running"
@@ -93,7 +85,10 @@ export function GatewayStatusControl() {
               >
                 <span
                   aria-hidden="true"
-                  className={cn("size-2 shrink-0 rounded-full", DOT_CLASS[state])}
+                  className={cn(
+                    "size-2 shrink-0 rounded-full",
+                    DOT_CLASS[state],
+                  )}
                 />
                 <span className="text-xs font-medium">{statusText}</span>
                 <IconChevronDown className="size-3.5 opacity-60" />

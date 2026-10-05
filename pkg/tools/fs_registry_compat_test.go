@@ -32,6 +32,9 @@ func TestReadFileLinesTool_RegistryValidationSupportsMaxLinesAndRejectsLimit(t *
 		t.Fatalf("expected first line via max_lines, got: %s", result.ForLLM)
 	}
 
+	// The schema does not set additionalProperties, so under JSON Schema the
+	// registry lets limit through; the tool rejects it itself, naming the
+	// argument to use instead.
 	result = reg.Execute(context.Background(), "read_file", map[string]any{
 		"path":       testFile,
 		"start_line": 2,
@@ -40,7 +43,7 @@ func TestReadFileLinesTool_RegistryValidationSupportsMaxLinesAndRejectsLimit(t *
 	if !result.IsError {
 		t.Fatalf("expected limit to be rejected, got success: %s", result.ForLLM)
 	}
-	if !strings.Contains(result.ForLLM, "unexpected property \"limit\"") {
-		t.Fatalf("expected registry validation error for limit, got: %s", result.ForLLM)
+	if !strings.Contains(result.ForLLM, "limit is not supported in line mode; use max_lines") {
+		t.Fatalf("expected the tool to reject limit, got: %s", result.ForLLM)
 	}
 }

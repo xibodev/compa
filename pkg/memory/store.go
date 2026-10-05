@@ -43,3 +43,10 @@ type Store interface {
 	// Close releases any resources held by the store.
 	Close() error
 }
+
+// SummaryCommitter is implemented by stores that can replace the oldest
+// messages of a session with a summary in one step, provided they are still
+// its oldest messages (see JSONLStore.CommitSummary).
+type SummaryCommitter interface {
+	CommitSummary(ctx context.Context, sessionKey string, summarized []providers.Message, summary string) (bool, error)
+}

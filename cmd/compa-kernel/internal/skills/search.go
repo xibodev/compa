@@ -14,8 +14,7 @@ func newSearchCommand() *cobra.Command {
 			if len(args) == 1 {
 				query = args[0]
 			}
-			skillsSearchCmd(query)
-			return nil
+			return skillsSearchCmd(query)
 		},
 	}
 

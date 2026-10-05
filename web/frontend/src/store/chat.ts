@@ -77,14 +77,28 @@ export interface ContextUsage {
 export type ConnectionState =
   "disconnected" | "connecting" | "connected" | "error"
 
+/** A message the server refused after the composer was cleared. */
+export interface FailedDraft {
+  content: string
+  attachments?: ChatAttachment[]
+}
+
 export interface ChatStoreState {
   messages: ChatMessage[]
   connectionState: ConnectionState
   isTyping: boolean
+  /**
+   * A reply is being produced: from sending (or typing.start) until
+   * typing.stop. isTyping ends at the first streamed chunk; this ends when
+   * the reply is complete.
+   */
+  isTurnActive: boolean
   activeSessionId: string
   hasHydratedActiveSession: boolean
   contextUsage?: ContextUsage
   selectionBySession: Record<string, string>
+  /** Text to put back in the composer, set until the chat page takes it. */
+  failedDraft?: FailedDraft
 }
 
 type ChatStorePatch = Partial<ChatStoreState>
@@ -93,6 +107,7 @@ const DEFAULT_CHAT_STATE: ChatStoreState = {
   messages: [],
   connectionState: "disconnected",
   isTyping: false,
+  isTurnActive: false,
   activeSessionId: getInitialActiveSessionId(),
   hasHydratedActiveSession: false,
   selectionBySession: {},
@@ -128,6 +143,10 @@ export function updateChatStore(
 
     return next
   })
+}
+
+export function clearFailedDraft() {
+  updateChatStore({ failedDraft: undefined })
 }
 
 export { shouldShowAssistantMessage }

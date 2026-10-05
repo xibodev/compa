@@ -35,10 +35,11 @@ func NewAgentLoop(
 	provider providers.LLMProvider,
 	opts ...AgentLoopOption,
 ) *AgentLoop {
-	// Determine worker pool size from config (default: 1 = sequential)
+	// Turns of different sessions run in parallel, up to max_parallel_turns;
+	// a session's own turns always run one after another.
 	workerPoolSize := cfg.Agents.Defaults.MaxParallelTurns
 	if workerPoolSize <= 0 {
-		workerPoolSize = 1
+		workerPoolSize = defaultMaxParallelTurns
 	}
 
 	al := &AgentLoop{
@@ -49,7 +50,9 @@ func NewAgentLoop(
 		steering:          newSteeringQueue(parseSteeringMode(cfg.Agents.Defaults.SteeringMode)),
 		workerSem:         make(chan struct{}, workerPoolSize),
 		ownsRuntimeEvents: true,
+		approvals:         newOwnerApprovals(),
 	}
+	al.lifetime, al.endLifetime = context.WithCancel(context.Background())
 	for _, opt := range opts {
 		if opt != nil {
 			opt(al)
@@ -107,6 +110,16 @@ func NewAgentLoop(
 	return al
 }
 
+// toolLogFilter returns the filter the tool registries pass the arguments
+// and failures they log through: while logging.redact_secrets is on, the
+// secrets Compa stores become [FILTERED].
+func toolLogFilter(cfg *config.Config) func(string) string {
+	if cfg == nil || !cfg.Logging.RedactSecrets {
+		return nil
+	}
+	return func(text string) string { return cfg.SensitiveDataReplacer().Replace(text) }
+}
+
 func registerSharedTools(
 	al *AgentLoop,
 	cfg *config.Config,
@@ -122,11 +135,15 @@ func registerSharedTools(
 		}
 	}
 
+	messageTargets := cfg.Tools.Message.EffectiveTargets()
+	logFilter := toolLogFilter(cfg)
+
 	for _, agentID := range registry.ListAgentIDs() {
 		agent, ok := registry.GetAgent(agentID)
 		if !ok {
 			continue
 		}
+		agent.Tools.SetSensitiveDataFilter(logFilter)
 
 		if cfg.Tools.IsToolEnabled("web") {
 			searchTool, err := tools.NewWebSearchTool(tools.WebSearchToolOptionsFromConfig(cfg))
@@ -161,8 +178,11 @@ func registerSharedTools(
 		// backed by the detached-module host and behaves exactly as before; a
 		// standalone product passes a native in-process one and pays no
 		// subprocess or protocol cost to host itself; a bare kernel passes none.
+		//
+		// Their tools register as extensions: a module tool never takes the
+		// place of a built-in one of the same name.
 		for _, provider := range al.toolProviders {
-			summaries, knowledge := provider.RegisterTools(agent.Workspace, agent.Tools.Register)
+			summaries, knowledge := provider.RegisterTools(agent.Workspace, agent.Tools.RegisterExtension)
 			agent.ModuleSummaries = append(agent.ModuleSummaries, summaries...)
 			// The LAST non-nil loader wins rather than merging: a selection
 			// resolves to one provider, and silently combining two loaders
@@ -186,6 +206,7 @@ func registerSharedTools(
 		// Message tool
 		if cfg.Tools.IsToolEnabled("message") {
 			messageTool := tools.NewMessageTool()
+			messageTool.SetTargets(messageTargets)
 			if cfg.Tools.Message.MediaEnabled {
 				messageTool.ConfigureLocalMedia(
 					agent.Workspace,
@@ -215,8 +236,8 @@ func registerSharedTools(
 						Scope:      outboundScope,
 						Parts:      mediaParts,
 					}
-					if al.channelManager != nil && channel != "" {
-						return al.channelManager.SendMedia(ctx, outboundMedia)
+					if al.currentChannelManager() != nil && channel != "" {
+						return al.currentChannelManager().SendMedia(ctx, outboundMedia)
 					}
 					pubCtx, pubCancel := context.WithTimeout(context.Background(), 5*time.Second)
 					defer pubCancel()
@@ -232,8 +253,8 @@ func registerSharedTools(
 					Content:          content,
 					ReplyToMessageID: replyToMessageID,
 				}
-				if al.channelManager != nil && channel != "" {
-					return al.channelManager.SendMessage(ctx, outboundMessage)
+				if al.currentChannelManager() != nil && channel != "" {
+					return al.currentChannelManager().SendMessage(ctx, outboundMessage)
 				}
 				pubCtx, pubCancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer pubCancel()
@@ -243,11 +264,12 @@ func registerSharedTools(
 		}
 		if cfg.Tools.IsToolEnabled("reaction") {
 			reactionTool := tools.NewReactionTool()
+			reactionTool.SetTargets(messageTargets)
 			reactionTool.SetReactionCallback(func(ctx context.Context, channel, chatID, messageID string) error {
-				if al.channelManager == nil {
+				if al.currentChannelManager() == nil {
 					return fmt.Errorf("channel manager not configured")
 				}
-				ch, ok := al.channelManager.GetChannel(channel)
+				ch, ok := al.currentChannelManager().GetChannel(channel)
 				if !ok {
 					return fmt.Errorf("channel %s not found", channel)
 				}
@@ -314,7 +336,6 @@ func registerSharedTools(
 		spawnStatusEnabled := cfg.Tools.IsToolEnabled("spawn_status")
 		if (spawnEnabled || spawnStatusEnabled) && cfg.Tools.IsToolEnabled("subagent") {
 			subagentManager := tools.NewSubagentManager()
-			subagentManager.SetLLMOptions(agent.MaxTokens, agent.Temperature)
 			if spawnEnabled {
 				spawnTool := tools.NewSpawnTool(subagentManager)
 				spawnTool.SetSpawner(NewSubTurnSpawner(al))

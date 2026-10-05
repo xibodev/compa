@@ -1,6 +1,7 @@
 package logger
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/rs/zerolog"
 	"golang.org/x/term"
@@ -35,16 +37,20 @@ var (
 		FATAL: "FATAL",
 	}
 
-	currentLevel  = INFO
-	logger        zerolog.Logger
-	logFile       *os.File
+	// currentLevel and logger are read on every log call while a reload
+	// may change them, so they are atomics; mu serializes the changes and
+	// guards writers and logFile.
+	currentLevel  atomic.Int32
+	logger        atomic.Pointer[zerolog.Logger]
+	logFile       *rotatingFile
 	once          sync.Once
-	mu            sync.RWMutex
+	mu            sync.Mutex
 	writers       []io.Writer
 	consoleWriter zerolog.ConsoleWriter
 )
 
 func init() {
+	currentLevel.Store(int32(INFO))
 	once.Do(func() {
 		zerolog.SetGlobalLevel(zerolog.InfoLevel)
 		// Log lines name their source relative to the module, never by the
@@ -79,8 +85,15 @@ func init() {
 
 		writers = append(writers, consoleWriter)
 
-		logger = zerolog.New(io.MultiWriter(writers...)).With().Timestamp().Caller().Logger()
+		l := zerolog.New(io.MultiWriter(writers...)).With().Timestamp().Caller().Logger()
+		logger.Store(&l)
 	})
+}
+
+// setOutputLocked points the logger at the current writers. mu is held.
+func setOutputLocked() {
+	l := logger.Load().Output(io.MultiWriter(writers...))
+	logger.Store(&l)
 }
 
 func formatFieldValue(i any) string {
@@ -117,34 +130,33 @@ func formatFieldValue(i any) string {
 func SetLevel(level LogLevel) {
 	mu.Lock()
 	defer mu.Unlock()
-	currentLevel = level
+	currentLevel.Store(int32(level))
 	zerolog.SetGlobalLevel(level)
 }
 
 func SetConsoleLevel(level LogLevel) {
 	mu.Lock()
 	defer mu.Unlock()
-	logger = logger.Level(level)
+	l := logger.Load().Level(level)
+	logger.Store(&l)
 }
 
 func DisableConsole() {
 	mu.Lock()
 	defer mu.Unlock()
 	writers[0] = io.Discard
-	logger = logger.Output(io.MultiWriter(writers...))
+	setOutputLocked()
 }
 
 func EnableConsole() {
 	mu.Lock()
 	defer mu.Unlock()
 	writers[0] = consoleWriter
-	logger = logger.Output(io.MultiWriter(writers...))
+	setOutputLocked()
 }
 
 func GetLevel() LogLevel {
-	mu.RLock()
-	defer mu.RUnlock()
-	return currentLevel
+	return LogLevel(currentLevel.Load())
 }
 
 // ParseLevel converts a case-insensitive level name to a LogLevel.
@@ -177,47 +189,50 @@ func SetLevelFromString(s string) {
 	}
 }
 
+// EnableFileLogging also writes the log to filePath, which is created owner
+// only (0600, in a 0700 directory when the directory is new) and rotated by
+// size (see SetRotation). Calling it again moves file logging to filePath:
+// the new file is opened before the old one is closed, so a file that cannot
+// be opened leaves the current one in place.
 func EnableFileLogging(filePath string) error {
-	mu.Lock()
-	defer mu.Unlock()
-
-	if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(filePath), 0o700); err != nil {
 		return fmt.Errorf("failed to create log directory: %w", err)
 	}
-
-	newFile, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	maxSize, maxFiles := rotationLimits()
+	newFile, err := openRotatingFile(filePath, maxSize, maxFiles)
 	if err != nil {
 		return fmt.Errorf("failed to open log file: %w", err)
 	}
 
-	// Close old file if exists
-	if logFile != nil {
-		logFile.Close()
-	}
-
+	mu.Lock()
+	old := logFile
 	logFile = newFile
-
-	if len(writers) != 1 {
-		return fmt.Errorf("failed to configure file logging: %w", err)
+	if len(writers) > 1 {
+		writers[1] = newFile
+	} else {
+		writers = append(writers, newFile)
 	}
+	setOutputLocked()
+	mu.Unlock()
 
-	writers = append(writers, logFile)
-	logger = logger.Output(io.MultiWriter(writers...))
-
+	if old != nil {
+		_ = old.Close()
+	}
 	return nil
 }
 
 func DisableFileLogging() {
 	mu.Lock()
-	defer mu.Unlock()
-
-	if logFile != nil {
-		logFile.Close()
-		logFile = nil
-	}
+	old := logFile
+	logFile = nil
 	if len(writers) > 1 {
 		writers = writers[:1]
-		logger = logger.Output(io.MultiWriter(writers...))
+		setOutputLocked()
+	}
+	mu.Unlock()
+
+	if old != nil {
+		_ = old.Close()
 	}
 }
 
@@ -307,13 +322,13 @@ func getEvent(logger zerolog.Logger, level LogLevel) *zerolog.Event {
 }
 
 func logMessage(level LogLevel, component string, message string, fields map[string]any) {
-	if level < currentLevel {
+	if level < LogLevel(currentLevel.Load()) {
 		return
 	}
 
 	skip, pkg := getCallerSkip()
 
-	event := getEvent(logger, level)
+	event := getEvent(*logger.Load(), level)
 
 	if component == "" {
 		component = pkg
@@ -323,17 +338,19 @@ func logMessage(level LogLevel, component string, message string, fields map[str
 
 	appendFields(event, fields)
 
-	event.CallerSkipFrame(skip).Msg(message)
+	event.CallerSkipFrame(skip).Msg(Redact(message))
 }
 
+// appendFields adds fields to event, each string, error and structured value
+// redacted (see Redact).
 func appendFields(event *zerolog.Event, fields map[string]any) {
 	for k, v := range fields {
 		// Type switch to avoid double JSON serialization of strings
 		switch val := v.(type) {
 		case error:
-			event.Str(k, val.Error())
+			event.Str(k, Redact(val.Error()))
 		case string:
-			event.Str(k, val)
+			event.Str(k, Redact(val))
 		case int:
 			event.Int(k, val)
 		case int64:
@@ -343,7 +360,16 @@ func appendFields(event *zerolog.Event, fields map[string]any) {
 		case bool:
 			event.Bool(k, val)
 		default:
-			event.Interface(k, v) // Fallback for struct, slice and maps
+			// Structs, slices and maps are logged as JSON, redacted as such.
+			if raw, err := json.Marshal(v); err == nil && redactionEnabled() {
+				if redacted := Redact(string(raw)); json.Valid([]byte(redacted)) {
+					event.RawJSON(k, []byte(redacted))
+				} else {
+					event.Str(k, redacted)
+				}
+				continue
+			}
+			event.Interface(k, v)
 		}
 	}
 }

@@ -91,7 +91,7 @@ func TestCmdInvokeWithSourceRootsRejectsInvalidRootBeforeDiscovery(t *testing.T)
 		{map[string]string{"workspace": notes},
 			[]string{"invalid --source-root workspace=", "host supplies"}},
 	} {
-		_, err := cmdInvokeWithSourceRoots("module", "capability", "{}", tc.overrides)
+		_, err := invokeModule("module", "capability", "{}", tc.overrides, false)
 		if err == nil {
 			t.Fatalf("overrides %v were accepted", tc.overrides)
 		}
@@ -116,10 +116,10 @@ func TestCmdInvokeWithSourceRootsAcceptsDirectoriesAndFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := cmdInvokeWithSourceRoots("no.such.module", "capability", "{}", map[string]string{
+	_, err := invokeModule("no.such.module", "capability", "{}", map[string]string{
 		"notes_store": notes,
 		"sessions_db": sessions,
-	})
+	}, false)
 	if err == nil || !strings.Contains(err.Error(), "not installed") {
 		t.Fatalf("error = %v, want valid roots accepted and the missing module reported", err)
 	}

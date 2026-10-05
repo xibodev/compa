@@ -162,8 +162,14 @@
  * backticks, which read as part of the code; a tinted chip marks it instead.
  * Code blocks opt out of prose (not-prose) and keep their own styling.
  */
-.prose :where(code):not(:where([class~="not-prose"], [class~="not-prose"] *))::before,
-.prose :where(code):not(:where([class~="not-prose"], [class~="not-prose"] *))::after {
+.prose
+  :where(code):not(
+    :where([class~="not-prose"], [class~="not-prose"] *)
+  )::before,
+.prose
+  :where(code):not(
+    :where([class~="not-prose"], [class~="not-prose"] *)
+  )::after {
   content: none;
 }
 

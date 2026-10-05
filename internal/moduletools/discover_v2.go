@@ -1,6 +1,9 @@
 package moduletools
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/xibodev/compa/pkg/modprotov2"
 )
 
@@ -20,18 +23,10 @@ type V2 struct {
 	// when the pin returned v2. There is nothing to check on a v1 module: its
 	// descriptor has no Operation layer to compare a capability against.
 	Conformance *HostConformance
-}
 
-// MayRelyOnV2 reports whether this module's v2 declarations may be acted upon.
-//
-// BOTH conditions, and the conjunction is the point. Passing the pin means the
-// module claims v2; conforming means its projection does not weaken what it
-// claims. A module that passes the pin and fails conformance is MORE dangerous
-// than a v1 module, not less: it has been admitted to the v2 path where the
-// gate reads capability effects, while declaring capability effects weaker than
-// its own Operations.
-func (v V2) MayRelyOnV2() bool {
-	return v.Decision.MayRelyOnV2() && v.Conformance != nil && v.Conformance.Conforms()
+	// Err is set when the descriptor could not be evaluated at all, which is
+	// a different failure from a refused contract and is reported as itself.
+	Err error
 }
 
 // evaluateV2 runs the contract gate and host conformance for one described
@@ -43,18 +38,14 @@ func (v V2) MayRelyOnV2() bool {
 // raw stdout to Evaluate returns v1 for EVERY module -- silently, because a
 // missing contract_version is a legitimate answer meaning "this is a v1
 // module". The wrong input and a correct v1 module produce the same outcome.
-//
-// The sibling lane hit this on their first probe against this gate and reported
-// it: they nearly concluded "no problem, we interoperate" from a v1 result that
-// was an artifact of their test input. Pinned by test so a future caller cannot
-// reintroduce it.
+// Pinned by test so a future caller cannot reintroduce it.
 func evaluateV2(descriptorJSON []byte) V2 {
 	dec, err := modprotov2.Evaluate(descriptorJSON)
 	if err != nil {
 		// Undecodable describe output is not a v2 refusal and must not be
 		// reported as one: the remedy for "declare a different contract" is
 		// useless to someone whose module emitted malformed JSON.
-		return V2{Decision: modprotov2.Decision{}}
+		return V2{Err: err}
 	}
 
 	out := V2{Decision: dec}
@@ -65,22 +56,34 @@ func evaluateV2(descriptorJSON []byte) V2 {
 	return out
 }
 
-// v2Warnings renders the host's v2 findings for the Modules page.
+// v2Refusal is why the host refuses this module under its declared contract,
+// or "" when it does not. A refused module is not registered: it contributes
+// no tools, and the Modules page shows the refusal in its place.
 //
 // A REFUSAL AND A NON-CONFORMANCE ARE DIFFERENT AND SAY SO. The first means the
 // module named a contract this host does not implement; the second means it
 // named the right one and then contradicted itself. They need different
-// remedies, and collapsing them would send an author to fix the wrong thing --
-// the failure mode the reason/remedy split exists to prevent.
+// remedies, and collapsing them would send an author to fix the wrong thing.
 //
-// A v1 module produces NOTHING here. It is not a defect, and a warning on every
-// v1 module would train people to ignore the panel that also reports real ones.
-func v2Warnings(v V2) []string {
+// A v1 module produces nothing here: it is not a defect.
+func v2Refusal(v V2) string {
+	if v.Err != nil {
+		return fmt.Sprintf("its descriptor could not be checked against its declared contract: %v", v.Err)
+	}
 	if !v.Decision.Served() {
-		return []string{v.Decision.Pin.Reason + ". " + v.Decision.Pin.Remedy}
+		var parts []string
+		for _, s := range []string{v.Decision.Pin.Reason, v.Decision.Pin.Remedy} {
+			if s = strings.TrimSpace(s); s != "" {
+				parts = append(parts, strings.TrimSuffix(s, "."))
+			}
+		}
+		if len(parts) == 0 {
+			return "it declares a module contract this host does not implement"
+		}
+		return strings.Join(parts, ". ")
 	}
 	if v.Conformance != nil && !v.Conformance.Conforms() {
-		return []string{v.Conformance.Refusal()}
+		return v.Conformance.Refusal()
 	}
-	return nil
+	return ""
 }

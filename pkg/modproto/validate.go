@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"unicode"
 )
 
 // ---------------------------------------------------------------------------
@@ -200,6 +201,15 @@ func ValidateDescriptor(d *Descriptor) error {
 		p := fmt.Sprintf("capabilities[%d]", i)
 		if c.ID == "" {
 			bad(p+".id", "must not be empty")
+		}
+		// The ID is passed on the module's command line. One a flag parser
+		// would read as an option, or one that is not a single argument, could
+		// not be invoked safely.
+		if strings.HasPrefix(c.ID, "-") {
+			bad(p+".id", fmt.Sprintf("%q must not start with '-'; it is passed on the command line", c.ID))
+		}
+		if strings.IndexFunc(c.ID, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) }) >= 0 {
+			bad(p+".id", fmt.Sprintf("%q must not contain whitespace or control characters", c.ID))
 		}
 		if seen[c.ID] {
 			bad(p+".id", fmt.Sprintf("duplicate capability ID %q", c.ID))

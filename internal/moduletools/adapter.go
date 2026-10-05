@@ -15,6 +15,8 @@ package moduletools
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -22,6 +24,7 @@ import (
 	"strings"
 
 	"github.com/xibodev/compa/internal/module"
+	"github.com/xibodev/compa/pkg/approval"
 	"github.com/xibodev/compa/pkg/modproto"
 	toolshared "github.com/xibodev/compa/pkg/tools/shared"
 	"github.com/xibodev/compa/pkg/view"
@@ -90,12 +93,37 @@ const ArtifactMarker = "@artifact "
 // Exported so the cockpit can show the same name the agent uses: a person
 // reading "archive__sessions_assay" in a chat transcript should be able to find
 // that capability on the Modules page.
+//
+// Providers accept tool names of at most 64 letters, digits, '_' and '-', and
+// reject the WHOLE request when one tool's name is anything else -- so one
+// module's odd capability ID used to take down every tool call. Every other
+// character becomes '_' ('-' too, as it always did, so existing names are
+// unchanged), and a name past the limit is cut and given a digest suffix so it
+// stays distinct. Names that still collide are refused at registration.
 func ToolName(moduleID, capabilityID string) string {
 	safe := func(s string) string {
-		return strings.NewReplacer(".", "_", "-", "_", "/", "_").Replace(s)
+		return strings.Map(func(r rune) rune {
+			if r == '_' || r < 0x80 && (r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9') {
+				return r
+			}
+			return '_'
+		}, s)
 	}
-	return safe(moduleID) + "__" + safe(capabilityID)
+	name := safe(moduleID) + "__" + safe(capabilityID)
+	if len(name) > maxToolName {
+		sum := sha256.Sum256([]byte(moduleID + "\x00" + capabilityID))
+		suffix := "_" + hex.EncodeToString(sum[:4])
+		name = name[:maxToolName-len(suffix)] + suffix
+	}
+	return name
 }
+
+// maxToolName is the longest tool name providers accept.
+const maxToolName = 64
+
+// maxResultForModel bounds the module result text one tool call adds to the
+// conversation.
+const maxResultForModel = 128 << 10
 
 // PlaceInput puts a caller-supplied JSON object into a request.
 //
@@ -105,17 +133,12 @@ func ToolName(moduleID, capabilityID string) string {
 // are never overwritten, so a caller cannot widen roots, forge a request ID, or
 // extend a deadline by naming one.
 //
-// humanApproved says whether a PERSON authorized this specific invocation --
-// true only for a deliberate act in the cockpit, never for anything the model
-// produced. It decides whether an approval claim in the arguments is carried or
-// stripped.
-//
-// The distinction is a parameter rather than a convention because the two
-// callers look identical at the call site and mean opposite things: an agent
-// tool call is the model's word, and a click on "Approve and run" is the user's.
-// A convention would be one refactor away from silently treating them the same,
-// which is exactly the bug this exists to prevent.
-func PlaceInput(req *modproto.Request, raw json.RawMessage, humanApproved bool) error {
+// approved says whether the operator approved this call under the approval
+// policy: a rule that allows it, or an answered ask ("Approve and run",
+// --approve, or the owner's /approve). An approved call carries the approval
+// claims in the arguments and records the host's own; any other call has them
+// stripped. The agent's tool strips what the model wrote either way.
+func PlaceInput(req *modproto.Request, raw json.RawMessage, approved bool) error {
 	if len(raw) == 0 {
 		req.Input = json.RawMessage(`{}`)
 		return nil
@@ -124,7 +147,11 @@ func PlaceInput(req *modproto.Request, raw json.RawMessage, humanApproved bool) 
 	if err := json.Unmarshal(raw, &args); err != nil {
 		return fmt.Errorf("input must be a JSON object: %w", err)
 	}
-	if humanApproved {
+	return placeInput(req, args, approved)
+}
+
+func placeInput(req *modproto.Request, args map[string]any, approved bool) error {
+	if approved {
 		return placeApprovedArgs(req, args)
 	}
 	return placeArgs(req, args)
@@ -134,7 +161,7 @@ func PlaceInput(req *modproto.Request, raw json.RawMessage, humanApproved bool) 
 //
 // It states the declared effects in plain language, because the model choosing
 // a cheap local capability over an expensive networked one is the first line of
-// cost control -- long before the approval prompt, which is the last.
+// cost control -- long before the approval policy, which is the last.
 func (t *CapabilityTool) Description() string {
 	var b strings.Builder
 	b.WriteString(t.capability.Summary)
@@ -148,23 +175,9 @@ func (t *CapabilityTool) Description() string {
 		notes = append(notes, "writes files")
 	}
 	if !e.CostKnown {
-		// Deliberately blunt, and explicit about who can approve.
-		//
-		// "requires human approval" alone left the model believing it could
-		// obtain that approval by filling in a consent object -- asked
-		// directly, it answered that it needed approved_by and
-		// paid_generation_approved. It cannot: the host strips approval claims
-		// arriving through the agent, so a consent the model constructs is
-		// discarded however the user phrases their permission.
-		//
-		// Saying so HERE matters more than saying it in the failure message,
-		// because this is what the model reads while deciding, and the failure
-		// message only arrives after it has already promised the user a result.
-		notes = append(notes,
-			"COST UNKNOWN and may bill real money; needs an approval only the "+
-				"user can give, on the Modules page -- you cannot approve this "+
-				"yourself and must not construct a consent field")
-	} else if e.Provider != "" && e.Provider != "local" {
+		notes = append(notes, "COST UNKNOWN and may bill real money")
+	}
+	if e.Provider != "" && e.Provider != "local" {
 		notes = append(notes, "provider "+e.Provider)
 	}
 	if len(notes) > 0 {
@@ -203,47 +216,24 @@ func (t *CapabilityTool) Parameters() map[string]any {
 }
 
 // Execute invokes the capability as a bounded detached process.
+//
+// The approval policy decided this call before it got here: Execute runs what
+// the policy let through, and refuses nothing on its own.
 func (t *CapabilityTool) Execute(ctx context.Context, args map[string]any) *toolshared.ToolResult {
-	req := &modproto.Request{
-		Capability: t.capability.ID,
-		Roots:      GrantRoots(t.descriptor, t.home, t.workspace, t.sourceRoots),
-		DeadlineMS: module.DefaultInvokeDeadlineMS,
+	// Disabling a module takes effect at once. The tools were registered when
+	// the gateway started, and without this check they kept working until a
+	// restart while the marker file said they were not offered.
+	if t.runner != nil {
+		if dir, ok := ModuleDir(t.home, t.runner.Binary); ok && Disabled(dir) {
+			return toolshared.ErrorResult(fmt.Sprintf("%s is not available: module %q is DISABLED,"+
+				" so its capabilities are not offered. Tell the user it can be re-enabled on the"+
+				" Modules page; do not do this task another way.", t.capability.ID, t.descriptor.Module))
+		}
 	}
-	// A capability that may bill is refused HERE, before the module runs.
-	//
-	// The agent cannot approve it -- approval is a person clicking on the
-	// Modules page against the declared effects, and an approval arriving
-	// through the model is stripped by design. So the honest answer is to
-	// refuse and say where the button is, not to run it and hope the module
-	// asks.
-	//
-	// The cockpit's invoke path gained this gate first; the agent path did not
-	// have it, which is the same divergence between these two callers that has
-	// produced several bugs already. Verified by driving the real agent: it
-	// produced a paid capability's artefact with nobody having approved it.
-	// A standing approval is the operator having already decided about THIS
-	// capability, explicitly, in the environment the host runs in. It is not
-	// the model deciding -- an approval arriving through the agent is stripped
-	// -- and it is not the host inferring anything.
-	//
-	// Without it the operator's actual goal became impossible: every route to
-	// a render goes through a cost_known:false capability, so "create a video
-	// from simple chatting" could only ever be answered with "go and click on
-	// another page".
-	if NeedsApproval(t.descriptor, t.capability,
-		PreApproved(t.descriptor.Module, t.capability.ID)) {
-		return toolshared.ErrorResult(t.failureGuidance("consent_required",
-			"this capability declares an unknown cost, so it may bill real"+
-				" money and the host refused it before running", ""))
-	}
-	if err := placeArgs(req, args); err != nil {
+	req, err := t.request(ctx, args)
+	if err != nil {
 		return toolshared.ErrorResult(err.Error())
 	}
-	module.GrantBinaries(t.descriptor, req)
-	// Authority for this call, intersected with what the module declared.
-	// A grant is not consent: reaching a paid provider is authorized here,
-	// but whether to spend on THIS call is still the module's ask.
-	module.ApplyGrants(t.descriptor, req, module.GrantAll())
 
 	res, err := t.runner.Invoke(ctx, t.descriptor, req)
 
@@ -263,6 +253,32 @@ func (t *CapabilityTool) Execute(ctx context.Context, args map[string]any) *tool
 	}
 
 	return toolshared.NewToolResult(t.renderForModel(env))
+}
+
+// request builds the module request for one call with the model's arguments.
+//
+// The operator's approval travels in ctx (approval.Approved): a rule that
+// allows the call, or the owner answering an ask. Only an approved call may
+// publish, and only for one does the host record the approval for the module.
+// Approval claims the model wrote are stripped either way: consent is an
+// authorization, not an argument.
+func (t *CapabilityTool) request(ctx context.Context, args map[string]any) (*modproto.Request, error) {
+	approved := approval.Approved(ctx)
+	req := &modproto.Request{
+		Capability: t.capability.ID,
+		Roots:      GrantRoots(t.descriptor, t.home, t.workspace, t.sourceRoots),
+		DeadlineMS: module.DefaultInvokeDeadlineMS,
+	}
+	stripSelfMintedConsent(args)
+	if err := placeInput(req, args, approved); err != nil {
+		return nil, err
+	}
+	module.GrantBinaries(t.descriptor, req)
+	// Authority for this call, intersected with what the module declared. A
+	// grant is not consent: reaching a paid provider is authorized here, but
+	// whether to spend on THIS call is still the module's ask.
+	module.ApplyGrants(t.descriptor, req, module.GrantsFor(approved))
+	return req, nil
 }
 
 // failureGuidance is what the agent reads when a capability fails.
@@ -285,6 +301,10 @@ func (t *CapabilityTool) Execute(ctx context.Context, args map[string]any) *tool
 func (t *CapabilityTool) failureGuidance(code, message, stderr string) string {
 	var b strings.Builder
 
+	// A module's error message is its own text and could be most of its
+	// output bound; the agent needs the gist, not a megabyte.
+	code = module.BoundText(code, 128)
+	message = module.BoundText(message, module.MaxErrorText)
 	if code != "" {
 		fmt.Fprintf(&b, "%s failed: %s: %s", t.capability.ID, code, message)
 	} else {
@@ -333,8 +353,9 @@ func (t *CapabilityTool) failureGuidance(code, message, stderr string) string {
 			" they can repair or reinstall the module. Do not retry, and do not" +
 			" substitute another tool.")
 	} else if consent {
-		// Approval cannot be given in chat, so do not let the agent ask for it
-		// there.
+		// The module asks for an approval this call did not carry: the
+		// approval policy let it run without the owner's approval, so the host
+		// recorded none.
 		//
 		// The host strips approval claims arriving through the model -- it was
 		// observed minting them from a sentence. Without this branch the agent
@@ -344,18 +365,17 @@ func (t *CapabilityTool) failureGuidance(code, message, stderr string) string {
 		// Observed end to end: the user did exactly what they were asked and
 		// still failed, with the blame landing on the module.
 		//
-		// The host knows where approval actually lives, so it says so.
-		fmt.Fprintf(&b, " This capability needs a human approval, and that"+
-			" approval CANNOT be given in chat -- an approval you construct"+
-			" from a message is not one the host will carry, however the user"+
-			" phrases it. Do not ask the user to approve here and do not retry"+
-			" with a reworded consent."+
-			" Tell them to open the Modules page, expand the capability %q under"+
-			" module %q, paste the request arguments into its input box, and"+
-			" press \"Approve and run\". Name the CAPABILITY, not the tool: the"+
-			" page lists capabilities, so a user told to look for a tool name"+
-			" will not find it. Give them the exact JSON to paste.",
-			t.capability.ID, t.descriptor.Module)
+		// The host knows how an approval reaches a module, so it says so.
+		fmt.Fprintf(&b, " This capability needs the owner's approval, and the"+
+			" approval policy let this call run without one. An approval you"+
+			" construct from a message is not one the host will carry, however"+
+			" the user phrases it. Do not ask the user to approve here and do not"+
+			" retry with a reworded consent. Tell them the owner can add a rule"+
+			" for the tool %q to tools.approval: with \"ask\" the owner is asked"+
+			" before each call, and the Modules page offers \"Approve and run\""+
+			" for the capability %q of module %q; with \"allow\" every call runs"+
+			" approved.",
+			t.Name(), t.capability.ID, t.descriptor.Module)
 	} else if isPathFailure(code, message) {
 		// The host knows something the agent cannot see: which directories
 		// were actually granted for this call. A module resolves relative
@@ -381,14 +401,20 @@ func (t *CapabilityTool) failureGuidance(code, message, stderr string) string {
 func (t *CapabilityTool) renderForModel(env *modproto.Envelope) string {
 	var b strings.Builder
 
-	if len(env.Result) > 0 {
+	// The module's result is bounded before it enters the conversation: a
+	// result near the 1 MiB output bound would fill the context window on its
+	// own. Large output belongs in an artifact.
+	if len(env.Result) > maxResultForModel {
+		b.WriteString(module.BoundText(string(env.Result), maxResultForModel))
+		b.WriteString("\n(the result was cut to fit; large output belongs in an artifact)")
+	} else if len(env.Result) > 0 {
 		b.Write(env.Result)
 	} else {
 		b.WriteString("{}")
 	}
 
 	for _, w := range env.Warnings {
-		b.WriteString("\nwarning: " + w)
+		b.WriteString("\nwarning: " + module.BoundText(w, module.MaxErrorText))
 	}
 
 	// Artefacts are emitted as one machine-readable line each.
@@ -454,12 +480,15 @@ func (t *CapabilityTool) renderForModel(env *modproto.Envelope) string {
 // placeArgs puts the model's arguments into the request.
 //
 // A capability's RequestSchema describes Request.Input, but some modules read
-// arguments beside Input at the request root. Rather than requiring the model
-// to know which, the host sends the arguments both ways: nested under "input"
-// if the model supplied that key, and passed through at the root otherwise.
+// arguments beside Input at the request root -- a dispatcher's "tool"
+// selector. Rather than requiring the model to know which, the host sends the
+// arguments both ways: nested under "input" if the model supplied that key,
+// and passed through at the root otherwise.
 //
 // Host-owned fields are never overwritten, so a model cannot widen filesystem
-// roots, forge a request ID, or extend a deadline by naming one as an argument.
+// roots, forge a request ID, extend a deadline, or write the wire v2
+// "approval" or "contract_version" a module would take as the host's own, by
+// naming one as an argument (ReservedRequestKeys).
 func placeArgs(req *modproto.Request, args map[string]any) error {
 	if len(args) == 0 {
 		req.Input = json.RawMessage(`{}`)
@@ -476,11 +505,9 @@ func placeArgs(req *modproto.Request, args map[string]any) error {
 	// between a chat message and a provider charge was that the provider
 	// happened to be unconfigured.
 	//
-	// The host does not yet have an approval channel, so it cannot supply a
-	// TRUE consent. What it can do is refuse to carry a false one: the field is
-	// stripped, and the module's own gate then asks for consent through
-	// whatever channel it trusts. A capability that needs approval fails closed
-	// rather than proceeding on the model's word.
+	// The host cannot take a consent from the arguments for a TRUE one, so it
+	// refuses to carry a false one: the field is stripped, and the host records
+	// its own when the operator approved the call (placeApprovedArgs).
 	//
 	// Stripped rather than rejected because refusing the call would teach the
 	// agent to retry without it, which is the same request minus the audit
@@ -490,12 +517,14 @@ func placeArgs(req *modproto.Request, args map[string]any) error {
 	return encodeArgs(req, args)
 }
 
-// placeApprovedArgs is placeArgs for an invocation a PERSON authorized.
+// placeApprovedArgs is placeArgs for a call the operator approved: by a rule
+// of the approval policy that allows it, or by answering an ask.
 //
-// Approval claims are carried rather than stripped, because here they are true:
-// the cockpit only reaches this after a deliberate click on a capability whose
-// declared effects were shown first. Host-owned fields are still reserved, so
-// approving a run does not let the caller widen roots or extend a deadline.
+// Approval claims are carried rather than stripped, because here the caller's
+// are true: the Modules page and module-invoke pass on what a person typed, and
+// the agent's tool strips what the model wrote before calling this. Host-owned
+// fields are still reserved, so approving a run does not let the caller widen
+// roots or extend a deadline.
 func placeApprovedArgs(req *modproto.Request, args map[string]any) error {
 	if args == nil {
 		args = map[string]any{}
@@ -503,11 +532,10 @@ func placeApprovedArgs(req *modproto.Request, args map[string]any) error {
 
 	// The host RECORDS the approval rather than expecting it in the payload.
 	//
-	// The click is the approval: the page showed the declared effects, the
-	// button said "Approve and run", and a person pressed it. Requiring the
-	// user to also hand-write a consent object asks them to author the one
-	// thing they cannot legitimately author -- and they will not know to,
-	// because nothing tells them.
+	// The approval is the operator's act against the declared effects.
+	// Requiring them to also hand-write a consent object asks them to author
+	// the one thing they cannot legitimately author -- and they will not know
+	// to, because nothing tells them.
 	//
 	// Observed: the agent handed the user paste-ready JSON for the page, the
 	// user pasted exactly that, and the run still failed consent_required
@@ -521,7 +549,7 @@ func placeApprovedArgs(req *modproto.Request, args map[string]any) error {
 		args["consent"] = map[string]any{
 			"approved_by":              "operator",
 			"paid_generation_approved": true,
-			"note":                     "approved in the Compa cockpit against the capability's declared effects",
+			"note":                     "approved by the owner in Compa against the capability's declared effects",
 		}
 	}
 
@@ -544,14 +572,9 @@ func encodeArgs(req *modproto.Request, args map[string]any) error {
 		req.Input = blob
 	}
 
-	reserved := map[string]bool{
-		"protocol": true, "capability": true, "request_id": true,
-		"input": true, "roots": true, "grants": true, "binaries": true,
-		"deadline_ms": true, "max_output_bytes": true,
-	}
 	req.Extra = map[string]json.RawMessage{}
 	for k, v := range args {
-		if reserved[k] {
+		if ReservedRequestKeys[k] {
 			continue
 		}
 		raw, err := json.Marshal(v)
@@ -561,6 +584,18 @@ func encodeArgs(req *modproto.Request, args map[string]any) error {
 		req.Extra[k] = raw
 	}
 	return nil
+}
+
+// ReservedRequestKeys are request fields only the host writes. A caller's
+// argument of one of these names never reaches the request root.
+//
+// approval and contract_version are the host's in wire v2: an approval object
+// a module read there would be taken as the host's own decision.
+var ReservedRequestKeys = map[string]bool{
+	"protocol": true, "capability": true, "request_id": true,
+	"input": true, "roots": true, "grants": true, "binaries": true,
+	"deadline_ms": true, "max_output_bytes": true,
+	"approval": true, "contract_version": true,
 }
 
 func truncate(s string, max int) string {
@@ -662,7 +697,7 @@ func isPathFailure(code, message string) bool {
 // workable answer is an absolute path inside a granted root -- so the host says
 // what those are instead of leaving the agent to guess.
 func (t *CapabilityTool) rootHint() string {
-	roots := GrantRoots(t.descriptor, t.home, t.workspace, t.sourceRoots)
+	roots := grantRoots(t.descriptor, t.home, t.workspace, moduleBundleDir(t.home, t.descriptor), t.sourceRoots, false)
 	if len(roots) == 0 {
 		return ""
 	}
@@ -774,6 +809,8 @@ var consentFieldNames = map[string]bool{
 	"cost_approved":            true,
 	"approved_by":              true,
 	"human_approved":           true,
+	// The wire v2 approval object, which only the host may write.
+	"approval": true,
 }
 
 // stripSelfMintedConsent removes approval claims from model-supplied arguments,

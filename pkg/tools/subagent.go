@@ -3,8 +3,8 @@ package tools
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/xibodev/compa/pkg/providers"
@@ -18,20 +18,15 @@ type SubTurnSpawner interface {
 
 // SubTurnConfig holds configuration for spawning a sub-turn. A sub-turn runs
 // on its agent's model: the spawning agent's — or, with TargetAgentID, the
-// target agent's.
+// target agent's — with that agent's tools and model settings.
 type SubTurnConfig struct {
-	Tools              []Tool
 	SystemPrompt       string
-	MaxTokens          int
-	Temperature        float64
 	Async              bool          // true for async (spawn), false for sync (subagent)
 	Critical           bool          // continue running after parent finishes gracefully
 	Timeout            time.Duration // 0 = use default (5 minutes)
-	MaxContextRunes    int           // 0 = auto, -1 = no limit, >0 = explicit limit
 	ActualSystemPrompt string
 	InitialMessages    []providers.Message
-	InitialTokenBudget *atomic.Int64 // Shared token budget for team members; nil if no budget
-	TargetAgentID      string        // If set, run as this agent (its workspace, model, tools)
+	TargetAgentID      string // If set, run as this agent (its workspace, model, tools)
 }
 
 type SubagentTask struct {
@@ -44,16 +39,26 @@ type SubagentTask struct {
 	Status        string
 	Result        string
 	Created       int64
+
+	// seq orders tasks started within the same millisecond.
+	seq int
 }
 
-// SubagentManager holds the LLM options shared by the spawn and subagent
-// tools and the task registry reported by spawn_status.
+// SubagentManager holds the task registry reported by spawn_status, shared by
+// the spawn and subagent tools.
 type SubagentManager struct {
-	tasks       map[string]*SubagentTask
-	mu          sync.RWMutex
-	maxTokens   int
-	temperature float64
+	tasks  map[string]*SubagentTask
+	mu     sync.RWMutex
+	nextID int
 }
+
+// maxFinishedSubagentTasks bounds how many finished tasks spawn_status keeps;
+// running tasks are always kept.
+const maxFinishedSubagentTasks = 100
+
+// maxSubagentTaskResultRunes bounds the result kept for spawn_status, which
+// shows only the start of it.
+const maxSubagentTaskResultRunes = 2000
 
 func NewSubagentManager() *SubagentManager {
 	return &SubagentManager{
@@ -61,12 +66,63 @@ func NewSubagentManager() *SubagentManager {
 	}
 }
 
-// SetLLMOptions sets max tokens and temperature for subagent LLM calls.
-func (sm *SubagentManager) SetLLMOptions(maxTokens int, temperature float64) {
+// startTask records a task that is starting to run and returns its ID.
+func (sm *SubagentManager) startTask(task, label, agentID, originChannel, originChatID string) string {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
-	sm.maxTokens = maxTokens
-	sm.temperature = temperature
+	sm.nextID++
+	id := fmt.Sprintf("subagent-%d", sm.nextID)
+	sm.tasks[id] = &SubagentTask{
+		ID:            id,
+		Task:          task,
+		Label:         label,
+		AgentID:       agentID,
+		OriginChannel: originChannel,
+		OriginChatID:  originChatID,
+		Status:        "running",
+		Created:       time.Now().UnixMilli(),
+		seq:           sm.nextID,
+	}
+	sm.pruneLocked()
+	return id
+}
+
+// finishTask records how a task ended: completed, failed or canceled.
+func (sm *SubagentManager) finishTask(id, status, result string) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	task, ok := sm.tasks[id]
+	if !ok {
+		return
+	}
+	task.Status = status
+	if cut, rest := runePrefix(result, maxSubagentTaskResultRunes); rest > 0 {
+		result = cut + "…"
+	}
+	task.Result = result
+	sm.pruneLocked()
+}
+
+// pruneLocked drops the oldest finished tasks beyond the limit.
+func (sm *SubagentManager) pruneLocked() {
+	finished := make([]*SubagentTask, 0, len(sm.tasks))
+	for _, task := range sm.tasks {
+		if task.Status != "running" {
+			finished = append(finished, task)
+		}
+	}
+	if len(finished) <= maxFinishedSubagentTasks {
+		return
+	}
+	sort.Slice(finished, func(i, j int) bool {
+		if finished[i].Created != finished[j].Created {
+			return finished[i].Created < finished[j].Created
+		}
+		return finished[i].seq < finished[j].seq
+	})
+	for _, task := range finished[:len(finished)-maxFinishedSubagentTasks] {
+		delete(sm.tasks, task.ID)
+	}
 }
 
 // GetTaskCopy returns a copy of the task with the given ID, taken under the
@@ -96,20 +152,13 @@ func (sm *SubagentManager) ListTaskCopies() []SubagentTask {
 
 // SubagentTool executes a subagent task synchronously and returns the result.
 // It directly calls SubTurnSpawner with Async=false for synchronous execution.
+// The child runs as an agent, with that agent's own model settings.
 type SubagentTool struct {
-	spawner     SubTurnSpawner
-	maxTokens   int
-	temperature float64
+	spawner SubTurnSpawner
 }
 
 func NewSubagentTool(manager *SubagentManager) *SubagentTool {
-	if manager == nil {
-		return &SubagentTool{}
-	}
-	return &SubagentTool{
-		maxTokens:   manager.maxTokens,
-		temperature: manager.temperature,
-	}
+	return &SubagentTool{}
 }
 
 // SetSpawner sets the SubTurnSpawner for direct sub-turn execution.
@@ -174,10 +223,7 @@ Task: %s`,
 	// Use spawner if available (direct SpawnSubTurn call)
 	if t.spawner != nil {
 		result, err := t.spawner.SpawnSubTurn(ctx, SubTurnConfig{
-			Tools:        nil, // Will inherit from parent via context
 			SystemPrompt: systemPrompt,
-			MaxTokens:    t.maxTokens,
-			Temperature:  t.temperature,
 			Async:        false, // Synchronous execution
 		})
 		if err != nil {

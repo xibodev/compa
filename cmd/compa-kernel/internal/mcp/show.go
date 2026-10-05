@@ -215,6 +215,8 @@ func buildServerInfo(name string, server config.MCPServerConfig, discoveryEnable
 		Enabled:           server.Enabled,
 		EffectiveDeferred: effectiveDeferred,
 		DeferredExplicit:  deferredExplicit,
+		Trusted:           server.Trusted,
+		Cwd:               server.Cwd,
 		EnvFile:           server.EnvFile,
 	}
 	if len(server.Env) > 0 {

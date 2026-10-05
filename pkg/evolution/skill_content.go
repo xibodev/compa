@@ -53,10 +53,12 @@ func readSkillBodyExcerpt(path string) string {
 		return ""
 	}
 	body = strings.Join(strings.Fields(body), " ")
-	if len(body) <= maxMatchedSkillExcerptChars {
+	// Cut on a rune boundary; a byte cut can split a multi-byte character.
+	runes := []rune(body)
+	if len(runes) <= maxMatchedSkillExcerptChars {
 		return body
 	}
-	return strings.TrimSpace(body[:maxMatchedSkillExcerptChars]) + "..."
+	return strings.TrimSpace(string(runes[:maxMatchedSkillExcerptChars])) + "..."
 }
 
 func summarizeMatchedSkillExcerpts(matches []skills.SkillInfo) string {

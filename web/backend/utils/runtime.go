@@ -158,16 +158,23 @@ func GetLocalIPv6() string {
 	return addrs[0]
 }
 
-// OpenBrowser automatically opens the given URL in the default browser.
+// OpenBrowser automatically opens the given URL in the default browser. The
+// opener is waited for in the background, so it never lingers as a zombie.
 func OpenBrowser(url string) error {
+	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "linux":
-		return exec.Command("xdg-open", url).Start()
+		cmd = exec.Command("xdg-open", url)
 	case "windows":
-		return LauncherExecCommand("rundll32", "url.dll,FileProtocolHandler", url).Start()
+		cmd = LauncherExecCommand("rundll32", "url.dll,FileProtocolHandler", url)
 	case "darwin":
-		return exec.Command("open", url).Start()
+		cmd = exec.Command("open", url)
 	default:
 		return fmt.Errorf("unsupported platform")
 	}
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	go func() { _ = cmd.Wait() }()
+	return nil
 }

@@ -227,7 +227,9 @@ export function InstanceDialog({
             )}
 
             <div className="space-y-1.5">
-              <Label htmlFor="instance-id">{t("models.connect.nameLabel")}</Label>
+              <Label htmlFor="instance-id">
+                {t("models.connect.nameLabel")}
+              </Label>
               <Input
                 id="instance-id"
                 value={id}

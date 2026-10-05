@@ -64,14 +64,18 @@ const (
 	serviceShutdownTimeout  = 30 * time.Second
 	providerReloadTimeout   = 30 * time.Second
 	gracefulShutdownTimeout = 15 * time.Second
-	// reloadWaitTimeout bounds how long POST /reload waits for the reload
-	// it triggered to finish, within the gateway server's write timeout.
-	reloadWaitTimeout = 25 * time.Second
+	// reloadRetryInterval is how often POST /reload checks whether the
+	// reload in progress it waits for is over.
+	reloadRetryInterval = 100 * time.Millisecond
 
 	logPath   = "logs"
 	panicFile = "gateway_panic.log"
 	logFile   = "gateway.log"
 )
+
+// errReloadInProgress refuses a reload asked for while another one is queued
+// or running.
+var errReloadInProgress = errors.New("reload already in progress")
 
 // reloadRequest asks the gateway loop for a manual reload. done, when set,
 // receives the reload's outcome.
@@ -86,6 +90,34 @@ func (r reloadRequest) finish(err error) {
 	}
 }
 
+// awaitReload asks trigger for a reload and returns its outcome once it is
+// done. A reload in progress may have read the config before the caller
+// saved it, so awaitReload waits for that one to end and asks for its own.
+// It gives up once ctx ends.
+func awaitReload(ctx context.Context, trigger func(done chan error) error) error {
+	done := make(chan error, 1)
+	for {
+		err := trigger(done)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, errReloadInProgress) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(reloadRetryInterval):
+		}
+	}
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 type services struct {
 	CronService      *cron.CronService
 	HeartbeatService *heartbeat.HeartbeatService
@@ -97,7 +129,16 @@ type services struct {
 	manualReloadChan chan reloadRequest
 	reloading        atomic.Bool
 	authToken        string
+	// homePath is the Compa home, where the cron store lives.
+	homePath string
 }
+
+// agentLoopCheck is the readiness check that fails once the agent loop
+// stopped processing messages.
+const agentLoopCheck = "agent_loop"
+
+// heartbeatOK is the heartbeat reply that means nothing needs attention.
+const heartbeatOK = "HEARTBEAT_OK"
 
 func logChannelVoiceCapabilities(cm *channels.Manager, asrAvailable bool, ttsAvailable bool) {
 	if cm == nil {
@@ -206,6 +247,7 @@ func Run(debug bool, homePath, configPath string, allowEmptyStartup bool) (runEr
 	if err != nil {
 		return fmt.Errorf("error loading config: %w", err)
 	}
+	applyLoggingSettings(cfg)
 
 	if err = preCheckConfig(cfg); err != nil {
 		return fmt.Errorf("config pre-check failed: %w", err)
@@ -271,7 +313,7 @@ func Run(debug bool, homePath, configPath string, allowEmptyStartup bool) (runEr
 
 	logger.InfoCF("agent", "Agent initialized", startupStatus.logFields)
 
-	runningServices, err := setupAndStartServices(cfg, agentLoop, msgBus, pidData.Token, listenResult)
+	runningServices, err := setupAndStartServices(cfg, agentLoop, msgBus, homePath, pidData.Token, listenResult)
 	if err != nil {
 		return err
 	}
@@ -288,7 +330,7 @@ func Run(debug bool, homePath, configPath string, allowEmptyStartup bool) (runEr
 	runningServices.manualReloadChan = manualReloadChan
 	reloadTrigger := func(done chan error) error {
 		if !runningServices.reloading.CompareAndSwap(false, true) {
-			return fmt.Errorf("reload already in progress")
+			return errReloadInProgress
 		}
 		select {
 		case manualReloadChan <- reloadRequest{done: done}:
@@ -299,20 +341,12 @@ func Run(debug bool, homePath, configPath string, allowEmptyStartup bool) (runEr
 			return fmt.Errorf("reload already queued")
 		}
 	}
-	// POST /reload answers once the reload is done, so its caller knows the
-	// config it saved is in effect. A reload asked for from a chat command
-	// runs on its own: that turn must not wait for the agents it rebuilds.
-	runningServices.HealthServer.SetReloadFunc(func() error {
-		done := make(chan error, 1)
-		if err := reloadTrigger(done); err != nil {
-			return err
-		}
-		select {
-		case err := <-done:
-			return err
-		case <-time.After(reloadWaitTimeout):
-			return fmt.Errorf("the reload did not finish within %s", reloadWaitTimeout)
-		}
+	// POST /reload answers once its reload is done, so its caller knows the
+	// config it saved is in effect (awaitReload). A reload asked for from a
+	// chat command runs on its own: that turn must not wait for the agents it
+	// rebuilds.
+	runningServices.HealthServer.SetReloadFunc(func(ctx context.Context) error {
+		return awaitReload(ctx, reloadTrigger)
 	})
 	agentLoop.SetReloadFunc(func() error { return reloadTrigger(nil) })
 
@@ -327,18 +361,21 @@ func Run(debug bool, homePath, configPath string, allowEmptyStartup bool) (runEr
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	go agentLoop.Run(ctx)
+	go runAgentLoop(ctx, agentLoop.Run, runningServices.HealthServer)
 
-	var configReloadChan <-chan *config.Config
+	var configChanged <-chan struct{}
 	stopWatch := func() {}
 	if cfg.Gateway.HotReload {
-		configReloadChan, stopWatch = setupConfigWatcherPolling(configPath, debug)
+		configChanged, stopWatch = setupConfigWatcherPolling(configPath, debug)
 		logger.Info("Config hot reload enabled")
 	}
 	defer stopWatch()
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	// POST /shutdown is how the launcher stops the kernel where it can't
+	// send a SIGTERM (Windows); it shuts down the same way.
+	runningServices.HealthServer.SetShutdownFunc(shutdownRequester(sigChan))
 
 	for {
 		select {
@@ -346,12 +383,20 @@ func Run(debug bool, homePath, configPath string, allowEmptyStartup bool) (runEr
 			logger.Info("Shutting down...")
 			shutdownGateway(runningServices, agentLoop, msgBus, true)
 			return nil
-		case newCfg := <-configReloadChan:
+		case <-configChanged:
 			if !runningServices.reloading.CompareAndSwap(false, true) {
 				logger.Warn("Config reload skipped: another reload is in progress")
 				continue
 			}
-			err := executeReload(ctx, agentLoop, newCfg, modelResolver, runningServices, msgBus, allowEmptyStartup, debug)
+			// The file as it is now: it may have changed again since the
+			// watcher saw it change.
+			newCfg, err := config.LoadConfig(configPath)
+			if err != nil {
+				logger.Errorf("Error loading the changed config, keeping the current one: %v", err)
+				runningServices.reloading.Store(false)
+				continue
+			}
+			err = executeReload(ctx, agentLoop, newCfg, modelResolver, runningServices, msgBus, allowEmptyStartup, debug)
 			if err != nil {
 				logger.Errorf("Config reload failed: %v", err)
 			}
@@ -382,6 +427,42 @@ func preCheckConfig(cfg *config.Config) error {
 		return fmt.Errorf("invalid gateway port: %d, port must be between 1 and 65535", cfg.Gateway.Port)
 	}
 	return nil
+}
+
+// applyLoggingSettings applies cfg's logging settings: whether log lines are
+// redacted and when the log file rotates.
+func applyLoggingSettings(cfg *config.Config) {
+	logger.SetRedaction(cfg.Logging.RedactSecrets)
+	logger.SetRotation(cfg.Logging.EffectiveMaxSizeMB(), cfg.Logging.EffectiveMaxFiles())
+}
+
+// runAgentLoop runs the agent loop until ctx ends. A loop that stops on an
+// error leaves the channels and the web UI up while no message is processed,
+// so the failure is logged and the gateway's readiness check fails with it.
+func runAgentLoop(ctx context.Context, run func(context.Context) error, hs *health.Server) {
+	err := run(ctx)
+	if err == nil {
+		return
+	}
+	logger.ErrorCF("agent", "Agent loop stopped; messages are not processed until the gateway restarts",
+		map[string]any{"error": err.Error()})
+	if hs != nil {
+		hs.RegisterCheck(agentLoopCheck, func() (bool, string) {
+			return false, fmt.Sprintf("agent loop stopped: %v", err)
+		})
+	}
+}
+
+// shutdownRequester returns what POST /shutdown runs: it hands the gateway
+// loop a SIGTERM, so the launcher's graceful stop takes the signal's path. A
+// shutdown already pending isn't queued twice.
+func shutdownRequester(sigChan chan<- os.Signal) func() {
+	return func() {
+		select {
+		case sigChan <- syscall.SIGTERM:
+		default:
+		}
+	}
 }
 
 type gatewayStartupStatus struct {
@@ -461,16 +542,18 @@ func setupAndStartServices(
 	cfg *config.Config,
 	agentLoop *agent.AgentLoop,
 	msgBus *bus.MessageBus,
+	homePath string,
 	authToken string,
 	listenResult netbind.OpenResult,
 ) (*services, error) {
-	runningServices := &services{}
+	runningServices := &services{homePath: homePath}
 
 	execTimeout := time.Duration(cfg.Tools.Cron.ExecTimeoutMinutes) * time.Minute
 	var err error
 	runningServices.CronService, err = setupCronTool(
 		agentLoop,
 		msgBus,
+		homePath,
 		cfg.WorkspacePath(),
 		cfg.Agents.Defaults.RestrictToWorkspace,
 		execTimeout,
@@ -484,13 +567,9 @@ func setupAndStartServices(
 	}
 	fmt.Println("✓ Cron service started")
 
-	runningServices.HeartbeatService = heartbeat.NewHeartbeatService(
-		cfg.WorkspacePath(),
-		cfg.Heartbeat.Interval,
-		cfg.Heartbeat.Enabled,
-	)
-	runningServices.HeartbeatService.SetBus(msgBus)
-	runningServices.HeartbeatService.SetHandler(createHeartbeatHandler(agentLoop))
+	stateManager := sharedStateManager(agentLoop, cfg.WorkspacePath())
+
+	runningServices.HeartbeatService = newHeartbeatService(cfg, agentLoop, msgBus, stateManager)
 	if err = runningServices.HeartbeatService.Start(); err != nil {
 		return nil, fmt.Errorf("error starting heartbeat service: %w", err)
 	}
@@ -573,7 +652,6 @@ func setupAndStartServices(
 		healthAddr,
 	)
 
-	stateManager := state.NewManager(cfg.WorkspacePath())
 	runningServices.DeviceService = devices.NewService(devices.Config{
 		Enabled:    cfg.Devices.Enabled,
 		MonitorUSB: cfg.Devices.MonitorUSB,
@@ -681,6 +759,7 @@ func handleConfigReload(
 	}
 
 	logger.Info("  ✓ Agents, configuration, and services reloaded successfully (thread-safe)")
+	applyLoggingSettings(newCfg)
 
 	// Debug mode permanently overrides the config log level to DEBUG.
 	if !debug {
@@ -705,6 +784,7 @@ func restartServices(
 	runningServices.CronService, err = setupCronTool(
 		al,
 		msgBus,
+		runningServices.homePath,
 		cfg.WorkspacePath(),
 		cfg.Agents.Defaults.RestrictToWorkspace,
 		execTimeout,
@@ -718,13 +798,9 @@ func restartServices(
 	}
 	fmt.Println("  ✓ Cron service restarted")
 
-	runningServices.HeartbeatService = heartbeat.NewHeartbeatService(
-		cfg.WorkspacePath(),
-		cfg.Heartbeat.Interval,
-		cfg.Heartbeat.Enabled,
-	)
-	runningServices.HeartbeatService.SetBus(msgBus)
-	runningServices.HeartbeatService.SetHandler(createHeartbeatHandler(al))
+	stateManager := sharedStateManager(al, cfg.WorkspacePath())
+
+	runningServices.HeartbeatService = newHeartbeatService(cfg, al, msgBus, stateManager)
 	if err = runningServices.HeartbeatService.Start(); err != nil {
 		return fmt.Errorf("error restarting heartbeat service: %w", err)
 	}
@@ -759,7 +835,6 @@ func restartServices(
 		fmt.Println("  ⚠ Warning: No channels enabled")
 	}
 
-	stateManager := state.NewManager(cfg.WorkspacePath())
 	runningServices.DeviceService = devices.NewService(devices.Config{
 		Enabled:    cfg.Devices.Enabled,
 		MonitorUSB: cfg.Devices.MonitorUSB,
@@ -793,17 +868,21 @@ func restartServices(
 	return nil
 }
 
-func setupConfigWatcherPolling(configPath string, debug bool) (chan *config.Config, func()) {
-	configChan := make(chan *config.Config, 1)
+// setupConfigWatcherPolling signals on the returned channel when the config
+// file at configPath changes. The gateway loads the file when it takes the
+// signal, so it applies the file as it is then: a change seen while a signal
+// is pending needs no signal of its own.
+func setupConfigWatcherPolling(configPath string, debug bool) (<-chan struct{}, func()) {
+	changed := make(chan struct{}, 1)
 	stop := make(chan struct{})
 	var wg sync.WaitGroup
+
+	lastModTime := getFileModTime(configPath)
+	lastSize := getFileSize(configPath)
 
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-
-		lastModTime := getFileModTime(configPath)
-		lastSize := getFileSize(configPath)
 
 		ticker := time.NewTicker(2 * time.Second)
 		defer ticker.Stop()
@@ -824,21 +903,9 @@ func setupConfigWatcherPolling(configPath string, debug bool) (chan *config.Conf
 					lastModTime = currentModTime
 					lastSize = currentSize
 
-					// LoadConfig validates the config, provider instances
-					// and model selections included.
-					newCfg, err := config.LoadConfig(configPath)
-					if err != nil {
-						logger.Errorf("⚠ Error loading new config: %v", err)
-						logger.Warn("  Using previous valid config")
-						continue
-					}
-
-					logger.Info("✓ Config file validated and loaded")
-
 					select {
-					case configChan <- newCfg:
+					case changed <- struct{}{}:
 					default:
-						logger.Warn("⚠ Previous config reload still in progress, skipping")
 					}
 				}
 			case <-stop:
@@ -852,7 +919,7 @@ func setupConfigWatcherPolling(configPath string, debug bool) (chan *config.Conf
 		wg.Wait()
 	}
 
-	return configChan, stopFunc
+	return changed, stopFunc
 }
 
 func getFileModTime(path string) time.Time {
@@ -874,14 +941,13 @@ func getFileSize(path string) int64 {
 func setupCronTool(
 	agentLoop *agent.AgentLoop,
 	msgBus *bus.MessageBus,
+	homePath string,
 	workspace string,
 	restrict bool,
 	execTimeout time.Duration,
 	cfg *config.Config,
 ) (*cron.CronService, error) {
-	cronStorePath := filepath.Join(workspace, "cron", "jobs.json")
-
-	cronService := cron.NewCronService(cronStorePath, nil)
+	cronService := cron.NewCronService(cron.DefaultStorePath(homePath), nil, cronOptions(execTimeout)...)
 
 	var cronTool *tools.CronTool
 	if cfg.Tools.IsToolEnabled("cron") {
@@ -890,33 +956,87 @@ func setupCronTool(
 		if err != nil {
 			return nil, fmt.Errorf("critical error during CronTool initialization: %w", err)
 		}
+		// tools.approval decides each run of a scheduled command; the loop
+		// asks the approvers or the owner when the policy says to.
+		cronTool.SetApprovalGate(agentLoop)
 
 		agentLoop.RegisterTool(cronTool)
 	}
 
 	if cronTool != nil {
-		cronService.SetOnJob(func(job *cron.CronJob) (string, error) {
-			result := cronTool.ExecuteJob(context.Background(), job)
-			return result, nil
-		})
+		// RunJob reports a failed run, one cut short by the job timeout
+		// included, as an error, so the job's last status records it.
+		cronService.SetOnJobContext(cronTool.RunJob)
 	}
 
 	return cronService, nil
 }
 
-func createHeartbeatHandler(agentLoop *agent.AgentLoop) func(prompt, channel, chatID string) *tools.ToolResult {
+// cronOptions lets a job run at least as long as the configured exec
+// timeout, so that one isn't cut short.
+func cronOptions(execTimeout time.Duration) []cron.Option {
+	var opts []cron.Option
+	if execTimeout > cron.DefaultJobTimeout {
+		opts = append(opts, cron.WithJobTimeout(execTimeout))
+	}
+	return opts
+}
+
+// sharedStateManager returns the state manager the agent loop records the
+// owner's chat in; the heartbeat and the device service report to that chat.
+// Without a default agent the loop has none, and one reading the workspace's
+// state file stands in.
+func sharedStateManager(agentLoop *agent.AgentLoop, workspace string) *state.Manager {
+	if agentLoop != nil {
+		if sm := agentLoop.StateManager(); sm != nil {
+			return sm
+		}
+	}
+	return state.NewManager(workspace)
+}
+
+// newHeartbeatService builds the heartbeat service: it reads the owner's chat,
+// which it runs for and reports to, from sm, the agent loop's state manager.
+func newHeartbeatService(
+	cfg *config.Config,
+	agentLoop *agent.AgentLoop,
+	msgBus *bus.MessageBus,
+	sm *state.Manager,
+) *heartbeat.HeartbeatService {
+	hs := heartbeat.NewHeartbeatService(cfg.WorkspacePath(), cfg.Heartbeat.Interval, cfg.Heartbeat.Enabled)
+	hs.SetBus(msgBus)
+	hs.SetStateManager(sm)
+	hs.SetHandler(createHeartbeatHandler(agentLoop))
+	return hs
+}
+
+func createHeartbeatHandler(agentLoop *agent.AgentLoop) heartbeat.HeartbeatHandler {
+	return heartbeatHandler(agentLoop.ProcessHeartbeat)
+}
+
+// heartbeatHandler runs a heartbeat turn with process. A reply other than
+// HEARTBEAT_OK needs the owner's attention, so it is returned for the
+// heartbeat service to deliver.
+func heartbeatHandler(
+	process func(ctx context.Context, prompt, channel, chatID string) (string, error),
+) heartbeat.HeartbeatHandler {
 	return func(prompt, channel, chatID string) *tools.ToolResult {
+		// The heartbeat runs as the owner's chat it reports to. Without one
+		// it is skipped: an internal identity such as the CLI's would give
+		// unattended work local privileges.
 		if channel == "" || chatID == "" {
-			channel, chatID = "cli", "direct"
+			logger.InfoC("heartbeat", "Heartbeat skipped: the owner's chat is not known")
+			return nil
 		}
 
-		response, err := agentLoop.ProcessHeartbeat(context.Background(), prompt, channel, chatID)
+		response, err := process(context.Background(), prompt, channel, chatID)
 		if err != nil {
 			return tools.ErrorResult(fmt.Sprintf("Heartbeat error: %v", err))
 		}
-		if response == "HEARTBEAT_OK" {
+		response = strings.TrimSpace(response)
+		if response == "" || response == heartbeatOK {
 			return tools.SilentResult("Heartbeat OK")
 		}
-		return tools.SilentResult(response)
+		return tools.UserResult(response)
 	}
 }

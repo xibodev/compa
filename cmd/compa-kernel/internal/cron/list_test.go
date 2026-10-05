@@ -8,10 +8,14 @@ import (
 )
 
 func TestNewListSubcommand(t *testing.T) {
-	fn := func() string { return "" }
-	cmd := newListCommand(fn)
+	open, _ := testStore(t)
+	cmd := newListCommand(open)
 
 	require.NotNil(t, cmd)
 
 	assert.Equal(t, "List all scheduled jobs", cmd.Short)
+
+	out, err := runCommand(cmd)
+	require.NoError(t, err)
+	assert.Contains(t, out, "No scheduled jobs.")
 }

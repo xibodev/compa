@@ -201,7 +201,12 @@ func (r *AgentRegistry) providerMap() map[string]providers.LLMProvider {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	for _, agent := range r.agents {
-		for _, provider := range agent.providerList() {
+		// A /switch model may replace the agent's providers meanwhile.
+		modelMu := agent.modelStateMutex()
+		modelMu.RLock()
+		providerList := agent.providerList()
+		modelMu.RUnlock()
+		for _, provider := range providerList {
 			if provider != nil {
 				held[fmt.Sprintf("%T:%p", provider, provider)] = provider
 			}

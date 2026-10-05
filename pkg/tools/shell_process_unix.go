@@ -5,6 +5,8 @@ package tools
 import (
 	"os/exec"
 	"syscall"
+
+	"github.com/xibodev/compa/pkg/isolation"
 )
 
 func prepareCommandForTermination(cmd *exec.Cmd) {
@@ -30,3 +32,28 @@ func terminateProcessTree(cmd *exec.Cmd) error {
 	_ = cmd.Process.Kill()
 	return nil
 }
+
+// processTree is a started command together with every process it starts.
+// On Unix it is the command's process group.
+type processTree struct {
+	cmd *exec.Cmd
+}
+
+// startProcessTree starts cmd, through isolation, in a process group of its
+// own, so that kill reaches the processes the command starts as well.
+func startProcessTree(cmd *exec.Cmd) (*processTree, error) {
+	prepareCommandForTermination(cmd)
+	if err := isolation.Start(cmd); err != nil {
+		return nil, err
+	}
+	return &processTree{cmd: cmd}, nil
+}
+
+// kill kills every process of the tree.
+func (t *processTree) kill() error {
+	return terminateProcessTree(t.cmd)
+}
+
+// release lets go of the tree once the command is done. Processes the
+// command left running in the background keep running.
+func (t *processTree) release() {}

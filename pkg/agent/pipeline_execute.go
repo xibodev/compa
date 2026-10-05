@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/xibodev/compa/pkg/approval"
 	"github.com/xibodev/compa/pkg/bus"
 	"github.com/xibodev/compa/pkg/constants"
 	runtimeevents "github.com/xibodev/compa/pkg/events"
@@ -110,8 +111,9 @@ func inferSkillNamesFromToolCall(ts *turnState, toolName string, toolArgs map[st
 	return names
 }
 
-// ExecuteTools executes the tool loop, handling BeforeTool/ApproveTool/AfterTool hooks,
-// tool execution with async callbacks, media delivery, and steering injection.
+// ExecuteTools executes the tool loop, handling BeforeTool/AfterTool hooks,
+// the approval policy, tool execution with async callbacks, media delivery,
+// and steering injection.
 // Returns ToolControl indicating what the coordinator should do next:
 //   - ToolControlContinue: all tool results handled, pendingMessages or steering exists, continue turn
 //   - ToolControlBreak: tool loop exited, proceed to coordinator's hardAbort/finalContent/finalize
@@ -128,6 +130,7 @@ func (p *Pipeline) ExecuteTools(
 	ts.setPhase(TurnPhaseTools)
 	messages := exec.messages
 	handledAttachments := make([]providers.Attachment, 0)
+	var subTurnResults []providers.Message
 
 toolLoop:
 	for i, tc := range normalizedToolCalls {
@@ -204,8 +207,8 @@ toolLoop:
 						},
 					)
 
-					if shouldPublishToolFeedback(al.cfg, ts) && ts.channel != "web" {
-						toolFeedbackMaxLen := al.cfg.Agents.Defaults.GetToolFeedbackMaxArgsLength()
+					if shouldPublishToolFeedback(p.Cfg, ts) && ts.channel != "web" {
+						toolFeedbackMaxLen := p.Cfg.Agents.Defaults.GetToolFeedbackMaxArgsLength()
 						toolFeedbackExplanation := toolFeedbackExplanationForToolCall(
 							exec.response,
 							tc,
@@ -230,24 +233,17 @@ toolLoop:
 					shouldSendForUser := !hookResult.Silent && hookResult.ForUser != "" &&
 						(ts.opts.SendResponse || hookResult.ResponseHandled)
 					if shouldSendForUser {
-						al.bus.PublishOutbound(ctx, bus.OutboundMessage{
-							Context: bus.InboundContext{
-								Channel: ts.channel,
-								ChatID:  ts.chatID,
-								Raw: map[string]string{
-									"is_tool_call": "true",
-								},
-							},
-							Content: hookResult.ForUser,
-						})
+						// Like a tool's own output: to the turn's chat, keeping
+						// its account and topic.
+						al.bus.PublishOutbound(ctx, outboundMessageForTurn(ts, hookResult.ForUser))
 					}
 
 					if len(hookResult.Media) > 0 && hookResult.ResponseHandled {
 						parts := make([]bus.MediaPart, 0, len(hookResult.Media))
 						for _, ref := range hookResult.Media {
 							part := bus.MediaPart{Ref: ref}
-							if al.mediaStore != nil {
-								if _, meta, err := al.mediaStore.ResolveWithMeta(ref); err == nil {
+							if p.MediaStore != nil {
+								if _, meta, err := p.MediaStore.ResolveWithMeta(ref); err == nil {
 									part.Filename = meta.Filename
 									part.ContentType = meta.ContentType
 									part.Type = inferMediaType(meta.Filename, meta.ContentType)
@@ -269,8 +265,8 @@ toolLoop:
 							Scope:      outboundScopeFromSessionScope(ts.opts.Dispatch.SessionScope),
 							Parts:      parts,
 						}
-						if al.channelManager != nil && ts.channel != "" && !constants.IsInternalChannel(ts.channel) {
-							if err := al.channelManager.SendMedia(ctx, outboundMedia); err != nil {
+						if p.ChannelManager != nil && ts.channel != "" && !constants.IsInternalChannel(ts.channel) {
+							if err := p.ChannelManager.SendMedia(ctx, outboundMedia); err != nil {
 								logger.WarnCF("agent", "Failed to deliver hook media",
 									map[string]any{
 										"agent_id": ts.agent.ID,
@@ -284,7 +280,7 @@ toolLoop:
 							} else {
 								handledAttachments = append(
 									handledAttachments,
-									buildProviderAttachments(al.mediaStore, hookResult.Media)...,
+									buildProviderAttachments(p.MediaStore, hookResult.Media)...,
 								)
 							}
 						} else if al.bus != nil {
@@ -298,16 +294,16 @@ toolLoop:
 					}
 
 					contentForLLM := hookResult.ContentForLLM()
-					if al.cfg.Tools.IsFilterSensitiveDataEnabled() {
-						contentForLLM = al.cfg.FilterSensitiveData(contentForLLM)
+					if p.Cfg.Tools.IsFilterSensitiveDataEnabled() {
+						contentForLLM = p.Cfg.FilterSensitiveData(contentForLLM)
 					}
 
 					var toolResultMedia []string
 					if len(hookResult.Media) > 0 && !hookResult.ResponseHandled {
-						hookResult.ArtifactTags = buildArtifactTags(al.mediaStore, hookResult.Media)
+						hookResult.ArtifactTags = buildArtifactTags(p.MediaStore, hookResult.Media)
 						contentForLLM = hookResult.ContentForLLM()
-						if al.cfg.Tools.IsFilterSensitiveDataEnabled() {
-							contentForLLM = al.cfg.FilterSensitiveData(contentForLLM)
+						if p.Cfg.Tools.IsFilterSensitiveDataEnabled() {
+							contentForLLM = p.Cfg.FilterSensitiveData(contentForLLM)
 						}
 						toolResultMedia = append(toolResultMedia, hookResult.Media...)
 					}
@@ -378,19 +374,8 @@ toolLoop:
 						break toolLoop
 					}
 
-					if ts.pendingResults != nil {
-						select {
-						case result, ok := <-ts.pendingResults:
-							if ok && result != nil && result.ForLLM != "" {
-								content := al.cfg.FilterSensitiveData(result.ForLLM)
-								msg := subTurnResultPromptMessage(content)
-								messages = append(messages, msg)
-								if !ts.opts.NoHistory {
-									ts.agent.Sessions.AddFullMessage(ts.sessionKey, msg)
-								}
-							}
-						default:
-						}
+					if msg, ok := p.takeSubTurnResult(ts); ok {
+						subTurnResults = append(subTurnResults, msg)
 					}
 
 					continue
@@ -433,36 +418,28 @@ toolLoop:
 			}
 		}
 
-		if al.hooks != nil {
-			approval := al.hooks.ApproveTool(turnCtx, &ToolApprovalRequest{
-				Meta:      ts.eventMeta("runTurn", "turn.tool.approve"),
-				Context:   cloneTurnContext(ts.turnCtx),
-				Tool:      toolName,
-				Arguments: toolArgs,
-			})
-			if !approval.Approved {
-				exec.allResponsesHandled = false
-				denyContent := hookDeniedToolContent("Tool execution denied by approval hook", approval.Reason)
-				al.emitEvent(
-					runtimeevents.KindAgentToolExecSkipped,
-					ts.eventMeta("runTurn", "turn.tool.skipped"),
-					ToolExecSkippedPayload{
-						Tool:   toolName,
-						Reason: denyContent,
-					},
-				)
-				deniedMsg := providers.Message{
-					Role:       "tool",
-					Content:    denyContent,
-					ToolCallID: tc.ID,
-				}
-				messages = append(messages, deniedMsg)
-				if !ts.opts.NoHistory {
-					ts.agent.Sessions.AddFullMessage(ts.sessionKey, deniedMsg)
-					ts.recordPersistedMessage(deniedMsg)
-				}
-				continue
+		verdict := al.authorizeToolCall(turnCtx, ts, tc.ID, toolName, toolArgs)
+		if !verdict.allowed {
+			exec.allResponsesHandled = false
+			al.emitEvent(
+				runtimeevents.KindAgentToolExecSkipped,
+				ts.eventMeta("runTurn", "turn.tool.skipped"),
+				ToolExecSkippedPayload{
+					Tool:   toolName,
+					Reason: verdict.denyContent,
+				},
+			)
+			deniedMsg := providers.Message{
+				Role:       "tool",
+				Content:    verdict.denyContent,
+				ToolCallID: tc.ID,
 			}
+			messages = append(messages, deniedMsg)
+			if !ts.opts.NoHistory {
+				ts.agent.Sessions.AddFullMessage(ts.sessionKey, deniedMsg)
+				ts.recordPersistedMessage(deniedMsg)
+			}
+			continue
 		}
 
 		if denyByTurnProfile() {
@@ -486,8 +463,8 @@ toolLoop:
 			},
 		)
 
-		if shouldPublishToolFeedback(al.cfg, ts) && ts.channel != "web" {
-			toolFeedbackMaxLen := al.cfg.Agents.Defaults.GetToolFeedbackMaxArgsLength()
+		if shouldPublishToolFeedback(p.Cfg, ts) && ts.channel != "web" {
+			toolFeedbackMaxLen := p.Cfg.Agents.Defaults.GetToolFeedbackMaxArgsLength()
 			toolFeedbackExplanation := toolFeedbackExplanationForToolCall(
 				exec.response,
 				tc,
@@ -508,48 +485,9 @@ toolLoop:
 		}
 
 		toolCallID := tc.ID
-		asyncToolName := toolName
-		asyncCallback := func(_ context.Context, result *tools.ToolResult) {
-			if !result.Silent && result.ForUser != "" {
-				outCtx, outCancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer outCancel()
-				_ = al.bus.PublishOutbound(outCtx, outboundMessageForTurn(ts, result.ForUser))
-			}
-
-			content := result.ContentForLLM()
-			if content == "" {
-				return
-			}
-
-			content = al.cfg.FilterSensitiveData(content)
-
-			logger.InfoCF("agent", "Async tool completed, publishing result",
-				map[string]any{
-					"tool":        asyncToolName,
-					"content_len": len(content),
-					"channel":     ts.channel,
-				})
-			al.emitEvent(
-				runtimeevents.KindAgentFollowUpQueued,
-				ts.scope.meta(iteration, "runTurn", "turn.follow_up.queued"),
-				FollowUpQueuedPayload{
-					SourceTool: asyncToolName,
-					ContentLen: len(content),
-				},
-			)
-			pubCtx, pubCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer pubCancel()
-			_ = al.bus.PublishInbound(pubCtx, bus.InboundMessage{
-				Context: bus.InboundContext{
-					Channel:  "system",
-					ChatID:   fmt.Sprintf("%s:%s", ts.channel, ts.chatID),
-					ChatType: "direct",
-					SenderID: fmt.Sprintf("async:%s", asyncToolName),
-				},
-				Content: content,
-			})
-		}
-
+		// An async tool's result comes back as a turn of this session; see
+		// handleAsyncToolResult.
+		asyncCallback := al.asyncToolCallback(turnCtx, ts, toolName, iteration)
 		toolStart := time.Now()
 		execCtx := tools.WithToolInboundContext(
 			turnCtx,
@@ -564,8 +502,16 @@ toolLoop:
 			ts.sessionKey,
 			ts.opts.Dispatch.SessionScope,
 		)
-		toolResult := ts.agent.Tools.ExecuteWithContext(
+		if verdict.approved {
+			execCtx = approval.WithApproved(execCtx)
+		}
+		if hidden := al.hiddenTools(ts); hidden != nil {
+			// Tool discovery doesn't offer what the turn is not offered.
+			execCtx = tools.WithHiddenTools(execCtx, hidden)
+		}
+		toolResult := executeToolWithTimeout(
 			execCtx,
+			ts.agent.Tools,
 			toolName,
 			toolArgs,
 			ts.channel,
@@ -616,8 +562,8 @@ toolLoop:
 			parts := make([]bus.MediaPart, 0, len(toolResult.Media))
 			for _, ref := range toolResult.Media {
 				part := bus.MediaPart{Ref: ref}
-				if al.mediaStore != nil {
-					if _, meta, err := al.mediaStore.ResolveWithMeta(ref); err == nil {
+				if p.MediaStore != nil {
+					if _, meta, err := p.MediaStore.ResolveWithMeta(ref); err == nil {
 						part.Filename = meta.Filename
 						part.ContentType = meta.ContentType
 						part.Type = inferMediaType(meta.Filename, meta.ContentType)
@@ -639,8 +585,8 @@ toolLoop:
 				Scope:      outboundScopeFromSessionScope(ts.opts.Dispatch.SessionScope),
 				Parts:      parts,
 			}
-			if al.channelManager != nil && ts.channel != "" && !constants.IsInternalChannel(ts.channel) {
-				if err := al.channelManager.SendMedia(ctx, outboundMedia); err != nil {
+			if p.ChannelManager != nil && ts.channel != "" && !constants.IsInternalChannel(ts.channel) {
+				if err := p.ChannelManager.SendMedia(ctx, outboundMedia); err != nil {
 					logger.WarnCF("agent", "Failed to deliver handled tool media",
 						map[string]any{
 							"agent_id": ts.agent.ID,
@@ -653,7 +599,7 @@ toolLoop:
 				} else {
 					handledAttachments = append(
 						handledAttachments,
-						buildProviderAttachments(al.mediaStore, toolResult.Media)...,
+						buildProviderAttachments(p.MediaStore, toolResult.Media)...,
 					)
 				}
 			} else if al.bus != nil {
@@ -663,7 +609,7 @@ toolLoop:
 		}
 
 		if len(toolResult.Media) > 0 && !toolResult.ResponseHandled {
-			toolResult.ArtifactTags = buildArtifactTags(al.mediaStore, toolResult.Media)
+			toolResult.ArtifactTags = buildArtifactTags(p.MediaStore, toolResult.Media)
 		}
 
 		if !toolResult.ResponseHandled {
@@ -683,8 +629,8 @@ toolLoop:
 		}
 		contentForLLM := toolResult.ContentForLLM()
 
-		if al.cfg.Tools.IsFilterSensitiveDataEnabled() {
-			contentForLLM = al.cfg.FilterSensitiveData(contentForLLM)
+		if p.Cfg.Tools.IsFilterSensitiveDataEnabled() {
+			contentForLLM = p.Cfg.FilterSensitiveData(contentForLLM)
 		}
 
 		var toolResultMedia []string
@@ -756,19 +702,19 @@ toolLoop:
 			break toolLoop
 		}
 
-		if ts.pendingResults != nil {
-			select {
-			case result, ok := <-ts.pendingResults:
-				if ok && result != nil && result.ForLLM != "" {
-					content := al.cfg.FilterSensitiveData(result.ForLLM)
-					msg := subTurnResultPromptMessage(content)
-					messages = append(messages, msg)
-					if !ts.opts.NoHistory {
-						ts.agent.Sessions.AddFullMessage(ts.sessionKey, msg)
-					}
-				}
-			default:
-			}
+		if msg, ok := p.takeSubTurnResult(ts); ok {
+			subTurnResults = append(subTurnResults, msg)
+		}
+	}
+
+	// Sub-turn results follow the whole tool-result block: a user message
+	// between the results of one batch of tool calls is a sequence providers
+	// reject.
+	for _, msg := range subTurnResults {
+		messages = append(messages, msg)
+		if !ts.opts.NoHistory {
+			ts.agent.Sessions.AddFullMessage(ts.sessionKey, msg)
+			ts.recordPersistedMessage(msg)
 		}
 	}
 
@@ -820,16 +766,17 @@ toolLoop:
 			}
 		}
 		if !ts.opts.NoHistory && ts.opts.EnableSummary {
-			al.contextManager.Compact(turnCtx, &CompactRequest{
+			p.ContextManager.Compact(turnCtx, &CompactRequest{
 				SessionKey: ts.sessionKey,
 				Reason:     ContextCompressReasonSummarize,
 				Budget:     ts.agent.ContextWindow,
+				AgentID:    ts.agent.ID,
 			})
 		}
 		ts.setPhase(TurnPhaseCompleted)
 		ts.setFinalContent("")
-		if al.channelManager != nil && ts.channel != "" {
-			al.channelManager.DismissToolFeedback(ctx, ts.channel, ts.chatID, ts.opts.Dispatch.InboundContext)
+		if p.ChannelManager != nil && ts.channel != "" {
+			p.ChannelManager.DismissToolFeedback(ctx, ts.channel, ts.chatID, ts.opts.Dispatch.InboundContext)
 		}
 		logger.InfoCF("agent", "Tool output satisfied delivery; ending turn without follow-up LLM",
 			map[string]any{
@@ -842,8 +789,9 @@ toolLoop:
 
 	// allResponsesHandled=false and no pending steering: continue so coordinator
 	// makes another LLM call. The tool result is in messages and the LLM will
-	// return it as finalContent in the next iteration.
-	ts.agent.Tools.TickTTL()
+	// return it as finalContent in the next iteration. Tools this session
+	// unlocked through discovery count down one round; other sessions' don't.
+	ts.agent.Tools.TickTTLForSession(ts.sessionKey)
 	logger.DebugCF("agent", "TTL tick after tool execution", map[string]any{
 		"agent_id": ts.agent.ID, "iteration": iteration,
 	})

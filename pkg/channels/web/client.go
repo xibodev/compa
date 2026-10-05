@@ -19,6 +19,9 @@ import (
 	"github.com/xibodev/compa/pkg/logger"
 )
 
+// clientReadLimit bounds one message from the remote web chat server.
+const clientReadLimit = 16 << 20
+
 // WebClientChannel connects to a remote web chat protocol WebSocket server.
 type WebClientChannel struct {
 	*channels.BaseChannel
@@ -50,6 +53,10 @@ func NewWebClientChannel(
 // Start dials the remote server and begins reading.
 func (c *WebClientChannel) Start(ctx context.Context) error {
 	logger.InfoC("web_client", "Starting web chat client channel")
+	// The token and the remote control of the agent travel this connection.
+	if err := channels.CheckWebSocketURL(ctx, c.config.URL, "web_client url"); err != nil {
+		return err
+	}
 	c.ctx, c.cancel = context.WithCancel(ctx)
 
 	if err := c.dial(); err != nil {
@@ -93,6 +100,8 @@ func (c *WebClientChannel) dial() error {
 	if err != nil {
 		return err
 	}
+	// A server must not make the client buffer an endless message.
+	ws.SetReadLimit(clientReadLimit)
 
 	connCtx, connCancel := context.WithCancel(c.ctx)
 
@@ -249,21 +258,6 @@ func (c *WebClientChannel) handleServerMessage(pc *webConn, msg WebMessage) {
 		return
 	}
 
-	content, _ := msg.Payload[PayloadKeyContent].(string)
-	media, err := parseInlineImageMedia(msg.Payload)
-	if err != nil {
-		logger.WarnCF("web_client", "Ignoring invalid media payload", map[string]any{
-			"error": err.Error(),
-		})
-		if strings.TrimSpace(content) == "" {
-			return
-		}
-		media = nil
-	}
-	if strings.TrimSpace(content) == "" && len(media) == 0 {
-		return
-	}
-
 	sessionID := msg.SessionID
 	if sessionID == "" {
 		sessionID = pc.sessionID
@@ -276,11 +270,6 @@ func (c *WebClientChannel) handleServerMessage(pc *webConn, msg WebMessage) {
 		PlatformID:  senderID,
 		CanonicalID: identity.BuildCanonicalID("web_client", senderID),
 	}
-
-	if !c.IsAllowedSender(sender) {
-		return
-	}
-
 	inboundCtx := bus.InboundContext{
 		Channel:   "web_client",
 		ChatID:    chatID,
@@ -291,6 +280,37 @@ func (c *WebClientChannel) handleServerMessage(pc *webConn, msg WebMessage) {
 			"platform":   "web_client",
 			"session_id": sessionID,
 		},
+	}
+
+	content, _ := msg.Payload[PayloadKeyContent].(string)
+
+	// Decide on the message before decoding its media. A message the policy
+	// rejects still goes to it, as text only, so that an unpaired sender is
+	// recorded for the owner to approve.
+	if !c.Admits(inboundCtx.ChatType, sender, chatID) {
+		text := strings.TrimSpace(content)
+		if text == "" {
+			if msg.Payload["media"] == nil && msg.Payload["attachments"] == nil {
+				return
+			}
+			text = "[media]"
+		}
+		c.HandleInboundContext(c.ctx, chatID, text, nil, inboundCtx, sender)
+		return
+	}
+
+	media, err := parseInlineImageMedia(msg.Payload)
+	if err != nil {
+		logger.WarnCF("web_client", "Ignoring invalid media payload", map[string]any{
+			"error": err.Error(),
+		})
+		if strings.TrimSpace(content) == "" {
+			return
+		}
+		media = nil
+	}
+	if strings.TrimSpace(content) == "" && len(media) == 0 {
+		return
 	}
 
 	c.HandleInboundContext(c.ctx, chatID, content, media, inboundCtx, sender)

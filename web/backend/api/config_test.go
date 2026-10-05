@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -972,37 +973,29 @@ func TestHandlePatchConfig_SavesDiscordTokenFromPayload(t *testing.T) {
 	}
 }
 
-func TestHandlePatchConfig_DoesNotPersistShadowRegistryAuthTokenField(t *testing.T) {
+// A registry token sent in a PATCH is kept in .security.yml, and a later
+// PATCH of another setting, whose merged config holds the placeholder for
+// it, keeps the token.
+func TestHandlePatchConfig_KeepsTheRegistryAuthToken(t *testing.T) {
 	configPath, cleanup := setupCredentialTestEnv(t)
 	defer cleanup()
 
 	h := NewHandler(configPath)
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
-
-	req := httptest.NewRequest(http.MethodPatch, "/api/config", bytes.NewBufferString(`{
-		"tools": {
-			"skills": {
-				"registries": {
-					"github": {
-						"_auth_token": "ghp-shadow-token"
-					}
-				}
-			}
+	patch := func(body string) {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPatch, "/api/config", bytes.NewBufferString(body))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("PATCH /api/config status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
 		}
-	}`))
-	req.Header.Set("Content-Type", "application/json")
-
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf(
-			"PATCH /api/config status = %d, want %d, body=%s",
-			rec.Code,
-			http.StatusOK,
-			rec.Body.String(),
-		)
 	}
+
+	patch(`{"tools":{"skills":{"registries":{"github":{"auth_token":"ghp-test-token"}}}}}`)
+	patch(`{"agents":{"defaults":{"max_tool_iterations":7}}}`)
 
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
@@ -1012,22 +1005,22 @@ func TestHandlePatchConfig_DoesNotPersistShadowRegistryAuthTokenField(t *testing
 	if !ok {
 		t.Fatal("github registry missing after PATCH")
 	}
-	if got := githubRegistry.AuthToken.String(); got != "ghp-shadow-token" {
-		t.Fatalf("github registry auth token = %q, want %q", got, "ghp-shadow-token")
+	if got := githubRegistry.AuthToken.String(); got != "ghp-test-token" {
+		t.Fatalf("github registry auth token = %q, want %q", got, "ghp-test-token")
 	}
 	if got := githubRegistry.BaseURL; got != "https://github.com" {
 		t.Fatalf("github registry base_url = %q, want %q", got, "https://github.com")
+	}
+	if got := cfg.Agents.Defaults.MaxToolIterations; got != 7 {
+		t.Fatalf("max_tool_iterations = %d, want 7", got)
 	}
 
 	rawConfig, err := os.ReadFile(configPath)
 	if err != nil {
 		t.Fatalf("ReadFile(configPath) error = %v", err)
 	}
-	if strings.Contains(string(rawConfig), "_auth_token") {
-		t.Fatalf(
-			"config.json should not persist _auth_token shadow field, got:\n%s",
-			string(rawConfig),
-		)
+	if strings.Contains(string(rawConfig), "ghp-test-token") {
+		t.Fatalf("config.json holds the token:\n%s", rawConfig)
 	}
 }
 
@@ -1174,23 +1167,31 @@ func TestHandleTestCommandPatterns_EmptyPatterns(t *testing.T) {
 	}
 }
 
-func TestHandleTestCommandPatterns_InvalidRegexSkipped(t *testing.T) {
+// A pattern that does not compile is named, not skipped: the exec tool cannot
+// apply it either, so "no match" would mislead.
+func TestHandleTestCommandPatterns_InvalidRegexIsNamed(t *testing.T) {
 	configPath, cleanup := setupCredentialTestEnv(t)
 	defer cleanup()
 
 	rec := testCommandPatterns(t, configPath, `{
 		"allow_patterns": ["([[", "^echo"],
-		"deny_patterns": [],
+		"deny_patterns": ["^rm(", "^ok"],
 		"command": "echo hello"
 	}`)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
-	if !bytes.Contains(rec.Body.Bytes(), []byte(`"allowed":true`)) {
-		t.Fatalf(
-			"expected allowed=true, invalid pattern skipped and valid one matched, body=%s",
-			rec.Body.String(),
-		)
+	var body struct {
+		Error           string   `json:"error"`
+		InvalidPatterns []string `json:"invalid_patterns"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode %s: %v", rec.Body.String(), err)
+	}
+	if len(body.InvalidPatterns) != 2 ||
+		!strings.Contains(body.InvalidPatterns[0], `"([["`) || !strings.Contains(body.InvalidPatterns[1], `"^rm("`) ||
+		!strings.Contains(body.Error, "([[") {
+		t.Fatalf("answer = %+v, want both invalid patterns named", body)
 	}
 }
 

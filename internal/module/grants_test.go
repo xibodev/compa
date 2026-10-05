@@ -114,3 +114,60 @@ func TestApplyGrantsHandlesNil(t *testing.T) {
 	ApplyGrants(nil, &modproto.Request{}, GrantAll())
 	ApplyGrants(descriptorWith(modproto.Permissions{}), nil, GrantAll())
 }
+
+// Allowing publishing is not allowing everything. Publish used to double as
+// "authorize every declared name", so a host could not let a module publish
+// without also handing it every network, credential and paid provider it named.
+func TestAllowingPublishDoesNotAllowEverything(t *testing.T) {
+	d := descriptorWith(modproto.Permissions{
+		Network:       []string{"api.example.com"},
+		Credentials:   []string{"EXAMPLE_KEY"},
+		PaidProviders: []string{"gflow"},
+		Subprocess:    []string{"ffmpeg"},
+		Publish:       true,
+	})
+	req := &modproto.Request{}
+
+	ApplyGrants(d, req, GrantPolicy{Publish: true})
+
+	if !req.Grants.Publish {
+		t.Fatal("publish was declared and allowed, and not granted")
+	}
+	if len(req.Grants.Network)+len(req.Grants.Credentials)+len(req.Grants.PaidProviders)+len(req.Grants.Subprocess) != 0 {
+		t.Fatalf("allowing publish granted everything else too: %+v", req.Grants)
+	}
+
+	ApplyGrants(d, req, GrantPolicy{AllowDeclared: true})
+	if req.Grants.Publish {
+		t.Fatal("allowing every declared name granted publishing, which is its own decision")
+	}
+	if len(req.Grants.Credentials) != 1 || req.Grants.Credentials[0] != "EXAMPLE_KEY" {
+		t.Fatalf("credentials = %v, want the declared name", req.Grants.Credentials)
+	}
+}
+
+// GrantDeclared is what a call nobody approved carries: every declared name,
+// but not publishing, which is approved per act.
+func TestGrantDeclaredDoesNotPublish(t *testing.T) {
+	d := descriptorWith(modproto.Permissions{Network: []string{"api.example.com"}, Publish: true})
+	req := &modproto.Request{}
+	ApplyGrants(d, req, GrantDeclared())
+	if req.Grants.Publish {
+		t.Fatal("a call nobody approved was granted publishing")
+	}
+	if len(req.Grants.Network) != 1 {
+		t.Fatalf("network = %v, want the declared name", req.Grants.Network)
+	}
+	ApplyGrants(d, req, GrantAll())
+	if !req.Grants.Publish {
+		t.Fatal("an approved call was not granted publishing")
+	}
+	ApplyGrants(d, req, GrantsFor(false))
+	if req.Grants.Publish || len(req.Grants.Network) != 1 {
+		t.Fatalf("GrantsFor(false) = %+v, want GrantDeclared", req.Grants)
+	}
+	ApplyGrants(d, req, GrantsFor(true))
+	if !req.Grants.Publish {
+		t.Fatal("GrantsFor(true) did not grant publishing")
+	}
+}

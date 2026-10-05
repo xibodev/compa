@@ -7,20 +7,10 @@
 // implementation are separate concerns (operator ruling), so nothing here
 // implements approval, budgets, resume, or effects.
 //
-// NOT YET WIRED, AND THAT IS NOT AN OVERSIGHT. CheckPin has no callers today,
-// because the v1 descriptor has no contract_version field to read and v1 is
-// immutable -- adding one would be smuggling successor semantics into a v1
-// exchange, which the operator ruling forbids. The gate exists first so that
-// nothing downstream is built assuming v2 guarantees before there is a check
-// that they were agreed to.
-//
-// This repo has shipped the opposite shape twice, and both are recorded as
-// defects: internal/view's schema-keyed views and Registry.SetEnabled are
-// declared, documented, and have no callers. The difference is that those are
-// unreachable BEHAVIOUR presented as available, while this is a gate waiting
-// for a wire that does not exist yet. Stated explicitly so the next reader does
-// not have to infer which kind it is -- an unwired thing that nobody labels
-// looks identical to a forgotten one.
+// WHERE IT RUNS. modprotov2.Evaluate calls CheckPin on every described
+// module's descriptor, and discovery (internal/moduletools) refuses a module
+// whose pin is refused or whose v2 declaration does not conform: it is not
+// registered. A module declaring no contract_version is served under v1.
 //
 // WHY A SEPARATE PACKAGE FROM modproto. xibodev.module/v1 is immutable legacy
 // behaviour: nothing may be added to it, and tolerant decoding is not

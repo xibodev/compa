@@ -159,6 +159,11 @@ func (b *evolutionBridge) handleTurnEndAsync(meta HookMeta, payload TurnEndPaylo
 	if b == nil || b.runtime == nil {
 		return false
 	}
+	// Only the owner's turns teach the agent: what other people write in a
+	// chat must not turn into skills.
+	if !payload.FromOwner {
+		return false
+	}
 
 	input := evolution.TurnCaseInput{
 		Workspace:             payload.Workspace,

@@ -330,6 +330,47 @@ func TestAgentLoop_Continue_WithMessages(t *testing.T) {
 	}
 }
 
+// In a continuation turn too, an answer that more steering overtakes is
+// delivered at once, before the reply to that steering: the user gets every
+// answer, in order.
+func TestAgentLoop_Continue_DeliversAnAnswerOvertakenBySteering(t *testing.T) {
+	sessionKey := session.BuildOpaqueSessionKey("continuation-overtaken")
+	var al *AgentLoop
+	provider := &scriptedProvider{step: func(call int, _ []providers.Message) (*providers.LLMResponse, error) {
+		if call == 1 {
+			if err := al.enqueueSteeringMessage(sessionKey, "main",
+				providers.Message{Role: "user", Content: "one more thing"}); err != nil {
+				return nil, err
+			}
+			return &providers.LLMResponse{Content: "answer to the follow-up"}, nil
+		}
+		return &providers.LLMResponse{Content: "answer to one more thing"}, nil
+	}}
+	msgBus := bus.NewMessageBus()
+	al = NewAgentLoop(testConfig(t), msgBus, provider)
+
+	if err := al.enqueueSteeringMessage(sessionKey, "main",
+		providers.Message{Role: "user", Content: "follow-up"}); err != nil {
+		t.Fatalf("enqueueSteeringMessage() error = %v", err)
+	}
+	resp, err := al.Continue(context.Background(), sessionKey, "test", "chat1")
+	if err != nil {
+		t.Fatalf("Continue() error = %v", err)
+	}
+	if resp != "answer to one more thing" {
+		t.Fatalf("Continue() = %q, want the reply to the later steering", resp)
+	}
+	select {
+	case out := <-msgBus.OutboundChan():
+		if out.Content != "answer to the follow-up" || out.Channel != "test" || out.ChatID != "chat1" {
+			t.Fatalf("outbound = %q to %s:%s, want the overtaken answer in test:chat1",
+				out.Content, out.Channel, out.ChatID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("the overtaken answer was not delivered")
+	}
+}
+
 // slowTool simulates a tool that takes some time to execute.
 type slowTool struct {
 	name     string
@@ -758,21 +799,24 @@ func TestAgentLoop_Run_AutoContinuesLateSteeringMessage(t *testing.T) {
 	subCtx, subCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer subCancel()
 
-	var out1 bus.OutboundMessage
-	select {
-	case out1 = <-msgBus.OutboundChan():
-	case <-subCtx.Done():
-		t.Fatal("expected outbound response")
-	}
-	if out1.Content != "continued response" {
-		t.Fatalf("expected continued response, got %q", out1.Content)
+	// The first answer is delivered, then the reply to the late message:
+	// whether the message reached the turn before it answered or only after.
+	for _, want := range []string{"first response", "continued response"} {
+		select {
+		case out := <-msgBus.OutboundChan():
+			if out.Content != want {
+				t.Fatalf("outbound = %q, want %q", out.Content, want)
+			}
+		case <-subCtx.Done():
+			t.Fatalf("expected the outbound %q", want)
+		}
 	}
 
 	noExtraCtx, cancelNoExtra := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancelNoExtra()
 	select {
-	case out2 := <-msgBus.OutboundChan():
-		t.Fatalf("expected stale direct response to be suppressed, got extra outbound %q", out2.Content)
+	case out := <-msgBus.OutboundChan():
+		t.Fatalf("expected no further outbound, got %q", out.Content)
 	case <-noExtraCtx.Done():
 	}
 
@@ -889,12 +933,18 @@ func TestAgentLoop_Run_QueuedVoiceMessageIsTranscribedBeforeSteering(t *testing.
 
 	close(provider.releaseFirstCall)
 
+	// The first answer goes out, then the reply to the voice message.
 	subCtx, subCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer subCancel()
-	select {
-	case <-msgBus.OutboundChan():
-	case <-subCtx.Done():
-		t.Fatal("expected outbound response")
+	for _, want := range []string{"first response", "continued response"} {
+		select {
+		case out := <-msgBus.OutboundChan():
+			if out.Content != want {
+				t.Fatalf("outbound = %q, want %q", out.Content, want)
+			}
+		case <-subCtx.Done():
+			t.Fatalf("expected the outbound %q", want)
+		}
 	}
 
 	cancelRun()
@@ -1141,6 +1191,9 @@ func TestAgentLoop_Steering_DirectResponseContinuesWithQueuedMessage(t *testing.
 		resp string
 		err  error
 	}, 1)
+	// Chat clears provider.firstStarted under its lock once it closed it;
+	// wait on the channel itself.
+	firstStarted := provider.firstStarted
 	go func() {
 		resp, err := al.ProcessDirectWithChannel(
 			context.Background(),
@@ -1156,7 +1209,7 @@ func TestAgentLoop_Steering_DirectResponseContinuesWithQueuedMessage(t *testing.
 	}()
 
 	select {
-	case <-provider.firstStarted:
+	case <-firstStarted:
 	case <-time.After(2 * time.Second):
 		t.Fatal("timeout waiting for first LLM call to start")
 	}

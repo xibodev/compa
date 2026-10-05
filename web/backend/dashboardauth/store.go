@@ -40,6 +40,13 @@ func Open(path string) (*Store, error) {
 	if err != nil {
 		return nil, err
 	}
+	// One connection: every statement of this process runs in turn, and the
+	// busy timeout set on it holds for all of them.
+	db.SetMaxOpenConns(1)
+	if _, err = db.Exec(sqlBusyTimeout); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	if _, err = db.Exec(sqlCreateTable); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -66,15 +73,42 @@ func (s *Store) IsInitialized(ctx context.Context) (bool, error) {
 // SetPassword hashes plain with bcrypt (cost 12) and stores (or replaces) it.
 // The plaintext is never written to disk.
 func (s *Store) SetPassword(ctx context.Context, plain string) error {
-	if len([]rune(plain)) == 0 {
-		return errors.New("password must not be empty")
-	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(plain), bcryptCost)
+	hash, err := hashPassword(plain)
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, sqlUpsertHash, string(hash))
+	_, err = s.db.ExecContext(ctx, sqlUpsertHash, hash)
 	return err
+}
+
+// InitializePassword stores plain as the first password. It reports false,
+// changing nothing, when a password is stored already, so of two first-run
+// setups racing each other exactly one succeeds.
+func (s *Store) InitializePassword(ctx context.Context, plain string) (bool, error) {
+	hash, err := hashPassword(plain)
+	if err != nil {
+		return false, err
+	}
+	res, err := s.db.ExecContext(ctx, sqlInsertFirstHash, hash)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n == 1, nil
+}
+
+func hashPassword(plain string) (string, error) {
+	if len([]rune(plain)) == 0 {
+		return "", errors.New("password must not be empty")
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(plain), bcryptCost)
+	if err != nil {
+		return "", err
+	}
+	return string(hash), nil
 }
 
 // VerifyPassword returns true iff plain matches the stored bcrypt hash.

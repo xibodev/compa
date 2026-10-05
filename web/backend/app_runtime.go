@@ -62,13 +62,17 @@ func shutdownApp() {
 	}
 }
 
+// openBrowser opens the dashboard: the setup page with its token while no
+// password is set, else a fresh one-time sign-in link when allowed. Each call
+// decides anew, so the tray's "Open" never reuses a used link.
 func openBrowser() error {
-	target := browserLaunchURL
-	if target == "" {
-		target = serverAddr
-	}
-	if target == "" {
+	if serverAddr == "" {
 		return fmt.Errorf("server address not set")
 	}
-	return utils.OpenBrowser(target)
+	suffix := launcherBrowserLaunchSuffix(
+		launcherNeedsSetup(browserLaunch.store),
+		browserLaunch.setupToken,
+		browserLaunch.autoLogin,
+	)
+	return utils.OpenBrowser(serverAddr + suffix)
 }

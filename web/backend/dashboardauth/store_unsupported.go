@@ -50,6 +50,11 @@ func (s *Store) SetPassword(context.Context, string) error {
 	return unsupportedPlatformError()
 }
 
+// InitializePassword reports that the store is unavailable on this platform.
+func (s *Store) InitializePassword(context.Context, string) (bool, error) {
+	return false, unsupportedPlatformError()
+}
+
 // VerifyPassword reports that the store is unavailable on this platform.
 func (s *Store) VerifyPassword(context.Context, string) (bool, error) {
 	return false, unsupportedPlatformError()

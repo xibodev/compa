@@ -2,6 +2,7 @@ package seahorse
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
 
@@ -20,8 +21,14 @@ func TestSanitizeFTS5Query(t *testing.T) {
 		{"+required", `"+required"`},
 		{"prefix*", `"prefix*"`},
 		{"^initial", `"^initial"`},
-		{"crash OR restart", `"crash" "OR" "restart"`},
+		{"crash OR restart", `"crash" OR "restart"`},
+		{"bug AND login", `"bug" AND "login"`},
+		{"bug NOT fixed", `"bug" NOT "fixed"`},
+		{`"exact phrase" OR other`, `"exact phrase" OR "other"`},
 		{"NOT excluded", `"NOT" "excluded"`},
+		{"trailing OR", `"trailing" "OR"`},
+		{"a AND OR b", `"a" "AND" OR "b"`},
+		{"lower or case", `"lower" "or" "case"`},
 		{"(grouped)", `"(grouped)"`},
 
 		// User-quoted phrases preserved
@@ -187,19 +194,35 @@ func TestFTS5OperatorsNotInterpreted(t *testing.T) {
 		TokenCount:     50,
 	})
 
-	t.Run("OR must not be boolean", func(t *testing.T) {
-		// "crash OR restart" as literal means all three tokens must appear.
-		// The message "restart the service now please" has "restart" but not "crash" or "OR".
-		// Boolean OR would match it; literal AND should not.
+	t.Run("OR, AND and NOT are boolean between terms", func(t *testing.T) {
+		// The short_grep description documents these operators.
 		result, err := re.Grep(ctx, GrepInput{Pattern: "crash OR restart", Scope: "message"})
 		if err != nil {
 			t.Fatalf("Grep returned error: %v", err)
 		}
+		if len(result.Messages) != 1 {
+			t.Errorf("crash OR restart: got %d messages, want 1 (the restart-only message)", len(result.Messages))
+		}
+
+		result, err = re.Grep(ctx, GrepInput{Pattern: "restart AND crash", Scope: "message"})
+		if err != nil {
+			t.Fatalf("Grep returned error: %v", err)
+		}
 		if len(result.Messages) != 0 {
-			t.Errorf(
-				"OR treated as boolean: got %d messages, want 0 (only-restart message should not match literal AND of 'crash','OR','restart')",
-				len(result.Messages),
-			)
+			t.Errorf("restart AND crash: got %d messages, want 0", len(result.Messages))
+		}
+
+		result, err = re.Grep(ctx, GrepInput{Pattern: "the NOT service", Scope: "message"})
+		if err != nil {
+			t.Fatalf("Grep returned error: %v", err)
+		}
+		for _, m := range result.Messages {
+			if strings.Contains(m.Snippet, "service") {
+				t.Errorf("the NOT service matched %q", m.Snippet)
+			}
+		}
+		if len(result.Messages) != 2 {
+			t.Errorf("the NOT service: got %d messages, want 2", len(result.Messages))
 		}
 	})
 

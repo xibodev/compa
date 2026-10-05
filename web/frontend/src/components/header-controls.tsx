@@ -70,7 +70,10 @@ export function LanguageMenu({
 }
 
 /** Switches between the light and the dark theme. */
-export function ThemeToggle({ className, variant = "ghost" }: HeaderControlProps) {
+export function ThemeToggle({
+  className,
+  variant = "ghost",
+}: HeaderControlProps) {
   const { t } = useTranslation()
   const { theme, toggleTheme } = useTheme()
   const label =

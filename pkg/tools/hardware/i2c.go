@@ -56,7 +56,7 @@ func (t *I2CTool) Parameters() map[string]any {
 			},
 			"confirm": map[string]any{
 				"type":        "boolean",
-				"description": "Must be true for write operations. Safety guard to prevent accidental writes.",
+				"description": "Must be true for write, scan and register reads, which all send bytes to devices. Safety guard to prevent accidental writes.",
 			},
 		},
 		"required": []string{"action"},
@@ -64,13 +64,26 @@ func (t *I2CTool) Parameters() map[string]any {
 }
 
 func (t *I2CTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
-	if runtime.GOOS != "linux" {
-		return ErrorResult("I2C is only supported on Linux. This tool requires /dev/i2c-* device files.")
-	}
-
 	action, ok := args["action"].(string)
 	if !ok {
 		return ErrorResult("action is required")
+	}
+
+	// Some "reads" put bytes on the bus, so they need the same confirmation
+	// as writes.
+	switch _, hasRegister := args["register"]; {
+	case action == "scan":
+		if r := requireConfirm(args, "scan sends a quick write to every address, which some devices act on"); r != nil {
+			return r
+		}
+	case action == "read" && hasRegister:
+		if r := requireConfirm(args, "a register read first writes the register byte to the device"); r != nil {
+			return r
+		}
+	}
+
+	if runtime.GOOS != "linux" {
+		return ErrorResult("I2C is only supported on Linux. This tool requires /dev/i2c-* device files.")
 	}
 
 	switch action {

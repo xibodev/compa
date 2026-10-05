@@ -1,8 +1,11 @@
 package utils
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
+	"math/rand/v2"
 	"net/http"
 	"strconv"
 	"time"
@@ -15,12 +18,33 @@ var (
 	maxRetrySleepDuration = 1 * time.Minute
 )
 
+// shouldRetry reports a status another try may get past: a timeout, a rate
+// limit or a server failure that passes. 501, 505 and the like never do.
 func shouldRetry(statusCode int) bool {
-	return statusCode == http.StatusTooManyRequests ||
-		statusCode >= 500
+	switch statusCode {
+	case http.StatusRequestTimeout, http.StatusTooManyRequests, http.StatusInternalServerError,
+		http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	}
+	return false
 }
 
+// DoRequestWithRetry sends req, up to maxRetries times in all while it fails
+// with a transport error or a status shouldRetry accepts, waiting between
+// tries with exponential backoff and jitter, or a 429's Retry-After. Every
+// try sends the whole body: it comes from req.GetBody, and a body without
+// one is read once, up front.
 func DoRequestWithRetry(client *http.Client, req *http.Request) (*http.Response, error) {
+	if req.Body != nil && req.Body != http.NoBody && req.GetBody == nil {
+		body, err := io.ReadAll(req.Body)
+		_ = req.Body.Close()
+		if err != nil {
+			return nil, fmt.Errorf("failed to read request body: %w", err)
+		}
+		req.Body = io.NopCloser(bytes.NewReader(body))
+		req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(body)), nil }
+	}
+
 	var resp *http.Response
 	var err error
 
@@ -29,7 +53,16 @@ func DoRequestWithRetry(client *http.Client, req *http.Request) (*http.Response,
 			_ = resp.Body.Close()
 		}
 
-		resp, err = client.Do(req)
+		attempt := req
+		if i > 0 {
+			attempt = req.Clone(req.Context())
+			if req.GetBody != nil {
+				if attempt.Body, err = req.GetBody(); err != nil {
+					return nil, fmt.Errorf("failed to reset request body: %w", err)
+				}
+			}
+		}
+		resp, err = client.Do(attempt)
 		if err == nil {
 			if resp.StatusCode == http.StatusOK {
 				break
@@ -51,8 +84,12 @@ func DoRequestWithRetry(client *http.Client, req *http.Request) (*http.Response,
 	return resp, err
 }
 
+// retryDelayForAttempt is the wait before the try after attempt: a 429's
+// Retry-After, else retryDelayUnit doubled for each try, plus up to half of
+// it again at random, so clients that failed together do not retry together.
 func retryDelayForAttempt(resp *http.Response, attempt int) time.Duration {
-	fallback := retryDelayUnit * time.Duration(attempt+1)
+	backoff := retryDelayUnit << min(attempt, 10)
+	fallback := backoff + rand.N(backoff/2+1)
 	if resp == nil || resp.StatusCode != http.StatusTooManyRequests {
 		return clampRetryDelay(fallback)
 	}

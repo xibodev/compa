@@ -2,20 +2,28 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"sync"
 	"time"
 
 	"github.com/xibodev/compa/pkg/config"
 	runtimeevents "github.com/xibodev/compa/pkg/events"
+	"github.com/xibodev/compa/pkg/logger"
 )
 
+// hookRuntime is the configured-hook state of the loop. loadMu serializes
+// loading the hooks with a reload's reset, so a reset never races a load
+// that turns or the reload run.
 type hookRuntime struct {
-	initOnce sync.Once
-	mu       sync.Mutex
-	initErr  error
-	mounted  []string
+	loadMu sync.Mutex
+	loaded bool // guarded by loadMu
+
+	mu      sync.Mutex
+	initErr error
+	mounted []string
 }
 
 func (r *hookRuntime) setInitErr(err error) {
@@ -36,13 +44,18 @@ func (r *hookRuntime) setMounted(names []string) {
 	r.mu.Unlock()
 }
 
+// reset unmounts the configured hooks, for the next ensureHooksInitialized
+// to load them from the current config.
 func (r *hookRuntime) reset(al *AgentLoop) {
+	r.loadMu.Lock()
+	defer r.loadMu.Unlock()
+
 	r.mu.Lock()
 	names := append([]string(nil), r.mounted...)
 	r.mounted = nil
 	r.initErr = nil
-	r.initOnce = sync.Once{}
 	r.mu.Unlock()
+	r.loaded = false
 
 	for _, name := range names {
 		al.UnmountHook(name)
@@ -112,44 +125,56 @@ func hookTimeoutFromMS(ms int) time.Duration {
 }
 
 func (al *AgentLoop) ensureHooksInitialized(ctx context.Context) error {
-	if al == nil || al.cfg == nil || al.hooks == nil {
+	if al == nil || al.GetConfig() == nil || al.hooks == nil {
 		return nil
 	}
 
-	al.hookRuntime.initOnce.Do(func() {
-		al.hookRuntime.setInitErr(al.loadConfiguredHooks(ctx))
-	})
+	r := &al.hookRuntime
+	r.loadMu.Lock()
+	defer r.loadMu.Unlock()
+	if !r.loaded {
+		r.loaded = true
+		err := al.loadConfiguredHooks(ctx)
+		r.setInitErr(err)
+		al.reportInitError("Hooks", err)
+	}
 
-	return al.hookRuntime.getInitErr()
+	return r.getInitErr()
 }
 
-func (al *AgentLoop) loadConfiguredHooks(ctx context.Context) (err error) {
-	if al == nil || al.cfg == nil || !al.cfg.Hooks.Enabled {
+// loadConfiguredHooks mounts the configured hooks. A hook that fails to
+// start is left out and its error returned, joined with the others'; the
+// hooks that started stay mounted. An approval hook that fails to start is
+// replaced by one that denies every tool call: a missing approver must not
+// approve everything.
+func (al *AgentLoop) loadConfiguredHooks(ctx context.Context) error {
+	if al == nil {
+		return nil
+	}
+	cfg := al.GetConfig()
+	if cfg == nil || !cfg.Hooks.Enabled {
 		return nil
 	}
 
-	mounted := make([]string, 0)
-	defer func() {
-		if err != nil {
-			for _, name := range mounted {
-				al.UnmountHook(name)
-			}
-			return
-		}
-		al.hookRuntime.setMounted(mounted)
-	}()
+	var (
+		mounted []string
+		errs    []error
+	)
+	defer func() { al.hookRuntime.setMounted(mounted) }()
 
-	builtinNames := enabledBuiltinHookNames(al.cfg.Hooks.Builtins)
+	builtinNames := enabledBuiltinHookNames(cfg.Hooks.Builtins)
 	for _, name := range builtinNames {
-		spec := al.cfg.Hooks.Builtins[name]
+		spec := cfg.Hooks.Builtins[name]
 		factory, ok := lookupBuiltinHook(name)
 		if !ok {
-			return fmt.Errorf("builtin hook %q is not registered", name)
+			errs = append(errs, fmt.Errorf("builtin hook %q is not registered", name))
+			continue
 		}
 
 		hook, factoryErr := factory(ctx, spec)
 		if factoryErr != nil {
-			return fmt.Errorf("build builtin hook %q: %w", name, factoryErr)
+			errs = append(errs, fmt.Errorf("build builtin hook %q: %w", name, factoryErr))
+			continue
 		}
 		if err := al.MountHook(HookRegistration{
 			Name:     name,
@@ -157,22 +182,31 @@ func (al *AgentLoop) loadConfiguredHooks(ctx context.Context) (err error) {
 			Source:   HookSourceInProcess,
 			Hook:     hook,
 		}); err != nil {
-			return fmt.Errorf("mount builtin hook %q: %w", name, err)
+			errs = append(errs, fmt.Errorf("mount builtin hook %q: %w", name, err))
+			continue
 		}
 		mounted = append(mounted, name)
 	}
 
-	processNames := enabledProcessHookNames(al.cfg.Hooks.Processes)
+	processNames := enabledProcessHookNames(cfg.Hooks.Processes)
 	for _, name := range processNames {
-		spec := al.cfg.Hooks.Processes[name]
+		spec := cfg.Hooks.Processes[name]
 		opts, buildErr := processHookOptionsFromConfig(spec)
 		if buildErr != nil {
-			return fmt.Errorf("configure process hook %q: %w", name, buildErr)
+			errs = append(errs, fmt.Errorf("configure process hook %q: %w", name, buildErr))
+			if processHookSpecApproves(spec) && al.mountFailedApprover(name, spec.Priority, buildErr) {
+				mounted = append(mounted, name)
+			}
+			continue
 		}
 
-		processHook, buildErr := NewProcessHook(ctx, name, opts)
+		processHook, buildErr := newSupervisedProcessHook(ctx, name, opts)
 		if buildErr != nil {
-			return fmt.Errorf("start process hook %q: %w", name, buildErr)
+			errs = append(errs, fmt.Errorf("start process hook %q: %w", name, buildErr))
+			if opts.ApproveTool && al.mountFailedApprover(name, spec.Priority, buildErr) {
+				mounted = append(mounted, name)
+			}
+			continue
 		}
 		if err := al.MountHook(HookRegistration{
 			Name:     name,
@@ -181,12 +215,50 @@ func (al *AgentLoop) loadConfiguredHooks(ctx context.Context) (err error) {
 			Hook:     processHook,
 		}); err != nil {
 			_ = processHook.Close()
-			return fmt.Errorf("mount process hook %q: %w", name, err)
+			errs = append(errs, fmt.Errorf("mount process hook %q: %w", name, err))
+			continue
 		}
 		mounted = append(mounted, name)
 	}
 
-	return nil
+	return errors.Join(errs...)
+}
+
+// processHookSpecApproves reports whether a process hook is configured to
+// approve tool calls.
+func processHookSpecApproves(spec config.ProcessHookConfig) bool {
+	return slices.Contains(spec.Intercept, "approve_tool")
+}
+
+// mountFailedApprover mounts, under the name of an approval hook that failed
+// to start, a hook that denies every tool call with the reason.
+func (al *AgentLoop) mountFailedApprover(name string, priority int, cause error) bool {
+	err := al.MountHook(HookRegistration{
+		Name:     name,
+		Priority: priority,
+		Source:   HookSourceInProcess,
+		Hook:     failedApprovalHook{name: name, cause: cause},
+	})
+	if err != nil {
+		logger.ErrorCF("hooks", "Failed to mount the stand-in of an approval hook that did not start",
+			map[string]any{"hook": name, "error": err.Error()})
+		return false
+	}
+	return true
+}
+
+// failedApprovalHook stands in for an approval hook that did not start: it
+// denies every tool call.
+type failedApprovalHook struct {
+	name  string
+	cause error
+}
+
+func (h failedApprovalHook) ApproveTool(context.Context, *ToolApprovalRequest) (ApprovalDecision, error) {
+	return ApprovalDecision{
+		Approved: false,
+		Reason:   fmt.Sprintf("approval hook %q is not running (%v)", h.name, h.cause),
+	}, nil
 }
 
 func enabledBuiltinHookNames(specs map[string]config.BuiltinHookConfig) []string {

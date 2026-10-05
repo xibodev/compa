@@ -2,6 +2,7 @@ package discord
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -328,8 +329,9 @@ func (c *DiscordChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMes
 	done := make(chan mediaResult, 1)
 	go func() {
 		sentMsg, err := c.session.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
-			Content: caption,
-			Files:   files,
+			Content:         caption,
+			Files:           files,
+			AllowedMentions: noMentions(),
 		})
 		if err != nil {
 			done <- mediaResult{err: err}
@@ -366,8 +368,23 @@ func (c *DiscordChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMes
 
 // EditMessage implements channels.MessageEditor.
 func (c *DiscordChannel) EditMessage(ctx context.Context, chatID string, messageID string, content string) error {
-	_, err := c.session.ChannelMessageEdit(chatID, messageID, content, discordgo.WithContext(ctx))
+	_, err := c.session.ChannelMessageEditComplex(&discordgo.MessageEdit{
+		Channel:         chatID,
+		ID:              messageID,
+		Content:         &content,
+		AllowedMentions: noMentions(),
+	}, discordgo.WithContext(ctx))
 	return err
+}
+
+// noMentions keeps a message from pinging anyone but the author of the
+// message it replies to: the text comes from the model, and could otherwise
+// ping @everyone, @here, roles or any user.
+func noMentions() *discordgo.MessageAllowedMentions {
+	return &discordgo.MessageAllowedMentions{
+		Parse:       []discordgo.AllowedMentionType{},
+		RepliedUser: true,
+	}
 }
 
 // DeleteMessage implements channels.MessageDeleter.
@@ -385,7 +402,10 @@ func (c *DiscordChannel) SendPlaceholder(ctx context.Context, chatID string) (st
 
 	text := c.bc.Placeholder.GetRandomText()
 
-	msg, err := c.session.ChannelMessageSend(chatID, text)
+	msg, err := c.session.ChannelMessageSendComplex(chatID, &discordgo.MessageSend{
+		Content:         text,
+		AllowedMentions: noMentions(),
+	})
 	if err != nil {
 		return "", err
 	}
@@ -484,22 +504,21 @@ func (c *DiscordChannel) sendChunk(ctx context.Context, channelID, content, repl
 			err error
 		)
 
+		send := &discordgo.MessageSend{
+			Content:         content,
+			AllowedMentions: noMentions(),
+		}
 		// If we have an ID, we send the message as "Reply"
 		if replyToID != "" {
-			msg, err = c.session.ChannelMessageSendComplex(channelID, &discordgo.MessageSend{
-				Content: content,
-				Reference: &discordgo.MessageReference{
-					MessageID: replyToID,
-					ChannelID: channelID,
-				},
-			})
-		} else {
-			// Otherwise, we send a normal message
-			msg, err = c.session.ChannelMessageSend(channelID, content)
+			send.Reference = &discordgo.MessageReference{
+				MessageID: replyToID,
+				ChannelID: channelID,
+			}
 		}
+		msg, err = c.session.ChannelMessageSendComplex(channelID, send)
 
 		if err != nil {
-			done <- result{err: fmt.Errorf("discord send: %w", channels.ErrTemporary)}
+			done <- result{err: fmt.Errorf("discord send: %w", classifySendError(err))}
 			return
 		}
 		done <- result{id: msg.ID}
@@ -513,6 +532,22 @@ func (c *DiscordChannel) sendChunk(ctx context.Context, channelID, content, repl
 	}
 }
 
+// classifySendError maps a failed request to the channel error sentinels: a
+// rate limit is retried after the pause Discord asks for, other client
+// errors are not retried, and anything else is retried with backoff.
+func classifySendError(err error) error {
+	var limited *discordgo.RateLimitError
+	if errors.As(err, &limited) && limited.RateLimit != nil && limited.TooManyRequests != nil {
+		return channels.NewRateLimitError(limited.RetryAfter, err)
+	}
+	var restErr *discordgo.RESTError
+	if errors.As(err, &restErr) && restErr.Response != nil {
+		return channels.ClassifySendErrorRetryAfter(restErr.Response.StatusCode,
+			restErr.Response.Header.Get("Retry-After"), err)
+	}
+	return channels.ClassifyNetError(err)
+}
+
 // appendContent safely appends content to existing text
 func appendContent(content, suffix string) string {
 	if content == "" {
@@ -521,16 +556,21 @@ func appendContent(content, suffix string) string {
 	return content + "\n" + suffix
 }
 
+// fetchAttachment downloads an attachment; tests replace it.
+var fetchAttachment = (*DiscordChannel).downloadAttachment
+
 func (c *DiscordChannel) handleMessage(s *discordgo.Session, m *discordgo.MessageCreate) {
+	defer channels.RecoverPanic(c.Name(), "message")
 	if m == nil || m.Author == nil {
 		return
 	}
 
-	if m.Author.ID == s.State.User.ID {
+	// Other bots (and webhooks) are not people talking to the agent; two bots
+	// answering each other would loop.
+	if m.Author.Bot || (s.State != nil && s.State.User != nil && m.Author.ID == s.State.User.ID) {
 		return
 	}
 
-	// Check allowlist first to avoid downloading attachments for rejected users
 	sender := bus.SenderInfo{
 		Platform:    "discord",
 		PlatformID:  m.Author.ID,
@@ -544,10 +584,31 @@ func (c *DiscordChannel) handleMessage(s *discordgo.Session, m *discordgo.Messag
 	}
 	sender.DisplayName = displayName
 
-	if !c.IsAllowedSender(sender) {
-		logger.DebugCF("discord", "Message rejected by allowlist", map[string]any{
+	peerKind := "channel"
+	if m.GuildID == "" {
+		peerKind = "direct"
+	}
+
+	// Decide on the message before downloading or looking anything up. A
+	// direct message the policy rejects still goes to it, as text only, so
+	// that an unpaired sender is recorded for the owner to approve.
+	if !c.Admits(peerKind, sender, m.ChannelID) {
+		logger.DebugCF("discord", "Message not admitted by the access policy", map[string]any{
 			"user_id": m.Author.ID,
 		})
+		if m.GuildID == "" {
+			content := c.stripBotMention(m.Content)
+			if strings.TrimSpace(content) == "" {
+				content = "[media only]"
+			}
+			c.HandleInboundContext(c.ctx, m.ChannelID, content, nil, bus.InboundContext{
+				Channel:   c.Name(),
+				ChatID:    m.ChannelID,
+				ChatType:  peerKind,
+				SenderID:  m.Author.ID,
+				MessageID: m.ID,
+			}, sender)
+		}
 		return
 	}
 
@@ -583,7 +644,7 @@ func (c *DiscordChannel) handleMessage(s *discordgo.Session, m *discordgo.Messag
 
 	// Resolve Discord refs in main content before concatenation to avoid
 	// double-expanding links that appear in the referenced message.
-	content = c.resolveDiscordRefs(s, content, m.GuildID)
+	content = c.resolveDiscordRefs(s, content, m.GuildID, m.Author.ID)
 
 	// Prepend referenced (quoted) message content if this is a reply
 	if m.MessageReference != nil && m.ReferencedMessage != nil {
@@ -593,7 +654,7 @@ func (c *DiscordChannel) handleMessage(s *discordgo.Session, m *discordgo.Messag
 			if m.ReferencedMessage.Author != nil {
 				refAuthor = m.ReferencedMessage.Author.Username
 			}
-			refContent = c.resolveDiscordRefs(s, refContent, m.GuildID)
+			refContent = c.resolveDiscordRefs(s, refContent, m.GuildID, m.Author.ID)
 			content = fmt.Sprintf("[quoted message from %s]: %s\n\n%s",
 				refAuthor, refContent, content)
 		}
@@ -622,7 +683,7 @@ func (c *DiscordChannel) handleMessage(s *discordgo.Session, m *discordgo.Messag
 	}
 
 	for _, attachment := range m.Attachments {
-		localPath := c.downloadAttachment(attachment.URL, attachment.Filename)
+		localPath := fetchAttachment(c, attachment.URL, attachment.Filename)
 		if localPath != "" {
 			mediaPaths = append(mediaPaths, storeMedia(localPath, attachment))
 			tag := attachmentMediaTag(attachment.Filename, attachment.ContentType)
@@ -650,11 +711,6 @@ func (c *DiscordChannel) handleMessage(s *discordgo.Session, m *discordgo.Messag
 		"sender_id":   senderID,
 		"preview":     utils.Truncate(content, 50),
 	})
-
-	peerKind := "channel"
-	if m.GuildID == "" {
-		peerKind = "direct"
-	}
 
 	metadata := map[string]string{
 		"user_id":      senderID,
@@ -803,8 +859,9 @@ func applyDiscordProxy(session *discordgo.Session, proxyAddr string) error {
 
 // resolveDiscordRefs resolves channel references (<#id> → #channel-name) and
 // expands Discord message links to show the linked message content.
-// Only links pointing to the same guild are expanded to prevent cross-guild leakage.
-func (c *DiscordChannel) resolveDiscordRefs(s *discordgo.Session, text string, guildID string) string {
+// Only links pointing to the same guild, into channels the message's author
+// may read, are expanded: the bot fetches them with its own permissions.
+func (c *DiscordChannel) resolveDiscordRefs(s *discordgo.Session, text, guildID, authorID string) string {
 	// 1. Resolve channel references: <#id> → #channel-name
 	text = channelRefRe.ReplaceAllStringFunc(text, func(match string) string {
 		parts := channelRefRe.FindStringSubmatch(match)
@@ -832,6 +889,9 @@ func (c *DiscordChannel) resolveDiscordRefs(s *discordgo.Session, text string, g
 		if linkGuildID != guildID {
 			continue
 		}
+		if !canReadChannel(s, authorID, channelID) {
+			continue
+		}
 		msg, err := s.ChannelMessage(channelID, messageID)
 		if err != nil || msg == nil || msg.Content == "" {
 			continue
@@ -844,6 +904,27 @@ func (c *DiscordChannel) resolveDiscordRefs(s *discordgo.Session, text string, g
 	}
 
 	return text
+}
+
+// readPermissions are what a member needs to read a channel's messages.
+const readPermissions = discordgo.PermissionViewChannel | discordgo.PermissionReadMessageHistory
+
+// canReadChannel reports whether userID may read channelID's history, so that
+// a linked message is shown only to someone who could open it. The cached
+// state answers when it has the member; otherwise the API is asked. Any
+// error counts as no.
+func canReadChannel(s *discordgo.Session, userID, channelID string) bool {
+	if userID == "" {
+		return false
+	}
+	perms, err := int64(0), error(nil)
+	if s.State != nil {
+		perms, err = s.State.UserChannelPermissions(userID, channelID)
+	}
+	if s.State == nil || err != nil {
+		perms, err = s.UserChannelPermissions(userID, channelID)
+	}
+	return err == nil && perms&readPermissions == readPermissions
 }
 
 // stripBotMention removes the bot mention from the message content.

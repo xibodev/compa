@@ -42,7 +42,9 @@ describe("useChatSelections", () => {
       if (path === "/api/provider-targets")
         return Promise.resolve(
           new Response(
-            JSON.stringify({ targets: [{ target: "remote-provider/chat-model" }] }),
+            JSON.stringify({
+              targets: [{ target: "remote-provider/chat-model" }],
+            }),
           ),
         )
       if (path === "/api/model-routes")
@@ -53,9 +55,7 @@ describe("useChatSelections", () => {
 
     const { result } = renderHook(() => useChatSelections())
     await waitFor(() => expect(result.current.targets).toHaveLength(1))
-    expect(result.current.targets[0]?.target).toBe(
-      "remote-provider/chat-model",
-    )
+    expect(result.current.targets[0]?.target).toBe("remote-provider/chat-model")
   })
 
   it("retains targets when route discovery fails", async () => {
@@ -64,7 +64,9 @@ describe("useChatSelections", () => {
       vi.fn((input: RequestInfo | URL) => {
         if (String(input) === "/api/provider-targets")
           return Promise.resolve(
-            new Response(JSON.stringify({ targets: [{ target: "first/model" }] })),
+            new Response(
+              JSON.stringify({ targets: [{ target: "first/model" }] }),
+            ),
           )
         return Promise.resolve(new Response("failed", { status: 500 }))
       }),

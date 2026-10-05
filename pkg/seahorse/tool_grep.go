@@ -30,6 +30,7 @@ Pattern syntax:
 - AND: "auth AND login" - matches content with both words
 - OR: "auth OR signin" - matches content with either word
 - NOT: "bug NOT fixed" - matches "bug" but excludes "fixed"
+  (AND/OR/NOT must be uppercase and between two words; "quoted phrases" match exactly)
 - Wildcard: "%auth%" - matches any text containing "auth" (e.g., "auth", "authentication")
 
 Each summary has a "depth" field:
@@ -131,6 +132,25 @@ func (t *GrepTool) Execute(ctx context.Context, args map[string]any) *tools.Tool
 	if allConv, ok := args["all_conversations"].(bool); ok {
 		input.AllConversations = allConv
 	}
+	if !input.AllConversations {
+		// Search only the conversation of the turn that called the tool. With
+		// no stored conversation there is nothing to search; never fall back
+		// to every conversation.
+		convID, err := t.engine.CurrentConversationID(ctx, tools.ToolSessionKey(ctx))
+		if err != nil {
+			return tools.ErrorResult("Grep failed: " + err.Error())
+		}
+		if convID == 0 {
+			data, _ := json.Marshal(map[string]any{
+				"success":   true,
+				"summaries": []GrepSummaryResult{},
+				"messages":  []GrepMessageResult{},
+				"hint":      "No stored history for this conversation yet. Use all_conversations: true to search other conversations.",
+			})
+			return tools.NewToolResult(string(data))
+		}
+		input.ConversationID = convID
+	}
 	if limit, ok := args["limit"].(float64); ok {
 		input.Limit = int(limit)
 	}
@@ -140,6 +160,7 @@ func (t *GrepTool) Execute(ctx context.Context, args map[string]any) *tools.Tool
 			return tools.ErrorResult(fmt.Sprintf(
 				"Invalid 'since' timestamp. Use RFC3339 format like '2024-01-15T10:00:00Z'. Error: %v", err))
 		}
+		parsed = parsed.UTC()
 		input.Since = &parsed
 	}
 	if beforeStr, ok := args["before"].(string); ok && beforeStr != "" {
@@ -147,6 +168,7 @@ func (t *GrepTool) Execute(ctx context.Context, args map[string]any) *tools.Tool
 		if err != nil {
 			return tools.ErrorResult(fmt.Sprintf("Invalid 'before' timestamp format: %v", err))
 		}
+		parsed = parsed.UTC()
 		input.Before = &parsed
 	}
 

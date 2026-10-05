@@ -220,10 +220,14 @@ func TestInstanceRouteStreamingPreservesWinnerThroughToolLoop(t *testing.T) {
 	if err != nil || response != "tool result answer" {
 		t.Fatalf("response=%q error=%v", response, err)
 	}
-	if primary.streamCalls.Load() != 1 || fallback.streamCalls.Load() != 2 {
+	// One failure does not open the primary's circuit, so the tool loop's
+	// second call tries it again before the fallback serves it.
+	if primary.streamCalls.Load() != 2 || fallback.streamCalls.Load() != 2 {
 		t.Fatalf("stream calls primary=%d fallback=%d", primary.streamCalls.Load(), fallback.streamCalls.Load())
 	}
-	if streamer.canceled != 2 || streamer.cleared != 1 || len(streamer.finalized) != 1 || streamer.finalized[0] != "tool result answer" {
+	// Each failed primary attempt cancels and clears its preview; the tool
+	// call round cancels one more.
+	if streamer.canceled != 3 || streamer.cleared != 2 || len(streamer.finalized) != 1 || streamer.finalized[0] != "tool result answer" {
 		t.Fatalf("stream lifecycle canceled=%d cleared=%d finalized=%v", streamer.canceled, streamer.cleared, streamer.finalized)
 	}
 	history := al.registry.GetDefaultAgent().Sessions.GetHistory(session.BuildOpaqueSessionKey("stream-tool"))

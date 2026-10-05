@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/xibodev/compa/pkg/logger"
 	"github.com/xibodev/compa/pkg/utils"
@@ -17,6 +18,20 @@ const (
 	RegexSearchToolName   = "tool_search_tool_regex"
 	BM25SearchToolName    = "tool_search_tool_bm25"
 )
+
+type hiddenToolsKey struct{}
+
+// WithHiddenTools returns ctx for a call of a turn that is not offered the
+// tools hidden reports (the approval policy's hide): tool discovery leaves
+// them out. hidden runs under the registry's lock and must not use it.
+func WithHiddenTools(ctx context.Context, hidden func(name string, tool Tool) bool) context.Context {
+	return context.WithValue(ctx, hiddenToolsKey{}, hidden)
+}
+
+func hiddenToolsFrom(ctx context.Context) func(name string, tool Tool) bool {
+	hidden, _ := ctx.Value(hiddenToolsKey{}).(func(name string, tool Tool) bool)
+	return hidden
+}
 
 type RegexSearchTool struct {
 	registry         *ToolRegistry
@@ -72,14 +87,14 @@ func (t *RegexSearchTool) Execute(ctx context.Context, args map[string]any) *Too
 
 	logger.DebugCF("discovery", "Regex search", map[string]any{"pattern": pattern})
 
-	res, err := t.registry.SearchRegex(pattern, t.maxSearchResults)
+	res, err := t.registry.searchRegex(pattern, t.maxSearchResults, hiddenToolsFrom(ctx))
 	if err != nil {
-		logger.WarnCF("discovery", "Invalid regex pattern", map[string]any{"pattern": pattern, "error": err.Error()})
+		logger.DebugCF("discovery", "Invalid regex pattern", map[string]any{"pattern": pattern, "error": err.Error()})
 		return ErrorResult(fmt.Sprintf("Invalid regex pattern syntax: %v. Please fix your regex and try again.", err))
 	}
 
-	logger.InfoCF("discovery", "Regex search completed", map[string]any{"pattern": pattern, "results": len(res)})
-	return formatDiscoveryResponse(t.registry, res, t.ttl)
+	logger.InfoCF("discovery", "Regex search completed", map[string]any{"results": len(res)})
+	return formatDiscoveryResponse(t.registry, ToolSessionKey(ctx), res, t.ttl)
 }
 
 type BM25SearchTool struct {
@@ -87,10 +102,17 @@ type BM25SearchTool struct {
 	ttl              int
 	maxSearchResults int
 
-	// Cache: rebuilt only when the registry version changes.
-	cacheMu      sync.Mutex
-	cachedEngine *bm25CachedEngine
-	cacheVersion uint64
+	// Cache: rebuilt only when the registry version changes. The pointer is
+	// read without the lock, so the engine and its version travel together.
+	cacheMu sync.Mutex
+	cache   atomic.Pointer[bm25Cache]
+}
+
+// bm25Cache is a built engine and the registry version it was built at. A nil
+// engine means there were no hidden tools at that version.
+type bm25Cache struct {
+	engine  *bm25CachedEngine
+	version uint64
 }
 
 func NewBM25SearchTool(r *ToolRegistry, ttl int, maxSearchResults int) *BM25SearchTool {
@@ -142,22 +164,35 @@ func (t *BM25SearchTool) Execute(ctx context.Context, args map[string]any) *Tool
 		return SilentResult("No tools found matching the query.")
 	}
 
-	ranked := cached.engine.Search(query, t.maxSearchResults)
-	if len(ranked) == 0 {
+	// Leaving out the tools the turn may not see takes ranking them all.
+	hidden := hiddenToolsFrom(ctx)
+	limit := t.maxSearchResults
+	if hidden != nil {
+		limit = cached.size
+	}
+	ranked := cached.engine.Search(query, limit)
+	results := make([]ToolSearchResult, 0, len(ranked))
+	for _, r := range ranked {
+		if len(results) >= t.maxSearchResults {
+			break
+		}
+		if hidden != nil {
+			if tool, ok := t.registry.registered(r.Document.Name); !ok || hidden(r.Document.Name, tool) {
+				continue
+			}
+		}
+		results = append(results, ToolSearchResult{
+			Name:        r.Document.Name,
+			Description: r.Document.Description,
+		})
+	}
+	if len(results) == 0 {
 		logger.DebugCF("discovery", "BM25 search: no matches", map[string]any{"query": query})
 		return SilentResult("No tools found matching the query.")
 	}
 
-	results := make([]ToolSearchResult, len(ranked))
-	for i, r := range ranked {
-		results[i] = ToolSearchResult{
-			Name:        r.Document.Name,
-			Description: r.Document.Description,
-		}
-	}
-
-	logger.InfoCF("discovery", "BM25 search completed", map[string]any{"query": query, "results": len(results)})
-	return formatDiscoveryResponse(t.registry, results, t.ttl)
+	logger.InfoCF("discovery", "BM25 search completed", map[string]any{"results": len(results)})
+	return formatDiscoveryResponse(t.registry, ToolSessionKey(ctx), results, t.ttl)
 }
 
 // ToolSearchResult represents the result returned to the LLM.
@@ -169,6 +204,15 @@ type ToolSearchResult struct {
 }
 
 func (r *ToolRegistry) SearchRegex(pattern string, maxSearchResults int) ([]ToolSearchResult, error) {
+	return r.searchRegex(pattern, maxSearchResults, nil)
+}
+
+// searchRegex is SearchRegex without the tools hidden reports, if not nil.
+func (r *ToolRegistry) searchRegex(
+	pattern string,
+	maxSearchResults int,
+	hidden func(name string, tool Tool) bool,
+) ([]ToolSearchResult, error) {
 	if maxSearchResults <= 0 {
 		return nil, nil
 	}
@@ -188,6 +232,9 @@ func (r *ToolRegistry) SearchRegex(pattern string, maxSearchResults int) ([]Tool
 		entry := r.tools[name]
 		// Search only among the hidden tools (Core tools are already visible)
 		if !entry.IsCore {
+			if hidden != nil && hidden(name, entry.Tool) {
+				continue
+			}
 			// Directly call interface methods! No reflection/unmarshalling needed.
 			desc := entry.Tool.Description()
 
@@ -206,7 +253,10 @@ func (r *ToolRegistry) SearchRegex(pattern string, maxSearchResults int) ([]Tool
 	return results, nil
 }
 
-func formatDiscoveryResponse(registry *ToolRegistry, results []ToolSearchResult, ttl int) *ToolResult {
+// formatDiscoveryResponse unlocks the found tools for the session that
+// searched -- other sessions of the agent keep their own tool lists -- and
+// describes them to the model.
+func formatDiscoveryResponse(registry *ToolRegistry, sessionKey string, results []ToolSearchResult, ttl int) *ToolResult {
 	if len(results) == 0 {
 		return SilentResult("No tools found matching the query.")
 	}
@@ -215,7 +265,7 @@ func formatDiscoveryResponse(registry *ToolRegistry, results []ToolSearchResult,
 	for i, r := range results {
 		names[i] = r.Name
 	}
-	registry.PromoteTools(names, ttl)
+	registry.PromoteToolsForSession(sessionKey, names, ttl)
 	logger.InfoCF("discovery", "Promoted tools", map[string]any{"tools": names, "ttl": ttl})
 
 	b, err := json.Marshal(results)
@@ -241,6 +291,8 @@ type searchDoc struct {
 // bm25CachedEngine wraps a BM25Engine with its corpus snapshot.
 type bm25CachedEngine struct {
 	engine *utils.BM25Engine[searchDoc]
+	// size is the number of tools in the corpus.
+	size int
 }
 
 // snapshotToSearchDocs converts a HiddenToolSnapshot to BM25 searchDoc slice.
@@ -265,9 +317,9 @@ func buildBM25Engine(docs []searchDoc) *utils.BM25Engine[searchDoc] {
 // getOrBuildEngine returns a cached BM25 engine, rebuilding it only when
 // the registry version has changed (new tools registered).
 func (t *BM25SearchTool) getOrBuildEngine() *bm25CachedEngine {
-	// Fast path: optimistic check without locking.
-	if t.cachedEngine != nil && t.cacheVersion == t.registry.Version() {
-		return t.cachedEngine
+	// Fast path: one atomic load gives a consistent engine and version.
+	if cached := t.cache.Load(); cached != nil && cached.version == t.registry.Version() {
+		return cached.engine
 	}
 
 	t.cacheMu.Lock()
@@ -278,22 +330,20 @@ func (t *BM25SearchTool) getOrBuildEngine() *bm25CachedEngine {
 	snap := t.registry.SnapshotHiddenTools()
 
 	// Re-check: another goroutine may have rebuilt while we waited for cacheMu.
-	if t.cachedEngine != nil && t.cacheVersion == snap.Version {
-		return t.cachedEngine
+	if cached := t.cache.Load(); cached != nil && cached.version == snap.Version {
+		return cached.engine
 	}
 
 	docs := snapshotToSearchDocs(snap)
 	if len(docs) == 0 {
-		t.cachedEngine = nil
-		t.cacheVersion = snap.Version
+		t.cache.Store(&bm25Cache{version: snap.Version})
 		return nil
 	}
 
-	cached := &bm25CachedEngine{engine: buildBM25Engine(docs)}
-	t.cachedEngine = cached
-	t.cacheVersion = snap.Version
+	engine := &bm25CachedEngine{engine: buildBM25Engine(docs), size: len(docs)}
+	t.cache.Store(&bm25Cache{engine: engine, version: snap.Version})
 	logger.DebugCF("discovery", "BM25 engine rebuilt", map[string]any{"docs": len(docs), "version": snap.Version})
-	return cached
+	return engine
 }
 
 func isToolDiscoveryToolName(name string) bool {

@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"os"
 	"path/filepath"
 	"runtime"
 	"testing"
@@ -74,6 +75,21 @@ func TestDevNullIsStillAllowed(t *testing.T) {
 // blocked and the real path never validated at all.
 func TestAnAbsoluteInWorkspacePathIsAllowed(t *testing.T) {
 	ws := t.TempDir()
+	tool := &ExecTool{workingDir: ws, restrictToWorkspace: true}
+
+	cmd := "find " + ws + " -name '*.go'"
+	if guard := tool.guardCommand(cmd, ws); guard != "" {
+		t.Fatalf("the guard blocked a path inside the workspace: %s\n  %s", guard, cmd)
+	}
+}
+
+// A ~ inside a name, as in a Windows 8.3 short name (RUNNER~1), is not the
+// home folder: only a ~ that starts a path is.
+func TestATildeInsideANameIsNotTheHomeFolder(t *testing.T) {
+	ws := filepath.Join(t.TempDir(), "RUNNER~1")
+	if err := os.Mkdir(ws, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	tool := &ExecTool{workingDir: ws, restrictToWorkspace: true}
 
 	cmd := "find " + ws + " -name '*.go'"

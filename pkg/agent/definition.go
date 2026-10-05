@@ -31,7 +31,6 @@ type AgentFrontmatter struct {
 	Description string         `json:"description"`
 	Tools       []string       `json:"tools,omitempty"`
 	Model       string         `json:"model,omitempty"`
-	MaxTurns    *int           `json:"maxTurns,omitempty"`
 	Skills      []string       `json:"skills,omitempty"`
 	MCPServers  []string       `json:"mcpServers,omitempty"`
 	Fields      map[string]any `json:"-"`
@@ -146,7 +145,6 @@ func parseAgentFrontmatter(path, frontmatter string) (AgentFrontmatter, error) {
 		Description string   `yaml:"description"`
 		Tools       []string `yaml:"tools"`
 		Model       string   `yaml:"model"`
-		MaxTurns    *int     `yaml:"maxTurns"`
 		Skills      []string `yaml:"skills"`
 		MCPServers  []string `yaml:"mcpServers"`
 	}
@@ -163,7 +161,6 @@ func parseAgentFrontmatter(path, frontmatter string) (AgentFrontmatter, error) {
 		Description: strings.TrimSpace(typed.Description),
 		Tools:       append([]string(nil), typed.Tools...),
 		Model:       strings.TrimSpace(typed.Model),
-		MaxTurns:    typed.MaxTurns,
 		Skills:      append([]string(nil), typed.Skills...),
 		MCPServers:  append([]string(nil), typed.MCPServers...),
 		Fields:      rawFields,

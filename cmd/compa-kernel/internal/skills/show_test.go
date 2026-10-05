@@ -12,7 +12,7 @@ func TestNewShowSubcommand(t *testing.T) {
 
 	require.NotNil(t, cmd)
 
-	assert.Equal(t, "show", cmd.Use)
+	assert.Equal(t, "show <name>", cmd.Use)
 	assert.Equal(t, "Show skill details", cmd.Short)
 
 	assert.Nil(t, cmd.Run)

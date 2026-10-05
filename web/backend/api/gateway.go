@@ -7,17 +7,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"reflect"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/xibodev/compa/pkg/config"
@@ -30,19 +29,27 @@ import (
 
 // gateway holds the state for the managed gateway process.
 var gateway = struct {
-	mu                  sync.Mutex
-	cmd                 *exec.Cmd
-	owned               bool // true if we started the process, false if we attached to an existing one
-	bootDefaultModel    string
-	bootConfigSignature string
-	// bootModelSignature is modelSelectionSignatures of the config the
-	// running gateway applied, joined; "" when unknown.
-	bootModelSignature string
-	runtimeStatus      string
-	startupDeadline    time.Time
-	logs               *LogBuffer
-	pidData            *ppid.PidFileData // pid file data read from .compa.pid
-	webChatToken       string            // cached raw web chat token for upstream gateway proxy injection
+	mu               sync.Mutex
+	cmd              *exec.Cmd
+	owned            bool // true if we started the process, false if we attached to an existing one
+	bootDefaultModel string
+	// bootConfig is the signature of the config the running gateway
+	// applied, at boot or by a reload; nil when unknown. A saved config
+	// whose signature differs needs a restart, or a reload for its live
+	// parts (see applyLiveConfig).
+	bootConfig      configSignature
+	runtimeStatus   string
+	startupDeadline time.Time
+	logs            *LogBuffer
+	pidData         *ppid.PidFileData // pid file data read from .compa.pid
+	webChatToken    string            // cached raw web chat token for upstream gateway proxy injection
+	// stopping is the kernel a stop or restart is ending, so its exit is
+	// not taken for a crash.
+	stopping *exec.Cmd
+	// shutdown is set once the launcher exits: nothing restarts then.
+	shutdown bool
+	// crashRestarts are the automatic restarts within gatewayCrashWindow.
+	crashRestarts []time.Time
 }{
 	runtimeStatus: "stopped",
 	logs:          NewLogBuffer(200),
@@ -161,56 +168,68 @@ func getGatewayHealthByURL(url string, timeout time.Duration) (*health.StatusRes
 	return &healthResponse, resp.StatusCode, nil
 }
 
+// gatewayReadyProbeTimeout bounds the readiness probe a status check makes.
+const gatewayReadyProbeTimeout = 800 * time.Millisecond
+
+// gatewayReadinessFailure asks the kernel pidData describes whether it
+// processes messages: its /ready answers 503 naming each failed check. It
+// returns the first failed check (by name) and its message, or "" when the
+// kernel is ready, has not finished starting, or does not answer; whether it
+// runs at all is decided elsewhere.
+func (h *Handler) gatewayReadinessFailure(pidData *ppid.PidFileData, cfg *config.Config) (check, message string) {
+	resp, err := gatewayHealthGet(gatewayBaseURLForPidData(h, pidData, cfg)+"/ready", gatewayReadyProbeTimeout)
+	if err != nil {
+		return "", ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		return "", ""
+	}
+	var ready health.StatusResponse
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&ready); err != nil {
+		return "", ""
+	}
+	names := make([]string, 0, len(ready.Checks))
+	for name, c := range ready.Checks {
+		if c.Status == "fail" {
+			names = append(names, name)
+		}
+	}
+	if len(names) == 0 {
+		return "", ""
+	}
+	sort.Strings(names)
+	failed := ready.Checks[names[0]]
+	message = strings.TrimSpace(failed.Message)
+	if message == "" {
+		message = names[0] + " check failed"
+	}
+	return names[0], message
+}
+
+// trackedGatewayReadinessFailure is gatewayReadinessFailure for the kernel
+// this launcher tracks, when it is alive and its PID file was read.
+func (h *Handler) trackedGatewayReadinessFailure() (check, message string) {
+	gateway.mu.Lock()
+	cmd := gateway.cmd
+	pidData := copyPidData(gateway.pidData)
+	gateway.mu.Unlock()
+	if pidData == nil || cmd == nil || cmd.Process == nil || cmd.Process.Pid != pidData.PID ||
+		!isCmdProcessAliveLocked(cmd) {
+		return "", ""
+	}
+	cfg, _ := config.LoadConfig(h.configPath)
+	return h.gatewayReadinessFailure(pidData, cfg)
+}
+
 // isLikelyGatewayProcess returns whether PID appears to be a compa-kernel gateway
 // process plus whether inspection was conclusive on this platform/environment.
+// A process that no longer runs is conclusively no gateway.
 func isLikelyGatewayProcess(pid int) (bool, bool) {
-	if pid <= 0 {
+	if pid <= 0 || !ppid.IsProcessRunning(pid) {
 		return false, true
 	}
-
-	if runtime.GOOS == "windows" {
-		psCmd := fmt.Sprintf(
-			`$p=Get-CimInstance Win32_Process -Filter "ProcessId = %d"; if ($null -eq $p) { "" } else { $p.CommandLine }`,
-			pid,
-		)
-		out, err := launcherExecCommand("powershell", "-NoProfile", "-NonInteractive", "-Command", psCmd).Output()
-		if err == nil {
-			cmdline := strings.TrimSpace(string(out))
-			if cmdline != "" {
-				return looksLikeGatewayCommandLine(cmdline), true
-			}
-		}
-
-		// Fallback: determine only whether the process still exists.
-		out, err = launcherExecCommand("tasklist", "/FI", "PID eq "+strconv.Itoa(pid), "/FO", "CSV", "/NH").Output()
-		if err != nil {
-			return false, false
-		}
-		line := strings.ToLower(strings.TrimSpace(string(out)))
-		if line == "" {
-			return false, true
-		}
-		// A CSV row means the process exists, but may have a custom executable
-		// name we cannot classify here. The harness ships under exactly one
-		// name, compa-kernel, beside the shell and standalone alike.
-		if strings.HasPrefix(line, "\"") {
-			return strings.Contains(line, "\""+utils.KernelBinaryName()+"\""), true
-		}
-		if strings.Contains(line, "no tasks are running") {
-			return false, true
-		}
-		return false, true
-	}
-
-	out, err := launcherExecCommand("ps", "-o", "command=", "-p", strconv.Itoa(pid)).Output()
-	if err != nil {
-		return false, false
-	}
-	cmdline := strings.ToLower(strings.TrimSpace(string(out)))
-	if cmdline == "" {
-		return false, true
-	}
-	return looksLikeGatewayCommandLine(cmdline), true
+	return inspectGatewayProcess(pid)
 }
 
 // looksLikeGatewayCommandLine checks whether a process command line likely
@@ -270,7 +289,7 @@ func (h *Handler) validateGatewayPidData(
 		return false, true, "invalid pid data"
 	}
 
-	if gatewayProcess, inspected := gatewayProcessMatcher(pidData.PID); inspected {
+	if gatewayProcess, inspected := cachedGatewayProcessMatch(pidData.PID); inspected {
 		if !gatewayProcess {
 			return false, true, "pid process command is not compa-kernel gateway"
 		}
@@ -321,42 +340,59 @@ func (h *Handler) registerGatewayRoutes(mux *http.ServeMux) {
 // running, when the config loads. Intended to be called by the backend at
 // startup.
 func (h *Handler) TryAutoStartGateway() {
+	gatewayLifecycleMu.Lock()
+	defer gatewayLifecycleMu.Unlock()
+
+	pid, attached, err := h.ensureGatewayRunningLocked("starting")
+	switch {
+	case err != nil:
+		logger.ErrorC("gateway", fmt.Sprintf("Failed to auto-start gateway: %v", err))
+	case attached:
+		logger.InfoC("gateway", fmt.Sprintf("Attached to running gateway via PID file (PID: %d)", pid))
+	default:
+		logger.InfoC("gateway", fmt.Sprintf("Gateway auto-started (PID: %d)", pid))
+	}
+}
+
+// ensureGatewayRunningLocked makes a kernel run: a tracked kernel that is
+// alive stays as it is, a kernel the PID file names is attached, and
+// otherwise a new one starts. It reports the PID and whether it attached.
+// The caller holds gatewayLifecycleMu.
+func (h *Handler) ensureGatewayRunningLocked(initialStatus string) (int, bool, error) {
 	cfg, err := h.gatewayStartConfig()
 	if err != nil {
-		logger.ErrorC("gateway", fmt.Sprintf("Skip auto-starting gateway: %v", err))
-		return
-	}
-
-	// Check PID file first to detect an already-running gateway.
-	pidData := h.sanitizeGatewayPidData(ppid.ReadPidFileWithCheck(globalConfigDir()), cfg)
-	if pidData != nil {
-		gateway.mu.Lock()
-		defer gateway.mu.Unlock()
-		pid := pidData.PID
-		if _, err := h.startGatewayLocked("starting", pid); err != nil {
-			logger.ErrorC("gateway", fmt.Sprintf("Failed to attach to running gateway (PID: %d): %v", pid, err))
-			return
-		}
-		gateway.pidData = pidData
-		refreshWebChatTokenLocked(h.configPath)
-		logger.InfoC("gateway", fmt.Sprintf("Attached to running gateway via PID file (PID: %d)", pid))
-		return
+		return 0, false, err
 	}
 
 	gateway.mu.Lock()
-	defer gateway.mu.Unlock()
+	tracked := gateway.cmd
+	gateway.mu.Unlock()
+	if tracked != nil && tracked.Process != nil && isCmdProcessAliveLocked(tracked) {
+		return tracked.Process.Pid, false, nil
+	}
 
-	if gateway.cmd != nil && gateway.cmd.Process != nil {
-		gateway.cmd = nil
+	// Check PID file first to detect an already-running gateway. Probing
+	// happens before gateway.mu is taken.
+	if pidData := h.sanitizeGatewayPidData(ppid.ReadPidFileWithCheck(globalConfigDir()), cfg); pidData != nil {
+		gateway.mu.Lock()
+		defer gateway.mu.Unlock()
+		if err := attachToGatewayProcessLocked(pidData.PID, cfg); err != nil {
+			return 0, false, fmt.Errorf("failed to attach to running gateway (PID %d): %w", pidData.PID, err)
+		}
+		gateway.pidData = pidData
+		refreshWebChatTokenLocked(h.configPath)
+		return pidData.PID, true, nil
 	}
 
 	h.logDefaultModelState(cfg)
-	pid, err := h.startGatewayLocked("starting", 0)
+	gateway.mu.Lock()
+	defer gateway.mu.Unlock()
+	gateway.cmd = nil
+	pid, err := h.startGatewayLocked(initialStatus, 0)
 	if err != nil {
-		logger.ErrorC("gateway", fmt.Sprintf("Failed to auto-start gateway: %v", err))
-		return
+		return 0, false, err
 	}
-	logger.InfoC("gateway", fmt.Sprintf("Gateway auto-started (PID: %d)", pid))
+	return pid, false, nil
 }
 
 // gatewayStartConfig returns the config the gateway would start with, or why
@@ -412,12 +448,33 @@ func (h *Handler) logDefaultModelState(cfg *config.Config) {
 	}
 }
 
-func computeConfigSignature(cfg *config.Config) string {
+// configSignature is the part of a config the restart indicator compares,
+// keyed by what it covers: the model selections, the approval policy, the
+// tools, the web tool settings, and per channel its access and the rest of
+// its config, secrets included.
+type configSignature map[string]string
+
+// Keys of a configSignature. The channel keys are followed by the channel's
+// name.
+const (
+	signatureModels   = "models"
+	signatureApproval = "approval"
+	signatureTools    = "tools"
+	signatureWeb      = "web"
+	// signatureAccess: a channel's allow_from, dm_policy and group_policy.
+	signatureAccess = "access:"
+	// signatureChannel: the rest of a channel's config, secrets included.
+	signatureChannel = "channel:"
+)
+
+func computeConfigSignature(cfg *config.Config) configSignature {
 	if cfg == nil {
-		return ""
+		return nil
 	}
-	var parts []string
-	parts = append(parts, "models:"+strings.Join(modelSelectionSignatures(cfg), ","))
+	signature := configSignature{
+		signatureModels:   modelSelectionSignature(cfg),
+		signatureApproval: signatureJSON(cfg.Tools.Approval),
+	}
 	toolSignatures := []string{}
 	if cfg.Tools.ReadFile.Enabled {
 		toolSignatures = append(toolSignatures, "read_file")
@@ -442,10 +499,7 @@ func computeConfigSignature(cfg *config.Config) string {
 	}
 	if cfg.Tools.Web.Enabled {
 		toolSignatures = append(toolSignatures, "web")
-		webConfig, err := json.Marshal(canonicalizeSignatureValue(reflect.ValueOf(cfg.Tools.Web)))
-		if err == nil {
-			parts = append(parts, "webcfg:"+string(webConfig))
-		}
+		signature[signatureWeb] = signatureJSON(cfg.Tools.Web)
 	}
 	if cfg.Tools.WebFetch.Enabled {
 		toolSignatures = append(toolSignatures, "web_fetch")
@@ -486,20 +540,57 @@ func computeConfigSignature(cfg *config.Config) string {
 	if cfg.Tools.MCP.Discovery.UseBM25 {
 		toolSignatures = append(toolSignatures, "mcp_discovery_bm25")
 	}
-	if len(toolSignatures) > 0 {
-		parts = append(parts, "tools:"+strings.Join(toolSignatures, ","))
+	signature[signatureTools] = strings.Join(toolSignatures, ",")
+	for name, channel := range cfg.Channels {
+		addChannelSignature(signature, name, channel)
 	}
-	channelSignatures := computeChannelSignatures(cfg.Channels)
-	if len(channelSignatures) > 0 {
-		parts = append(parts, "channels:"+strings.Join(channelSignatures, ","))
+	return signature
+}
+
+// equal reports whether s and other cover the same config.
+func (s configSignature) equal(other configSignature) bool {
+	return maps.Equal(s, other)
+}
+
+// isLiveSignatureKey reports whether a change of what key covers takes
+// effect in the running gateway through its /reload, without a restart: the
+// model selections, the approval policy and the channels' access lists and
+// policies.
+func isLiveSignatureKey(key string) bool {
+	return key == signatureModels || key == signatureApproval || strings.HasPrefix(key, signatureAccess)
+}
+
+// liveEqual reports whether s and other agree on their live parts (see
+// isLiveSignatureKey).
+func (s configSignature) liveEqual(other configSignature) bool {
+	return s.equalOn(other, isLiveSignatureKey)
+}
+
+// equalBesidesLive reports whether s and other agree on all but their live
+// parts.
+func (s configSignature) equalBesidesLive(other configSignature) bool {
+	return s.equalOn(other, func(key string) bool { return !isLiveSignatureKey(key) })
+}
+
+// equalOn reports whether s and other agree on the keys covered selects.
+func (s configSignature) equalOn(other configSignature, covered func(key string) bool) bool {
+	for key, value := range s {
+		if otherValue, ok := other[key]; covered(key) && (!ok || otherValue != value) {
+			return false
+		}
 	}
-	return strings.Join(parts, ";")
+	for key := range other {
+		if _, ok := s[key]; covered(key) && !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // modelSelectionSignatures returns the model settings the gateway reads from
 // the config it boots with — the default, image and light model selections,
 // the light-model routing and each agent's model — so changing one requires
-// a restart. Provider instances, their runtime settings, routes and catalogs
+// a reload. Provider instances, their runtime settings, routes and catalogs
 // are left out: the gateway resolves a selection against them as saved when
 // a turn runs.
 func modelSelectionSignatures(cfg *config.Config) []string {
@@ -521,59 +612,59 @@ func modelSelectionSignature(cfg *config.Config) string {
 	if cfg == nil {
 		return ""
 	}
-	return "models:" + strings.Join(modelSelectionSignatures(cfg), ",")
+	return strings.Join(modelSelectionSignatures(cfg), ",")
 }
 
-func computeChannelSignatures(channels config.ChannelsConfig) []string {
-	if len(channels) == 0 {
-		return nil
+// addChannelSignature adds the signature of the channel name to signature:
+// its access, and the rest of its config, secrets included.
+func addChannelSignature(signature configSignature, name string, channel *config.Channel) {
+	if channel == nil {
+		signature[signatureChannel+name] = "<nil>"
+		return
 	}
-
-	keys := make([]string, 0, len(channels))
-	for name := range channels {
-		keys = append(keys, name)
-	}
-	sort.Strings(keys)
-
-	signatures := make([]string, 0, len(keys))
-	for _, name := range keys {
-		channel := channels[name]
-		if channel == nil {
-			signatures = append(signatures, name+":<nil>")
-			continue
-		}
-
-		payload := struct {
-			Enabled            bool                       `json:"enabled"`
-			Type               string                     `json:"type"`
-			AllowFrom          config.FlexibleStringSlice `json:"allow_from,omitempty"`
-			ReasoningChannelID string                     `json:"reasoning_channel_id,omitempty"`
-			GroupTrigger       config.GroupTriggerConfig  `json:"group_trigger,omitempty"`
-			Typing             config.TypingConfig        `json:"typing,omitempty"`
-			Placeholder        config.PlaceholderConfig   `json:"placeholder,omitempty"`
-			Settings           json.RawMessage            `json:"settings,omitempty"`
-		}{
-			Enabled:            channel.Enabled,
-			Type:               channel.Type,
-			AllowFrom:          channel.AllowFrom,
-			ReasoningChannelID: channel.ReasoningChannelID,
-			GroupTrigger:       channel.GroupTrigger,
-			Typing:             channel.Typing,
-			Placeholder:        channel.Placeholder,
-			Settings:           normalizeChannelSettings(channel),
-		}
-
-		encoded, err := json.Marshal(payload)
-		if err != nil {
-			signatures = append(signatures, name+":<invalid>")
-			continue
-		}
-		signatures = append(signatures, name+":"+string(encoded))
-	}
-
-	return signatures
+	signature[signatureAccess+name] = marshalSignature(struct {
+		AllowFrom   config.FlexibleStringSlice `json:"allow_from,omitempty"`
+		DMPolicy    string                     `json:"dm_policy,omitempty"`
+		GroupPolicy string                     `json:"group_policy,omitempty"`
+	}{
+		AllowFrom:   channel.AllowFrom,
+		DMPolicy:    channel.DMPolicy,
+		GroupPolicy: channel.GroupPolicy,
+	})
+	signature[signatureChannel+name] = marshalSignature(struct {
+		Enabled            bool                      `json:"enabled"`
+		Type               string                    `json:"type"`
+		ReasoningChannelID string                    `json:"reasoning_channel_id,omitempty"`
+		GroupTrigger       config.GroupTriggerConfig `json:"group_trigger,omitempty"`
+		Typing             config.TypingConfig       `json:"typing,omitempty"`
+		Placeholder        config.PlaceholderConfig  `json:"placeholder,omitempty"`
+		Settings           json.RawMessage           `json:"settings,omitempty"`
+	}{
+		Enabled:            channel.Enabled,
+		Type:               channel.Type,
+		ReasoningChannelID: channel.ReasoningChannelID,
+		GroupTrigger:       channel.GroupTrigger,
+		Typing:             channel.Typing,
+		Placeholder:        channel.Placeholder,
+		Settings:           normalizeChannelSettings(channel),
+	})
 }
 
+// signatureJSON is value as canonical JSON, secrets included.
+func signatureJSON(value any) string {
+	return marshalSignature(canonicalizeSignatureValue(reflect.ValueOf(value)))
+}
+
+func marshalSignature(value any) string {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return "<invalid>"
+	}
+	return string(encoded)
+}
+
+// normalizeChannelSettings is the channel's settings as canonical JSON,
+// secrets included.
 func normalizeChannelSettings(channel *config.Channel) json.RawMessage {
 	if channel == nil {
 		return nil
@@ -607,27 +698,17 @@ func normalizeRawJSON(raw config.RawNode) json.RawMessage {
 	return normalized
 }
 
+// canonicalizeSignatureValue turns value into maps, slices and plain values
+// that encode the same way whatever the order of its maps. A secret becomes
+// its value.
 func canonicalizeSignatureValue(value reflect.Value) any {
 	if !value.IsValid() {
 		return nil
 	}
 
 	if value.CanInterface() {
-		switch typed := value.Interface().(type) {
-		case config.SecureString:
-			return typed.String()
-		case *config.SecureString:
-			if typed == nil {
-				return ""
-			}
-			return typed.String()
-		case config.SecureStrings:
-			return typed.Values()
-		case *config.SecureStrings:
-			if typed == nil {
-				return nil
-			}
-			return typed.Values()
+		if secret, ok := secretSignatureValue(value.Interface()); ok {
+			return secret
 		}
 	}
 
@@ -686,39 +767,75 @@ func canonicalizeSignatureValue(value reflect.Value) any {
 	}
 }
 
-func gatewayRestartRequiredBySignature(bootSignature, currentSignature, gatewayStatus string) bool {
+// secretSignatureValue returns the value of v when v is a secret.
+func secretSignatureValue(v any) (any, bool) {
+	switch typed := v.(type) {
+	case config.SecureString:
+		return typed.String(), true
+	case *config.SecureString:
+		return typed.String(), true
+	case config.SecureStrings:
+		return typed.Values(), true
+	case *config.SecureStrings:
+		return typed.Values(), true
+	}
+	return nil, false
+}
+
+// gatewayRestartRequiredBySignature reports whether the running gateway
+// runs a config other than the saved one. While a live apply is pending,
+// the live parts are left out: the apply brings them to the gateway, and
+// once it failed they count again.
+func gatewayRestartRequiredBySignature(bootSignature, currentSignature configSignature, gatewayStatus string, liveApplyPending bool) bool {
 	if gatewayStatus != "running" {
 		return false
 	}
-	if bootSignature == "" || currentSignature == "" {
+	if len(bootSignature) == 0 || len(currentSignature) == 0 {
 		return false
 	}
-	return bootSignature != currentSignature
+	if liveApplyPending {
+		return !bootSignature.equalBesidesLive(currentSignature)
+	}
+	return !bootSignature.equal(currentSignature)
+}
+
+// gatewayRestartsOnConfigChange reports whether a change that needs the
+// kernel restarted (a reset, a channel binding) should restart it, given
+// gatewayStatusData: when it runs, also when it runs with a failed readiness
+// check.
+func gatewayRestartsOnConfigChange(status map[string]any) bool {
+	switch s, _ := status["gateway_status"].(string); s {
+	case "running":
+		return true
+	case "error":
+		_, alive := status["gateway_error_check"]
+		return alive
+	}
+	return false
 }
 
 func isCmdProcessAliveLocked(cmd *exec.Cmd) bool {
 	if cmd == nil || cmd.Process == nil {
 		return false
 	}
-
-	// Wait() sets ProcessState when the process exits; use it when available.
-	if cmd.ProcessState != nil && cmd.ProcessState.Exited() {
+	// A kernel this launcher started: its waiter closes the channel once
+	// Wait returned. cmd.ProcessState is not read, as Wait writes it.
+	if done, ok := processExits.Load(cmd); ok {
+		select {
+		case <-done.(chan struct{}):
+			return false
+		default:
+			return true
+		}
+	}
+	// Wait already returned for it.
+	if cmd.ProcessState != nil {
 		return false
 	}
-
-	// Windows does not support Signal(0) probing. If we still own cmd and it
-	// has not reported exit, treat it as alive.
-	if runtime.GOOS == "windows" {
-		return true
-	}
-
-	err := cmd.Process.Signal(syscall.Signal(0))
-	if err == nil {
-		return true
-	}
-	var errno syscall.Errno
-	// EPERM means the process exists but cannot be signaled by this user.
-	return errors.As(err, &errno) && errno == syscall.EPERM
+	// An attached kernel: nobody here waits on it, so ask the system. On
+	// Windows the handle os.FindProcess keeps open stops the PID from being
+	// reused while it is tracked.
+	return ppid.IsProcessRunning(cmd.Process.Pid)
 }
 
 func setGatewayRuntimeStatusLocked(status string) {
@@ -743,12 +860,11 @@ func attachToGatewayProcessLocked(pid int, cfg *config.Config) error {
 	gateway.owned = false // We didn't start this process
 	setGatewayRuntimeStatusLocked("running")
 
-	// Update bootDefaultModel and bootConfigSignature from config
+	// Update bootDefaultModel and bootConfig from config
 	if cfg != nil {
 		defaultModelName := strings.TrimSpace(cfg.Agents.Defaults.GetModelName())
 		gateway.bootDefaultModel = defaultModelName
-		gateway.bootConfigSignature = computeConfigSignature(cfg)
-		gateway.bootModelSignature = modelSelectionSignature(cfg)
+		gateway.bootConfig = computeConfigSignature(cfg)
 	}
 
 	logger.InfoC("gateway", fmt.Sprintf("Attached to gateway process (PID: %d)", pid))
@@ -769,8 +885,7 @@ func gatewayStatusWithoutHealthLocked() string {
 			gateway.cmd = nil
 			gateway.owned = false
 			gateway.bootDefaultModel = ""
-			gateway.bootConfigSignature = ""
-			gateway.bootModelSignature = ""
+			gateway.bootConfig = nil
 			return "stopped"
 		}
 		return "running"
@@ -800,94 +915,101 @@ func waitForGatewayProcessExit(cmd *exec.Cmd, timeout time.Duration) bool {
 
 // StopGateway stops the gateway process if it was started by this handler.
 // This method is called during application shutdown to ensure the gateway subprocess
-// is properly terminated. It only stops processes that were started by this handler,
-// not processes that were attached to from existing instances.
+// is properly terminated. It only stops processes that were started by this handler:
+// a gateway that was already running when the launcher started (attached) keeps
+// running after the launcher quits.
 func (h *Handler) StopGateway() {
 	gateway.mu.Lock()
-	defer gateway.mu.Unlock()
+	gateway.shutdown = true
+	gateway.mu.Unlock()
 
-	// Only stop if we own the process (started it ourselves)
-	if !gateway.owned || gateway.cmd == nil || gateway.cmd.Process == nil {
+	gatewayLifecycleMu.Lock()
+	defer gatewayLifecycleMu.Unlock()
+
+	gateway.mu.Lock()
+	owned := gateway.owned && gateway.cmd != nil && gateway.cmd.Process != nil
+	gateway.mu.Unlock()
+	if !owned {
 		return
 	}
 
-	pid, err := stopGatewayLocked()
+	pid, err := stopTrackedGatewayLocked()
 	if err != nil {
 		logger.ErrorC("gateway", fmt.Sprintf("Failed to stop gateway (PID %d): %v", pid, err))
 		return
 	}
-
 	logger.InfoC("gateway", fmt.Sprintf("Gateway stopped (PID: %d)", pid))
 }
 
-// stopGatewayLocked sends a stop signal to the gateway process.
-// Assumes gateway.mu is held by the caller.
-// Returns the PID of the stopped process and any error encountered.
-func stopGatewayLocked() (int, error) {
-	if gateway.cmd == nil || gateway.cmd.Process == nil {
-		return 0, nil
-	}
+// errGatewayNotRunning reports a stop without a tracked kernel.
+var errGatewayNotRunning = errors.New("gateway is not running")
 
-	pid := gateway.cmd.Process.Pid
-	if !gateway.owned {
-		if isGateway, inspected := gatewayProcessMatcher(pid); inspected && !isGateway {
-			return pid, fmt.Errorf("refuse to stop non-gateway process (PID %d)", pid)
+// errNotAGateway refuses to stop a process the PID file named that turned
+// out not to be the kernel.
+var errNotAGateway = errors.New("refuse to stop non-gateway process")
+
+// stopTrackedGatewayLocked stops the tracked kernel, attached ones too, and
+// waits for it to exit (see terminateGatewayProcess). A kernel that vanished
+// counts as stopped. The caller holds gatewayLifecycleMu, not gateway.mu.
+func stopTrackedGatewayLocked() (int, error) {
+	gateway.mu.Lock()
+	cmd := gateway.cmd
+	owned := gateway.owned
+	pidData := copyPidData(gateway.pidData)
+	gateway.mu.Unlock()
+	if cmd == nil || cmd.Process == nil {
+		return 0, errGatewayNotRunning
+	}
+	pid := cmd.Process.Pid
+
+	if isCmdProcessAliveLocked(cmd) {
+		if !owned {
+			if isGateway, inspected := gatewayProcessMatcher(pid); inspected && !isGateway {
+				return pid, fmt.Errorf("%w (PID %d)", errNotAGateway, pid)
+			}
+		}
+		gateway.mu.Lock()
+		gateway.stopping = cmd
+		gateway.mu.Unlock()
+		logger.InfoC("gateway", fmt.Sprintf("Stopping gateway (PID: %d)", pid))
+		if err := terminateGatewayProcess(cmd, pidData); err != nil {
+			gateway.mu.Lock()
+			if gateway.stopping == cmd {
+				gateway.stopping = nil
+			}
+			gateway.mu.Unlock()
+			return pid, err
 		}
 	}
 
-	// Send SIGTERM for graceful shutdown (SIGKILL on Windows)
-	var sigErr error
-	if runtime.GOOS == "windows" {
-		sigErr = gateway.cmd.Process.Kill()
-	} else {
-		sigErr = gateway.cmd.Process.Signal(syscall.SIGTERM)
+	gateway.mu.Lock()
+	if gateway.cmd == cmd {
+		clearTrackedGatewayLocked()
+		gateway.pidData = nil
 	}
-
-	if sigErr != nil {
-		return pid, sigErr
+	if gateway.stopping == cmd {
+		gateway.stopping = nil
 	}
-
-	logger.InfoC("gateway", fmt.Sprintf("Sent stop signal to gateway (PID: %d)", pid))
-	gateway.cmd = nil
-	gateway.owned = false
-	gateway.bootDefaultModel = ""
-	gateway.bootModelSignature = ""
-	gateway.pidData = nil
 	setGatewayRuntimeStatusLocked("stopped")
-
+	gateway.mu.Unlock()
 	return pid, nil
 }
 
-func stopGatewayProcessForRestart(cmd *exec.Cmd) error {
-	if cmd == nil || cmd.Process == nil || !isCmdProcessAliveLocked(cmd) {
+// clearTrackedGatewayLocked forgets the tracked kernel. The caller holds
+// gateway.mu.
+func clearTrackedGatewayLocked() {
+	gateway.cmd = nil
+	gateway.owned = false
+	gateway.bootDefaultModel = ""
+	gateway.bootConfig = nil
+}
+
+func copyPidData(pidData *ppid.PidFileData) *ppid.PidFileData {
+	if pidData == nil {
 		return nil
 	}
-
-	var stopErr error
-	if runtime.GOOS == "windows" {
-		stopErr = cmd.Process.Kill()
-	} else {
-		stopErr = cmd.Process.Signal(syscall.SIGTERM)
-	}
-	if stopErr != nil && isCmdProcessAliveLocked(cmd) {
-		return fmt.Errorf("failed to stop existing gateway: %w", stopErr)
-	}
-
-	if waitForGatewayProcessExit(cmd, gatewayRestartGracePeriod) {
-		return nil
-	}
-
-	if runtime.GOOS != "windows" {
-		killErr := cmd.Process.Signal(syscall.SIGKILL)
-		if killErr != nil && isCmdProcessAliveLocked(cmd) {
-			return fmt.Errorf("failed to force-stop existing gateway: %w", killErr)
-		}
-		if waitForGatewayProcessExit(cmd, gatewayRestartForceKillWindow) {
-			return nil
-		}
-	}
-
-	return fmt.Errorf("existing gateway did not exit before restart")
+	copied := *pidData
+	return &copied
 }
 
 func (h *Handler) startGatewayLocked(initialStatus string, existingPid int) (int, error) {
@@ -919,16 +1041,23 @@ func (h *Handler) startGatewayLocked(initialStatus string, existingPid int) (int
 
 	cmd = gatewayExecCommand(execPath, h.gatewayCommandArgs()...)
 	applyLauncherProcAttrs(cmd)
+	applyKernelProcAttrs(cmd)
+	// Run in the Compa home, not wherever the launcher was started from: the
+	// kernel reads skills from its working directory.
+	if home := globalConfigDir(); home != "" {
+		if err := os.MkdirAll(home, 0o755); err == nil {
+			cmd.Dir = home
+		}
+	}
 	cmd.Env = os.Environ()
 	// Forward the launcher's config path via the environment variable that
 	// GetConfigPath() already reads, so the gateway sub-process uses the same
 	// config file without requiring a --config flag on the gateway subcommand.
+	// The kernel binds the host its own config names, loopback by default,
+	// even when the dashboard listens on the network: the dashboard proxies
+	// everything a browser needs from it.
 	if h.configPath != "" {
 		cmd.Env = append(cmd.Env, config.EnvConfig+"="+h.configPath)
-	}
-	gatewayHostOverride := h.gatewayHostOverride()
-	if gatewayHostOverride != "" {
-		cmd.Env = append(cmd.Env, config.EnvGatewayHost+"="+gatewayHostOverride)
 	}
 
 	stdoutPipe, err := cmd.StdoutPipe()
@@ -964,39 +1093,41 @@ func (h *Handler) startGatewayLocked(initialStatus string, existingPid int) (int
 	if err := gatewayStartProcess(cmd); err != nil {
 		return 0, fmt.Errorf("failed to start gateway: %w", err)
 	}
+	if err := bindKernelLifetime(cmd); err != nil {
+		logger.WarnC("gateway", fmt.Sprintf("The gateway may outlive the launcher: %v", err))
+	}
+	exited := make(chan struct{})
+	processExits.Store(cmd, exited)
 
 	gateway.cmd = cmd
 	gateway.owned = true // We started this process
 	gateway.bootDefaultModel = defaultModelName
-	gateway.bootConfigSignature = computeConfigSignature(cfg)
-	gateway.bootModelSignature = modelSelectionSignature(cfg)
+	gateway.bootConfig = computeConfigSignature(cfg)
 	setGatewayRuntimeStatusLocked(initialStatus)
 	pid = cmd.Process.Pid
 	logger.InfoC("gateway", fmt.Sprintf("Started compa-kernel gateway (PID: %d) from %s", pid, execPath))
 
-	// Capture stdout/stderr in background
-	go scanPipe(stdoutPipe, gateway.logs)
-	go scanPipe(stderrPipe, gateway.logs)
-
-	// Wait for exit in background and clean up
+	// Capture stdout/stderr in background. The readers never stop before
+	// the pipes close, so the kernel never blocks on a full pipe.
+	var readers sync.WaitGroup
+	readers.Add(2)
 	go func() {
-		if err := cmd.Wait(); err != nil {
-			logger.ErrorC("gateway", fmt.Sprintf("Gateway process exited: %v", err))
-		} else {
-			logger.InfoC("gateway", "Gateway process exited normally")
-		}
+		defer readers.Done()
+		drainLogPipe(stdoutPipe, gateway.logs)
+	}()
+	go func() {
+		defer readers.Done()
+		drainLogPipe(stderrPipe, gateway.logs)
+	}()
 
-		gateway.mu.Lock()
-		if gateway.cmd == cmd {
-			gateway.cmd = nil
-			gateway.bootDefaultModel = ""
-			gateway.bootConfigSignature = ""
-			gateway.bootModelSignature = ""
-			if gateway.runtimeStatus != "restarting" {
-				setGatewayRuntimeStatusLocked("stopped")
-			}
-		}
-		gateway.mu.Unlock()
+	// Wait for exit in background and clean up. Wait closes the pipes, so it
+	// runs only once both readers have read everything.
+	go func() {
+		readers.Wait()
+		waitErr := cmd.Wait()
+		close(exited)
+		processExits.Delete(cmd)
+		h.handleGatewayExit(cmd, waitErr)
 	}()
 
 	// Start a goroutine to probe pidFile and health, update runtime state once ready.
@@ -1063,55 +1194,40 @@ func (h *Handler) startGatewayLocked(initialStatus string, existingPid int) (int
 //
 //	POST /api/gateway/start
 func (h *Handler) handleGatewayStart(w http.ResponseWriter, r *http.Request) {
-	cfg, err := h.gatewayStartConfig()
+	pid, err := h.StartGateway()
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to validate gateway start conditions: %v", err), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to start gateway: %v", err))
 		return
 	}
-
-	// Check PID file first to detect an already-running gateway.
-	pidData := h.sanitizeGatewayPidData(ppid.ReadPidFileWithCheck(globalConfigDir()), cfg)
-	if pidData != nil {
-		pid := pidData.PID
-		gateway.mu.Lock()
-		_, err = h.startGatewayLocked("starting", pid)
-		if err != nil {
-			gateway.mu.Unlock()
-			logger.ErrorC("gateway", fmt.Sprintf("Failed to attach to running gateway (PID: %d): %v", pid, err))
-			http.Error(w, fmt.Sprintf("Failed to attach to gateway: %v", err), http.StatusInternalServerError)
-			return
-		}
-		gateway.pidData = pidData
-		gateway.mu.Unlock()
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(map[string]any{
-			"status": "ok",
-			"pid":    pid,
-		})
-		return
-	}
-
-	gateway.mu.Lock()
-	defer gateway.mu.Unlock()
-
-	if gateway.cmd != nil && gateway.cmd.Process != nil {
-		gateway.cmd = nil
-		setGatewayRuntimeStatusLocked("stopped")
-	}
-
-	h.logDefaultModelState(cfg)
-	pid, err := h.startGatewayLocked("starting", 0)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to start gateway: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
+	writeJSON(w, http.StatusOK, map[string]any{
 		"status": "ok",
 		"pid":    pid,
 	})
+}
+
+// StartGateway starts the kernel unless one runs already: a tracked kernel
+// that is alive is kept, and one the PID file names is attached. A tracked
+// kernel whose readiness check failed (the status reads "error") is
+// replaced, as it runs without processing messages. It returns the PID of
+// the running kernel.
+func (h *Handler) StartGateway() (int, error) {
+	gatewayLifecycleMu.Lock()
+	defer gatewayLifecycleMu.Unlock()
+
+	gateway.mu.Lock()
+	// A start by hand gives a kernel that crashed repeatedly a fresh chance.
+	gateway.crashRestarts = nil
+	gateway.mu.Unlock()
+	if check, message := h.trackedGatewayReadinessFailure(); check != "" {
+		cfg, err := h.gatewayStartConfig()
+		if err != nil {
+			return 0, err
+		}
+		logger.WarnC("gateway", fmt.Sprintf("Replacing the gateway: its %s check failed (%s)", check, message))
+		return h.restartGatewayLocked(cfg)
+	}
+	pid, _, err := h.ensureGatewayRunningLocked("starting")
+	return pid, err
 }
 
 // handleGatewayStop stops the running gateway subprocess gracefully.
@@ -1120,33 +1236,36 @@ func (h *Handler) handleGatewayStart(w http.ResponseWriter, r *http.Request) {
 //
 //	POST /api/gateway/stop
 func (h *Handler) handleGatewayStop(w http.ResponseWriter, r *http.Request) {
-	gateway.mu.Lock()
-	defer gateway.mu.Unlock()
+	gatewayLifecycleMu.Lock()
+	defer gatewayLifecycleMu.Unlock()
 
-	if gateway.cmd == nil || gateway.cmd.Process == nil {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]any{
-			"status": "not_running",
+	pid, err := stopTrackedGatewayLocked()
+	switch {
+	case errors.Is(err, errGatewayNotRunning):
+		// A crash restart waiting for its turn is called off.
+		gateway.mu.Lock()
+		gateway.crashRestarts = nil
+		if gateway.runtimeStatus == "restarting" || gateway.runtimeStatus == "error" {
+			setGatewayRuntimeStatusLocked("stopped")
+		}
+		gateway.mu.Unlock()
+		writeJSON(w, http.StatusOK, map[string]any{"status": "not_running"})
+	case errors.Is(err, errNotAGateway):
+		writeJSONError(w, http.StatusConflict, fmt.Sprintf("Failed to stop gateway (PID %d): %v", pid, err))
+	case err != nil:
+		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to stop gateway (PID %d): %v", pid, err))
+	default:
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status": "ok",
+			"pid":    pid,
 		})
-		return
 	}
-
-	pid, err := stopGatewayLocked()
-	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to stop gateway (PID %d): %v", pid, err), http.StatusInternalServerError)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
-		"status": "ok",
-		"pid":    pid,
-	})
 }
 
-// RestartGateway restarts the gateway process. This is a non-blocking operation
-// that stops the current gateway (if running) and starts a new one. A config
-// that does not load refuses the restart before the running gateway stops.
+// RestartGateway restarts the gateway process: it stops the current gateway
+// (if running), waits for it to exit, and starts a new one, all under
+// gatewayLifecycleMu so no other start runs in between. A config that does
+// not load refuses the restart before the running gateway stops.
 // Returns the PID of the new gateway process or an error.
 func (h *Handler) RestartGateway() (int, error) {
 	cfg, err := h.gatewayStartConfig()
@@ -1154,13 +1273,24 @@ func (h *Handler) RestartGateway() (int, error) {
 		return 0, fmt.Errorf("failed to validate gateway start conditions: %w", err)
 	}
 
+	gatewayLifecycleMu.Lock()
+	defer gatewayLifecycleMu.Unlock()
+	return h.restartGatewayLocked(cfg)
+}
+
+// restartGatewayLocked is RestartGateway for a caller that holds
+// gatewayLifecycleMu and checked that cfg loads.
+func (h *Handler) restartGatewayLocked(cfg *config.Config) (int, error) {
 	gateway.mu.Lock()
 	previousCmd := gateway.cmd
 	previousOwned := gateway.owned
+	pidData := copyPidData(gateway.pidData)
+	gateway.crashRestarts = nil
 	setGatewayRuntimeStatusLocked("restarting")
 	gateway.mu.Unlock()
 
-	if previousCmd != nil && previousCmd.Process != nil && !previousOwned {
+	previousAlive := isCmdProcessAliveLocked(previousCmd)
+	if previousAlive && !previousOwned {
 		if isGateway, inspected := gatewayProcessMatcher(previousCmd.Process.Pid); inspected && !isGateway {
 			logger.Warnf("refuse restarting non-gateway process (PID: %d)", previousCmd.Process.Pid)
 			gateway.mu.Lock()
@@ -1172,31 +1302,35 @@ func (h *Handler) RestartGateway() (int, error) {
 		}
 	}
 
-	if err = stopGatewayProcessForRestart(previousCmd); err != nil {
+	if previousAlive {
 		gateway.mu.Lock()
-		if gateway.cmd == previousCmd {
-			if isCmdProcessAliveLocked(previousCmd) {
-				setGatewayRuntimeStatusLocked("running")
-			} else {
-				gateway.cmd = nil
-				gateway.bootDefaultModel = ""
-				setGatewayRuntimeStatusLocked("error")
-			}
-		}
+		gateway.stopping = previousCmd
 		gateway.mu.Unlock()
-		return 0, fmt.Errorf("failed to stop gateway: %w", err)
+		if err := terminateGatewayProcess(previousCmd, pidData); err != nil {
+			gateway.mu.Lock()
+			gateway.stopping = nil
+			if gateway.cmd == previousCmd {
+				if isCmdProcessAliveLocked(previousCmd) {
+					setGatewayRuntimeStatusLocked("running")
+				} else {
+					clearTrackedGatewayLocked()
+					setGatewayRuntimeStatusLocked("error")
+				}
+			}
+			gateway.mu.Unlock()
+			return 0, fmt.Errorf("failed to stop gateway: %w", err)
+		}
 	}
 
 	h.logDefaultModelState(cfg)
 	gateway.mu.Lock()
 	if gateway.cmd == previousCmd {
-		gateway.cmd = nil
-		gateway.bootDefaultModel = ""
+		clearTrackedGatewayLocked()
 	}
+	gateway.stopping = nil
 	pid, err := h.startGatewayLocked("restarting", 0)
 	if err != nil {
-		gateway.cmd = nil
-		gateway.bootDefaultModel = ""
+		clearTrackedGatewayLocked()
 		setGatewayRuntimeStatusLocked("error")
 	}
 	gateway.mu.Unlock()
@@ -1213,12 +1347,11 @@ func (h *Handler) RestartGateway() (int, error) {
 func (h *Handler) handleGatewayRestart(w http.ResponseWriter, r *http.Request) {
 	pid, err := h.RestartGateway()
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to restart gateway: %v", err), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to restart gateway: %v", err))
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]any{
+	writeJSON(w, http.StatusOK, map[string]any{
 		"status": "ok",
 		"pid":    pid,
 	})
@@ -1255,6 +1388,10 @@ func (h *Handler) handleGatewayStatus(w http.ResponseWriter, r *http.Request) {
 // with config_default_model_error saying why not), and boot_default_model
 // the default the running gateway booted with. The model never blocks a
 // start; see gatewayStartConfig.
+//
+// A running kernel whose readiness check failed (its agent loop stopped,
+// say) reads gateway_status "error", with gateway_error the check's message
+// and gateway_error_check its name; starting it replaces it.
 func (h *Handler) gatewayStatusData() map[string]any {
 	data := map[string]any{}
 	cfg, cfgErr := config.LoadConfig(h.configPath)
@@ -1308,14 +1445,28 @@ func (h *Handler) gatewayStatusData() map[string]any {
 	}
 
 	gatewayStatus, _ := data["gateway_status"].(string)
-	currentConfigSignature := computeConfigSignature(cfg)
+	if gatewayStatus == "running" && pidData != nil {
+		// A kernel whose agent loop stopped still answers /health; its
+		// /ready names the failed check.
+		if check, message := h.gatewayReadinessFailure(pidData, cfg); check != "" {
+			gatewayStatus = "error"
+			data["gateway_status"] = gatewayStatus
+			data["gateway_error"] = message
+			data["gateway_error_check"] = check
+		}
+	}
+	currentConfig := computeConfigSignature(cfg)
+	// Read before the applied signature: an apply records what it applied
+	// before it stops being pending.
+	liveApplyPending := h.pendingLiveApplies.Load() > 0
 	gateway.mu.Lock()
-	bootConfigSignature := gateway.bootConfigSignature
+	bootConfig := gateway.bootConfig
 	gateway.mu.Unlock()
 	data["gateway_restart_required"] = gatewayRestartRequiredBySignature(
-		bootConfigSignature,
-		currentConfigSignature,
+		bootConfig,
+		currentConfig,
 		gatewayStatus,
+		liveApplyPending,
 	)
 
 	if cfgErr != nil {
@@ -1382,11 +1533,53 @@ func gatewayLogsData(r *http.Request) map[string]any {
 	return data
 }
 
-// scanPipe reads lines from r and appends them to buf. Returns when r reaches EOF.
-func scanPipe(r io.Reader, buf *LogBuffer) {
-	scanner := bufio.NewScanner(r)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for scanner.Scan() {
-		buf.Append(scanner.Text())
+// maxGatewayLogLine bounds one kernel log line kept in the buffer; the rest
+// of a longer line is dropped, not left in the pipe.
+const maxGatewayLogLine = 64 << 10
+
+// drainLogPipe reads lines from r and appends them to buf until r reaches EOF
+// or fails. It never stops early: a line longer than maxGatewayLogLine is cut
+// and the rest discarded, so the kernel never blocks on a full pipe.
+func drainLogPipe(r io.Reader, buf *LogBuffer) {
+	reader := bufio.NewReaderSize(r, 64<<10)
+	var line []byte
+	dropped := 0
+	flush := func() {
+		text := strings.TrimSuffix(string(line), "\r")
+		if dropped > 0 {
+			text += fmt.Sprintf(" … [%d bytes cut]", dropped)
+		}
+		buf.Append(text)
+		line = line[:0]
+		dropped = 0
+	}
+	for {
+		chunk, err := reader.ReadSlice('\n')
+		data := chunk
+		complete := err == nil
+		if complete {
+			data = chunk[:len(chunk)-1]
+		}
+		if room := maxGatewayLogLine - len(line); room > 0 {
+			if len(data) > room {
+				dropped += len(data) - room
+				data = data[:room]
+			}
+			line = append(line, data...)
+		} else {
+			dropped += len(data)
+		}
+		if complete {
+			flush()
+			continue
+		}
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
+		// EOF or a closed pipe: keep what the last line had.
+		if len(line) > 0 || dropped > 0 {
+			flush()
+		}
+		return
 	}
 }

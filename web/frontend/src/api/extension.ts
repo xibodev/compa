@@ -1,4 +1,4 @@
-import { launcherFetch } from "@/api/http"
+import { HttpError, launcherFetch } from "@/api/http"
 
 const EXTENSION_API = "/api/extension"
 
@@ -88,7 +88,10 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await launcherFetch(path, options)
   if (!res.ok) {
     const message = await res.text()
-    throw new Error(message || `API error: ${res.status} ${res.statusText}`)
+    throw new HttpError(
+      message || `API error: ${res.status} ${res.statusText}`,
+      res.status,
+    )
   }
   return res.json() as Promise<T>
 }

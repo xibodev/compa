@@ -19,6 +19,7 @@ import (
 	"github.com/caarlos0/env/v11"
 
 	"github.com/xibodev/compa/pkg"
+	"github.com/xibodev/compa/pkg/approval"
 	"github.com/xibodev/compa/pkg/fileutil"
 	"github.com/xibodev/compa/pkg/logger"
 )
@@ -50,6 +51,10 @@ type Config struct {
 	Heartbeat         HeartbeatConfig           `json:"heartbeat"           yaml:"-"`
 	Devices           DevicesConfig             `json:"devices"             yaml:"-"`
 	Voice             VoiceConfig               `json:"voice"               yaml:"-"`
+	// Commands configures who may run the chat commands.
+	Commands CommandsConfig `json:"commands" yaml:"-"`
+	// Logging configures Compa's log files.
+	Logging LoggingConfig `json:"logging" yaml:"-"`
 	// Modules configures the detached-module host, including the named
 	// source roots a module may be granted read-only.
 	Modules ModulesConfig `json:"modules,omitzero" yaml:"-"`
@@ -62,6 +67,10 @@ type Config struct {
 
 	// sensitiveCache holds the secrets FilterSensitiveData replaces.
 	sensitiveCache *SensitiveDataCache
+
+	// envOverrides are the settings the environment changed while the
+	// config was loaded; SaveConfig keeps them out of the files.
+	envOverrides []envOverride
 }
 
 type EvolutionConfig struct {
@@ -365,12 +374,13 @@ type RoutingConfig struct {
 	Threshold  float64 `json:"threshold"`   // complexity score in [0,1]; score >= threshold → primary model
 }
 
-// SubTurnConfig configures the SubTurn execution system.
+// SubTurnConfig configures the SubTurn execution system. Its env tags are
+// the full COMPA_AGENTS_DEFAULTS_SUBTURN_* names, so the field that holds it
+// carries no envPrefix, which would double them.
 type SubTurnConfig struct {
 	MaxDepth              int `json:"max_depth"               env:"COMPA_AGENTS_DEFAULTS_SUBTURN_MAX_DEPTH"`
 	MaxConcurrent         int `json:"max_concurrent"          env:"COMPA_AGENTS_DEFAULTS_SUBTURN_MAX_CONCURRENT"`
 	DefaultTimeoutMinutes int `json:"default_timeout_minutes" env:"COMPA_AGENTS_DEFAULTS_SUBTURN_DEFAULT_TIMEOUT_MINUTES"`
-	DefaultTokenBudget    int `json:"default_token_budget"    env:"COMPA_AGENTS_DEFAULTS_SUBTURN_DEFAULT_TOKEN_BUDGET"`
 	ConcurrencyTimeoutSec int `json:"concurrency_timeout_sec" env:"COMPA_AGENTS_DEFAULTS_SUBTURN_CONCURRENCY_TIMEOUT_SEC"`
 }
 
@@ -395,8 +405,8 @@ type AgentDefaults struct {
 	MaxMediaSize              int                `json:"max_media_size,omitempty"         env:"COMPA_AGENTS_DEFAULTS_MAX_MEDIA_SIZE"`
 	Routing                   *RoutingConfig     `json:"routing,omitempty"`
 	SteeringMode              string             `json:"steering_mode,omitempty"          env:"COMPA_AGENTS_DEFAULTS_STEERING_MODE"`      // "one-at-a-time" (default) or "all"
-	MaxParallelTurns          int                `json:"max_parallel_turns,omitempty"     env:"COMPA_AGENTS_DEFAULTS_MAX_PARALLEL_TURNS"` // Max concurrent turns (0 or 1 = sequential)
-	SubTurn                   SubTurnConfig      `json:"subturn"                                                                                      envPrefix:"COMPA_AGENTS_DEFAULTS_SUBTURN_"`
+	MaxParallelTurns          int                `json:"max_parallel_turns,omitempty"     env:"COMPA_AGENTS_DEFAULTS_MAX_PARALLEL_TURNS"` // Max turns of different sessions at once (0 = default 4, 1 = sequential)
+	SubTurn                   SubTurnConfig      `json:"subturn"`
 	ToolFeedback              ToolFeedbackConfig `json:"tool_feedback,omitempty"`
 	SplitOnMarker             bool               `json:"split_on_marker"                  env:"COMPA_AGENTS_DEFAULTS_SPLIT_ON_MARKER"` // split messages on <|[SPLIT]|> marker
 	ContextManager            string             `json:"context_manager,omitempty"        env:"COMPA_AGENTS_DEFAULTS_CONTEXT_MANAGER"`
@@ -443,7 +453,9 @@ func (d *AgentDefaults) GetModelName() string {
 
 // GroupTriggerConfig controls when the bot responds in group chats.
 type GroupTriggerConfig struct {
-	MentionOnly bool     `json:"mention_only,omitempty"`
+	// MentionOnly answers in groups only when the bot is mentioned. A channel
+	// entry that leaves it out gets true (ChannelsConfig.UnmarshalJSON).
+	MentionOnly bool     `json:"mention_only"`
 	Prefixes    []string `json:"prefixes,omitempty"`
 }
 
@@ -496,6 +508,9 @@ type WhatsAppSettings struct {
 	BridgeURL        string `json:"bridge_url"         yaml:"-" env:"COMPA_CHANNELS_WHATSAPP_BRIDGE_URL"`
 	UseNative        bool   `json:"use_native"         yaml:"-" env:"COMPA_CHANNELS_WHATSAPP_USE_NATIVE"`
 	SessionStorePath string `json:"session_store_path" yaml:"-" env:"COMPA_CHANNELS_WHATSAPP_SESSION_STORE_PATH"`
+	// Chats selects which chats the native client takes as input: "self",
+	// "allowed" or "all" (see the WhatsAppChats* constants).
+	Chats string `json:"chats,omitempty" yaml:"-" env:"COMPA_CHANNELS_WHATSAPP_CHATS"`
 }
 
 type TelegramSettings struct {
@@ -522,8 +537,9 @@ type DiscordSettings struct {
 }
 
 type MaixCamSettings struct {
-	Host string `json:"host" yaml:"-" env:"COMPA_CHANNELS_MAIXCAM_HOST"`
-	Port int    `json:"port" yaml:"-" env:"COMPA_CHANNELS_MAIXCAM_PORT"`
+	Host  string       `json:"host"           yaml:"-"               env:"COMPA_CHANNELS_MAIXCAM_HOST"`
+	Port  int          `json:"port"           yaml:"-"               env:"COMPA_CHANNELS_MAIXCAM_PORT"`
+	Token SecureString `json:"token,omitzero" yaml:"token,omitempty" env:"COMPA_CHANNELS_MAIXCAM_TOKEN"`
 }
 
 type QQSettings struct {
@@ -552,7 +568,8 @@ type MatrixSettings struct {
 	JoinOnInvite       bool         `json:"join_on_invite"                 yaml:"-"`
 	MessageFormat      string       `json:"message_format,omitempty"       yaml:"-"`
 	CryptoDatabasePath string       `json:"crypto_database_path,omitempty" yaml:"-"`
-	CryptoPassphrase   string       `json:"crypto_passphrase,omitempty"    yaml:"-"`
+	// CryptoPassphrase protects the end-to-end encryption keys.
+	CryptoPassphrase SecureString `json:"crypto_passphrase,omitzero" yaml:"crypto_passphrase,omitempty"`
 }
 
 // DeltaChatSettings configures the Delta Chat channel. Delta Chat is an
@@ -581,11 +598,11 @@ type DeltaChatSettings struct {
 	SMTPPort       int          `json:"smtp_port,omitempty"       yaml:"-"`
 }
 
+// LINESettings configures the LINE channel. Its webhook is served by the
+// gateway's own server, at WebhookPath.
 type LINESettings struct {
 	ChannelSecret      SecureString `json:"channel_secret,omitzero"       yaml:"channel_secret,omitempty"       env:"COMPA_CHANNELS_LINE_CHANNEL_SECRET"`
 	ChannelAccessToken SecureString `json:"channel_access_token,omitzero" yaml:"channel_access_token,omitempty" env:"COMPA_CHANNELS_LINE_CHANNEL_ACCESS_TOKEN"`
-	WebhookHost        string       `json:"webhook_host"                  yaml:"-"                              env:"COMPA_CHANNELS_LINE_WEBHOOK_HOST"`
-	WebhookPort        int          `json:"webhook_port"                  yaml:"-"                              env:"COMPA_CHANNELS_LINE_WEBHOOK_PORT"`
 	WebhookPath        string       `json:"webhook_path"                  yaml:"-"                              env:"COMPA_CHANNELS_LINE_WEBHOOK_PATH"`
 }
 
@@ -600,10 +617,10 @@ type WeComGroupConfig struct {
 }
 
 type WeComSettings struct {
-	BotID               string          `json:"bot_id"                  yaml:"-"                env:"BOT_ID"`
-	Secret              SecureString    `json:"secret,omitzero"         yaml:"secret,omitempty" env:"SECRET"`
-	WebSocketURL        string          `json:"websocket_url,omitempty" yaml:"-"                env:"WEBSOCKET_URL"`
-	SendThinkingMessage bool            `json:"send_thinking_message"   yaml:"-"                env:"SEND_THINKING_MESSAGE"`
+	BotID               string          `json:"bot_id"                  yaml:"-"                env:"COMPA_CHANNELS_WECOM_BOT_ID"`
+	Secret              SecureString    `json:"secret,omitzero"         yaml:"secret,omitempty" env:"COMPA_CHANNELS_WECOM_SECRET"`
+	WebSocketURL        string          `json:"websocket_url,omitempty" yaml:"-"                env:"COMPA_CHANNELS_WECOM_WEBSOCKET_URL"`
+	SendThinkingMessage bool            `json:"send_thinking_message"   yaml:"-"                env:"COMPA_CHANNELS_WECOM_SEND_THINKING_MESSAGE"`
 	Streaming           StreamingConfig `json:"streaming,omitzero"      yaml:"-"`
 }
 
@@ -692,6 +709,9 @@ type MQTTSettings struct {
 	ClientID    string       `json:"client_id,omitempty"    yaml:"-"                  env:"COMPA_CHANNELS_MQTT_CLIENT_ID"`
 	KeepAlive   int          `json:"keep_alive,omitempty"   yaml:"-"                  env:"COMPA_CHANNELS_MQTT_KEEP_ALIVE"`
 	QoS         int          `json:"qos,omitempty"          yaml:"-"                  env:"COMPA_CHANNELS_MQTT_QOS"`
+	// TLSInsecureSkipVerify turns off verification of the broker's TLS
+	// certificate.
+	TLSInsecureSkipVerify bool `json:"tls_insecure_skip_verify" yaml:"-" env:"COMPA_CHANNELS_MQTT_TLS_INSECURE_SKIP_VERIFY"`
 }
 
 // SlackWebhookSettings configures the output-only Slack webhook channel.
@@ -756,6 +776,8 @@ type MessageToolsConfig struct {
 	ToolConfig `yaml:"-" envPrefix:"COMPA_TOOLS_MESSAGE_"`
 
 	MediaEnabled bool `json:"media_enabled" yaml:"-" env:"COMPA_TOOLS_MESSAGE_MEDIA_ENABLED"`
+	// Targets is where the message tool may send: "current_chat" or "any".
+	Targets string `json:"targets" yaml:"-" env:"COMPA_TOOLS_MESSAGE_TARGETS"`
 }
 
 type BraveConfig struct {
@@ -983,6 +1005,7 @@ type ToolsConfig struct {
 	// Content shorter than this will be returned unchanged for performance.
 	// Default: 8
 	FilterMinLength int                `json:"filter_min_length" yaml:"-"                env:"COMPA_TOOLS_FILTER_MIN_LENGTH"`
+	Approval        approval.Policy    `json:"approval"          yaml:"-"`
 	Web             WebToolsConfig     `json:"web"               yaml:"web,omitempty"`
 	Cron            CronToolsConfig    `json:"cron"              yaml:"-"`
 	Exec            ExecConfig         `json:"exec"              yaml:"-"`
@@ -1129,6 +1152,14 @@ type MCPServerConfig struct {
 	URL string `json:"url,omitempty"`
 	// Headers are HTTP headers to send with requests (sse/http only)
 	Headers map[string]string `json:"headers,omitempty"`
+	// Trusted lets Compa act on what the server declares about its tools
+	// (annotations such as readOnlyHint): approval rules may match them, and a
+	// read-only or idempotent call is retried once after a lost session.
+	// Annotations from servers that are not trusted are ignored.
+	Trusted bool `json:"trusted,omitempty"`
+	// Cwd is the working folder of a stdio server; empty means the agent
+	// workspace.
+	Cwd string `json:"cwd,omitempty"`
 }
 
 // MCPConfig defines configuration for all MCP servers
@@ -1150,9 +1181,26 @@ func (c *MCPConfig) GetMaxInlineTextChars() int {
 	return DefaultMCPMaxInlineTextChars
 }
 
+// LoadConfig reads config.json at path, merges .security.yml beside it,
+// applies the COMPA_* environment overrides and validates the result. A
+// missing config.json, or one too short to hold a setting, yields the
+// defaults, completed the same way. LoadConfig never writes either file.
 func LoadConfig(path string) (*Config, error) {
 	updateResolver(filepath.Dir(path))
 
+	cfg, err := readConfigFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if err = cfg.completeLoad(path); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+// readConfigFile decodes config.json over the defaults. A missing file, or
+// content such as "{}" that cannot hold a setting, gives the defaults.
+func readConfigFile(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -1188,52 +1236,75 @@ func LoadConfig(path string) (*Config, error) {
 		)
 		return nil, err
 	}
-	err = loadSecurityConfig(cfg, securityPath(path))
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, fmt.Errorf("failed to load security config: %w", err)
-	}
-
-	gatewayHostBeforeEnv := cfg.Gateway.Host
-
-	if err = env.Parse(cfg); err != nil {
-		return nil, err
-	}
-	applySkillsRegistryEnvOverrides(cfg)
-
-	if err = InitChannelList(cfg.Channels); err != nil {
-		return nil, err
-	}
-	if err = cfg.ValidateTurnProfile(); err != nil {
-		return nil, err
-	}
-	cfg.Gateway.Host, err = resolveGatewayHostFromEnv(gatewayHostBeforeEnv)
-	if err != nil {
-		return nil, fmt.Errorf("invalid gateway host: %w", err)
-	}
-
-	if err = cfg.ValidateProviderInstances(); err != nil {
-		return nil, err
-	}
-	if err = cfg.ValidateModelSelections(); err != nil {
-		return nil, err
-	}
-	if err = cfg.ValidateModules(); err != nil {
-		return nil, err
-	}
-
-	// Ensure Workspace has a default if not set
-	if cfg.Agents.Defaults.Workspace == "" {
-		homePath := GetHome()
-		cfg.Agents.Defaults.Workspace = filepath.Join(homePath, pkg.WorkspaceName)
-	}
-
-	cfg.Session.ApplyDmScope()
-	cfg.Session.DeriveDmScope()
-
 	return cfg, nil
 }
 
-// loadConfig decodes config.json content over the defaults.
+// completeLoad readies a config decoded from config.json at path, or the
+// defaults when there is none: it merges .security.yml, applies the
+// environment overrides, initializes the channels and validates the result.
+func (c *Config) completeLoad(path string) error {
+	err := loadSecurityConfig(c, securityPath(path))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("failed to load security config: %w", err)
+	}
+	// A secret config.json masks but .security.yml lacks is gone; never hand
+	// out its placeholder as a value.
+	c.applySecretMaps(secretMapsFile{}, true)
+
+	gatewayHostBeforeEnv := c.Gateway.Host
+	// Remember what the files hold before the environment changes it, so that
+	// SaveConfig never writes an override that exists only there.
+	snapshot := c.snapshotEnvSettings()
+	c.envOverrides = nil
+
+	if err = env.Parse(c); err != nil {
+		return err
+	}
+	applySkillsRegistryEnvOverrides(c)
+
+	if err = initChannelList(c.Channels, channelEnvRecorder{overrides: &c.envOverrides}); err != nil {
+		return err
+	}
+	if err = c.ValidateTurnProfile(); err != nil {
+		return err
+	}
+	c.Gateway.Host, err = resolveGatewayHostFromEnv(gatewayHostBeforeEnv)
+	if err != nil {
+		return fmt.Errorf("invalid gateway host: %w", err)
+	}
+	c.recordEnvOverrides(snapshot)
+
+	if err = c.ValidateProviderInstances(); err != nil {
+		return err
+	}
+	if err = c.ValidateModelSelections(); err != nil {
+		return err
+	}
+	if err = c.ValidateModules(); err != nil {
+		return err
+	}
+	if err = c.ValidateSettings(); err != nil {
+		return err
+	}
+
+	// Ensure Workspace has a default if not set
+	if c.Agents.Defaults.Workspace == "" {
+		homePath := GetHome()
+		c.Agents.Defaults.Workspace = filepath.Join(homePath, pkg.WorkspaceName)
+	}
+
+	c.Session.ApplyDmScope()
+	c.Session.DeriveDmScope()
+
+	// Log lines mask every secret the config holds.
+	for _, secret := range c.collectSensitiveValues() {
+		logger.RegisterSecret(secret)
+	}
+	return nil
+}
+
+// loadConfig decodes config.json content over the defaults. A field this
+// version does not know fails the load, and the error names it.
 func loadConfig(data []byte) (*Config, error) {
 	cfg := DefaultConfig()
 	evolutionModeExplicit := configObjectHasField(data, "evolution", "mode")
@@ -1383,39 +1454,77 @@ func MakeBackup(path string) error {
 	return nil
 }
 
+// SaveConfig writes cfg to config.json at path and its secrets to
+// .security.yml beside it, in the current format with every setting
+// explicit. A setting the environment overrode when cfg was loaded keeps the
+// value the files held, unless it was changed since. cfg itself is not
+// modified.
+//
+// Every process that saves the config (launcher, CLI, onboarding, kernel)
+// takes the lock beside config.json, and the two files are replaced together:
+// a save that fails leaves the previous pair (see writeFilePair).
 func SaveConfig(path string, cfg *Config) error {
-	if err := saveSecurityConfig(securityPath(path), cfg); err != nil {
-		logger.ErrorCF("config", "cannot save .security.yml", map[string]any{"error": err})
-		return err
-	}
-
-	data, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return err
-	}
-	return fileutil.WriteFileAtomic(path, data, 0o600)
+	out := cfg.copyForSave()
+	return WithFileLock(path, func() error {
+		// A secret map value that is unchanged, or a placeholder as a
+		// config decoded from masked JSON holds, keeps what .security.yml
+		// holds, as written. Without a readable file, only placeholders
+		// can't be saved; the other values are written as given.
+		stored, err := readSecretMaps(path)
+		if err != nil && out.hasSecretPlaceholders() {
+			return fmt.Errorf("read the stored secrets: %w", err)
+		}
+		secData, err := marshalSecurityConfig(out, stored)
+		if err != nil {
+			logger.ErrorCF("config", "cannot save .security.yml", map[string]any{"error": err})
+			return err
+		}
+		data, err := json.MarshalIndent(out, "", "  ")
+		if err != nil {
+			return err
+		}
+		if err := writeFilePair(securityPath(path), secData, path, data); err != nil {
+			logger.ErrorCF("config", "cannot save the config", map[string]any{"error": err})
+			return err
+		}
+		return nil
+	})
 }
 
 func (c *Config) WorkspacePath() string {
-	return expandHome(c.Agents.Defaults.Workspace)
+	return ExpandHome(c.Agents.Defaults.Workspace)
 }
 
-func expandHome(path string) string {
-	if path == "" {
+// ExpandHome replaces a leading "~" with the user's home directory: "~"
+// alone, "~/x" and "~\x" (the Windows form, accepted everywhere). Any other
+// path, including "~user/x", is returned unchanged, as is every path when the
+// home directory is unknown; a bare home directory is never substituted for a
+// path it does not name.
+func ExpandHome(path string) string {
+	if path == "" || path[0] != '~' {
 		return path
 	}
-	if path[0] == '~' {
-		home, _ := os.UserHomeDir()
-		if len(path) > 1 && path[1] == '/' {
-			return home + path[1:]
-		}
+	if len(path) > 1 && path[1] != '/' && path[1] != '\\' {
+		return path
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return path
+	}
+	if len(path) <= 2 {
 		return home
 	}
-	return path
+	return filepath.Join(home, path[2:])
 }
 
+// SecurityCopyFrom fills c's secrets from the .security.yml beside path, as
+// a config decoded from JSON, which never holds them, needs.
 func (c *Config) SecurityCopyFrom(path string) error {
-	return loadSecurityConfig(c, securityPath(path))
+	if err := loadSecurityConfig(c, securityPath(path)); err != nil {
+		return err
+	}
+	c.applySecretMaps(secretMapsFile{}, true)
+	return nil
 }
 
 // ResetToDefaults backs up the current config, creates a default config,

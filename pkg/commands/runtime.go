@@ -73,8 +73,10 @@ type Runtime struct {
 	GetContextStats    func() *ContextStats
 	// SwitchModel switches the current agent to a model selection (an exact
 	// target or a route name) and returns the previous selection.
-	SwitchModel    func(selection string) (previous string, err error)
-	SwitchChannel  func(value string) error
+	SwitchModel func(selection string) (previous string, err error)
+	// CheckChannel reports why the named channel is unavailable, or nil when
+	// it is enabled.
+	CheckChannel   func(name string) error
 	ClearHistory   func() error
 	ReloadConfig   func() error
 	StopActiveTurn func() (StopResult, error)

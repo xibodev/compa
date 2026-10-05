@@ -35,6 +35,9 @@ type AssembleRequest struct {
 	SessionKey string // session identifier
 	Budget     int    // context window in tokens
 	MaxTokens  int    // max response tokens
+	// AgentID is the agent whose turn asks; its session store holds the
+	// history. Empty means the agent that owns the session.
+	AgentID string
 }
 
 // AssembleResponse is the output of Assemble.
@@ -48,6 +51,8 @@ type CompactRequest struct {
 	SessionKey string                // session identifier
 	Reason     ContextCompressReason // proactive_budget | llm_retry | summarize
 	Budget     int                   // context window budget (used for retry aggressive compaction)
+	// AgentID is the agent whose turn asks (see AssembleRequest.AgentID).
+	AgentID string
 }
 
 // IngestRequest is the input to Ingest.

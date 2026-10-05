@@ -330,6 +330,16 @@ func appendRuntimeEventPayloadSummary(fields map[string]any, payload any) {
 	case ErrorPayload:
 		fields["stage"] = payload.Stage
 		fields["error"] = payload.Message
+	case ApprovalRequestedPayload:
+		fields["approval_id"] = payload.ApprovalID
+		fields["tool"] = payload.Tool
+		fields["args_count"] = len(payload.Parameters)
+	case ApprovalResolvedPayload:
+		fields["approval_id"] = payload.ApprovalID
+		fields["resolution"] = payload.Resolution
+		if payload.Reason != "" {
+			fields["reason"] = boundedRuntimeEventText(payload.Reason)
+		}
 	}
 }
 

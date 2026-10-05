@@ -30,12 +30,18 @@ func (c FallbackCandidate) StableKey() string {
 }
 
 // InstanceKey returns the key of the instance the candidate runs on. It keys
-// the instance's health, so a circuit or cooldown holds back every target of
-// that instance, and its RPM limit, which the instance's runtime settings
-// set. A candidate without an instance identity falls back to its stable key.
+// the instance's RPM limit, which the instance's runtime settings set. A
+// candidate without an instance identity falls back to its stable key.
 func (c FallbackCandidate) InstanceKey() string {
 	if key := strings.TrimSpace(c.IdentityKey); key != "" {
 		return key
 	}
 	return c.StableKey()
+}
+
+// HealthKey returns the key of the candidate's health: its model on its
+// instance. A model an aggregator cannot serve for a while holds back that
+// model only, not the instance's other models.
+func (c FallbackCandidate) HealthKey() string {
+	return c.InstanceKey() + "|" + strings.TrimSpace(c.Model)
 }

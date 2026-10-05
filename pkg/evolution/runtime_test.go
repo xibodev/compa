@@ -38,6 +38,51 @@ func TestRuntime_FinalizeTurnDisabledDoesNothing(t *testing.T) {
 	}
 }
 
+// In observe mode the cold path never runs, so a turn drops the records past
+// retention as it adds its own.
+func TestRuntime_FinalizeTurnInObserveModeDropsRecordsOlderThan30Days(t *testing.T) {
+	workspace := t.TempDir()
+	paths := evolution.NewPaths(workspace, "")
+	now := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	if err := evolution.NewStore(paths).AppendLearningRecords([]evolution.LearningRecord{
+		{ID: "task-old", Kind: evolution.RecordKindTask, WorkspaceID: workspace, CreatedAt: now.Add(-31 * 24 * time.Hour)},
+		{ID: "task-new", Kind: evolution.RecordKindTask, WorkspaceID: workspace, CreatedAt: now.Add(-29 * 24 * time.Hour)},
+	}); err != nil {
+		t.Fatalf("AppendLearningRecords: %v", err)
+	}
+	rt, err := evolution.NewRuntime(evolution.RuntimeOptions{
+		Config: config.EvolutionConfig{Enabled: true, Mode: "observe"},
+		Now:    func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+
+	if err := rt.FinalizeTurn(context.Background(), evolution.TurnCaseInput{
+		Workspace: workspace,
+		TurnID:    "turn-1",
+		Status:    "completed",
+	}); err != nil {
+		t.Fatalf("FinalizeTurn: %v", err)
+	}
+
+	data, err := os.ReadFile(paths.TaskRecords)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		var record evolution.LearningRecord
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, record.ID)
+	}
+	if len(ids) != 2 || ids[0] != "task-new" || !strings.HasPrefix(ids[1], "turn-1-") {
+		t.Fatalf("task records = %v, want task-new and the turn's record", ids)
+	}
+}
+
 func TestRuntime_FinalizeTurnWithEmptyWorkspaceDoesNothing(t *testing.T) {
 	rt, err := evolution.NewRuntime(evolution.RuntimeOptions{
 		Config: config.EvolutionConfig{Enabled: true, Mode: "observe"},

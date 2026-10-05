@@ -40,16 +40,23 @@ func main() {
 }
 
 func run() error {
-	for _, f := range fixtures() {
-		if err := writeFixture(f.dir, f.name, f.doc); err != nil {
-			return err
-		}
-	}
-	if err := writeMalformed(); err != nil {
+	if err := generate(fixtureDir); err != nil {
 		return err
 	}
 	fmt.Println("fixtures written to", fixtureDir)
 	return nil
+}
+
+// generate writes every fixture under root. Its output depends on nothing but
+// this file and pkg/modproto, so the committed fixtures can be checked by
+// regenerating them (TestCommittedFixturesAreCurrent).
+func generate(root string) error {
+	for _, f := range fixtures() {
+		if err := writeFixture(root, f.dir, f.name, f.doc); err != nil {
+			return err
+		}
+	}
+	return writeMalformed(root)
 }
 
 type fixture struct {
@@ -365,7 +372,7 @@ func mustError(module, reqID string, e modproto.Error, exec modproto.Execution) 
 // These are raw bytes rather than marshalled structs, because the whole point
 // is that they cannot be produced by the correct types. They are what proves
 // the host validates rather than trusts.
-func writeMalformed() error {
+func writeMalformed(root string) error {
 	cases := []struct {
 		name  string
 		bytes string
@@ -403,7 +410,7 @@ func writeMalformed() error {
 			"a large payload inlined in result instead of returned as an artifact pointer; NOT structurally invalid, so it is enforced by max_output_bytes at read time rather than by the validator -- this fixture exists to test that bound"},
 	}
 
-	dir := filepath.Join(fixtureDir, "malformed")
+	dir := filepath.Join(root, "malformed")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
@@ -421,8 +428,8 @@ func writeMalformed() error {
 	return os.WriteFile(filepath.Join(dir, "README.md"), []byte(readme), 0o644)
 }
 
-func writeFixture(dir, name string, doc any) error {
-	full := filepath.Join(fixtureDir, dir)
+func writeFixture(root, dir, name string, doc any) error {
+	full := filepath.Join(root, dir)
 	if err := os.MkdirAll(full, 0o755); err != nil {
 		return err
 	}

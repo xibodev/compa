@@ -1,9 +1,11 @@
 import { IconAdjustmentsHorizontal, IconPlus } from "@tabler/icons-react"
+import { CatchBoundary } from "@tanstack/react-router"
 import { useAtom } from "jotai"
 import {
   type ChangeEvent,
   type ClipboardEvent,
   type DragEvent,
+  memo,
   useEffect,
   useEffectEvent,
   useRef,
@@ -39,6 +41,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
+import { finishedReply } from "@/features/chat/finished-reply"
 import {
   CHAT_IMAGE_ACCEPT,
   buildChatImageAttachments,
@@ -49,6 +52,7 @@ import {
   type ChatModelAvailability,
   resolveChatModelAvailability,
 } from "@/features/chat/model-availability"
+import { speakableText } from "@/features/voice/speakable-text"
 import { useVoicePlayer } from "@/features/voice/use-voice-player"
 import { useVoiceRecording } from "@/features/voice/use-voice-recording"
 import {
@@ -65,9 +69,10 @@ import { useWebChat } from "@/hooks/use-web-chat"
 import { formatModelLabel, selectionLabel } from "@/lib/model-labels"
 import type { AssistantDetailVisibility } from "@/store/chat"
 import type { ConnectionState } from "@/store/chat"
-import type { ChatAttachment } from "@/store/chat"
+import type { ChatAttachment, ChatMessage } from "@/store/chat"
 import {
   assistantDetailVisibilityAtom,
+  clearFailedDraft,
   shouldShowAssistantMessage,
 } from "@/store/chat"
 import type { GatewayState } from "@/store/gateway"
@@ -76,6 +81,52 @@ const NO_VOICE: VoiceCapabilities = { dictation: false, spokenReplies: false }
 
 // Transcripts some models return for audio without speech.
 const NON_SPEECH_TRANSCRIPT = /^[[(].*[\])]$/
+
+// How long a finished reply must stay unchanged before it is spoken: the
+// server may stop typing just before the last chunk or placeholder edit.
+const REPLY_SETTLE_MS = 400
+
+/**
+ * One message of the transcript. Memoized so a streamed chunk re-renders
+ * only the message it changes, and fenced so a message that cannot render
+ * breaks only itself, not the page with its New Chat and History buttons.
+ */
+const ChatMessageItem = memo(function ChatMessageItem({
+  message,
+  modelName,
+}: {
+  message: ChatMessage
+  modelName?: string
+}) {
+  return (
+    <div className="flex w-full min-w-0">
+      <CatchBoundary
+        getResetKey={() => message.content}
+        onCatch={(error) =>
+          console.error("Failed to render a chat message:", error)
+        }
+      >
+        {message.role === "assistant" ? (
+          <AssistantMessage
+            content={message.content}
+            attachments={message.attachments}
+            kind={message.kind}
+            modelName={modelName}
+            modelTarget={message.modelName}
+            toolCalls={message.toolCalls}
+            timestamp={message.timestamp}
+          />
+        ) : (
+          <UserMessage
+            content={message.content}
+            attachments={message.attachments}
+            timestamp={message.timestamp}
+          />
+        )}
+      </CatchBoundary>
+    </div>
+  )
+})
 
 function resolveChatInputDisabledReason({
   modelAvailability,
@@ -173,8 +224,10 @@ export function ChatPage() {
     messages,
     connectionState,
     isTyping,
+    isTurnActive,
     activeSessionId,
     contextUsage,
+    failedDraft,
     sendMessage,
     sendVoiceMessage,
     selection,
@@ -182,6 +235,22 @@ export function ChatPage() {
     switchSession,
     newChat,
   } = useWebChat()
+
+  // A message the server refused comes back to the composer instead of being
+  // lost; text typed since stays after it.
+  useEffect(() => {
+    if (!failedDraft) return
+    setInput((current) =>
+      current.trim()
+        ? `${failedDraft.content}\n${current}`
+        : failedDraft.content,
+    )
+    const restoredAttachments = failedDraft.attachments ?? []
+    if (restoredAttachments.length > 0) {
+      setAttachments((current) => [...restoredAttachments, ...current])
+    }
+    clearFailedDraft()
+  }, [failedDraft])
 
   const { state: gwState } = useGateway()
   const {
@@ -258,8 +327,17 @@ export function ChatPage() {
   const handsFreeRef = useRef(false)
   const handsFreeGenerationRef = useRef(0)
   const pendingHandsFreeReplyRef = useRef(false)
-  const pendingHandsFreeMessageCountRef = useRef(0)
   const handsFreeReplyTimerRef = useRef<number | null>(null)
+  // A turn ran since the last reply was spoken, so the next finished reply
+  // answers it. Replies loaded from history are never spoken.
+  const replyExpectedRef = useRef(false)
+  // What a hands-free turn sends with. A turn outlives the render it started
+  // in, so it reads the current model and module here rather than the ones
+  // it closed over.
+  const turnContextRef = useRef({ selection, selectedModule })
+  useEffect(() => {
+    turnContextRef.current = { selection, selectedModule }
+  }, [selection, selectedModule])
   // Hands-free listens and answers aloud, so it needs both directions.
   const canHandsFree = voice.dictation && voice.spokenReplies
   const activeVoiceMode = canHandsFree ? voiceMode : "cascade"
@@ -296,6 +374,15 @@ export function ChatPage() {
     },
     [],
   )
+
+  useEffect(() => {
+    if (isTurnActive) replyExpectedRef.current = true
+  }, [isTurnActive])
+
+  // Another conversation's last answer is history, not a reply to speak.
+  useEffect(() => {
+    replyExpectedRef.current = false
+  }, [activeSessionId])
 
   const handleToggleRecord = async () => {
     if (!canInput && !isRecording) return
@@ -348,13 +435,16 @@ export function ChatPage() {
       try {
         await startRecording()
       } catch (err: unknown) {
-        toast.error(
-          err instanceof Error && err.message
-            ? err.message
-            : t("chat.voice.microphoneFailed"),
-        )
+        console.error("Failed to start the microphone:", err)
+        toast.error(t("chat.voice.microphoneFailed"))
       }
     }
+  }
+
+  const stopHandsFree = () => {
+    handsFreeRef.current = false
+    setIsHandsFree(false)
+    setLiveStatus("idle")
   }
 
   const runHandsFreeTurn = async (generation: number) => {
@@ -381,19 +471,18 @@ export function ChatPage() {
       setLiveStatus("transcribing")
       setInput(cleaned)
       pendingHandsFreeReplyRef.current = true
-      pendingHandsFreeMessageCountRef.current = messages.length
+      const { selection: turnSelection, selectedModule: turnModule } =
+        turnContextRef.current
       const sent = await sendVoiceMessage({
         content: cleaned,
         attachments: [],
-        module: selectedModule,
-        selection,
+        module: turnModule,
+        selection: turnSelection,
       })
       if (!sent) {
         pendingHandsFreeReplyRef.current = false
         toast.error(t("chat.voice.transcriptKept"))
-        handsFreeRef.current = false
-        setIsHandsFree(false)
-        setLiveStatus("idle")
+        stopHandsFree()
         return
       }
       setInput("")
@@ -403,25 +492,15 @@ export function ChatPage() {
       handsFreeReplyTimerRef.current = window.setTimeout(() => {
         if (!pendingHandsFreeReplyRef.current) return
         pendingHandsFreeReplyRef.current = false
-        handsFreeRef.current = false
-        setIsHandsFree(false)
-        setLiveStatus("idle")
+        stopHandsFree()
         toast.error(t("chat.voice.turnTimedOut"))
       }, 90_000)
     } catch (cause) {
-      toast.error(
-        cause instanceof Error && cause.message
-          ? cause.message
-          : t("chat.voice.handsFreeFailed"),
-      )
-      handsFreeRef.current = false
-      setIsHandsFree(false)
-      setLiveStatus("idle")
+      console.error("Hands-free voice failed:", cause)
+      toast.error(t("chat.voice.handsFreeFailed"))
+      stopHandsFree()
     }
   }
-  const resumeHandsFree = useEffectEvent((generation: number) => {
-    void runHandsFreeTurn(generation)
-  })
 
   const handleToggleLive = () => {
     if (handsFreeRef.current) {
@@ -434,8 +513,7 @@ export function ChatPage() {
       }
       cancelRecording()
       stopSpeaking()
-      setIsHandsFree(false)
-      setLiveStatus("idle")
+      stopHandsFree()
       return
     }
     if (!canInput) {
@@ -448,64 +526,58 @@ export function ChatPage() {
     void runHandsFreeTurn(handsFreeGenerationRef.current)
   }
 
-  const lastMsg = messages[messages.length - 1]
-  const lastSpokenIdRef = useRef<string | null>(null)
   const canAutoSpeak =
     isAutoSpeak &&
     voice.spokenReplies &&
     activeVoiceMode === "cascade" &&
     !isHandsFree
 
-  useEffect(() => {
-    if (!canAutoSpeak || !lastMsg) return
-    if (lastMsg.role === "assistant" && !isTyping && lastMsg.content) {
-      if (lastSpokenIdRef.current !== lastMsg.id) {
-        lastSpokenIdRef.current = lastMsg.id
-        void speakText(lastMsg.content).catch((cause) =>
-          toast.error(
-            cause instanceof Error && cause.message
-              ? cause.message
-              : t("chat.voice.playbackFailed"),
-          ),
-        )
-      }
-    }
-  }, [canAutoSpeak, isTyping, lastMsg, speakText, t])
+  const playbackFailed = (cause: unknown) => {
+    console.error("Failed to play the reply:", cause)
+    toast.error(t("chat.voice.playbackFailed"))
+  }
 
-  useEffect(() => {
-    if (
-      !handsFreeRef.current ||
-      !pendingHandsFreeReplyRef.current ||
-      isTyping ||
-      !lastMsg ||
-      messages.length <= pendingHandsFreeMessageCountRef.current + 1 ||
-      lastMsg.role !== "assistant" ||
-      !lastMsg.content
-    )
+  // Speaks a reply once it is complete: a streamed reply grows until its turn
+  // ends, so speaking earlier would read only its first chunk. Hands-free
+  // listens again only after the reply has been spoken.
+  const onReplyFinished = useEffectEvent((content: string) => {
+    const text = speakableText(content)
+    if (handsFreeRef.current && pendingHandsFreeReplyRef.current) {
+      pendingHandsFreeReplyRef.current = false
+      replyExpectedRef.current = false
+      if (handsFreeReplyTimerRef.current !== null) {
+        window.clearTimeout(handsFreeReplyTimerRef.current)
+        handsFreeReplyTimerRef.current = null
+      }
+      const generation = handsFreeGenerationRef.current
+      setLiveStatus("speaking")
+      void speakText(text)
+        .catch(playbackFailed)
+        .finally(() => {
+          if (
+            handsFreeRef.current &&
+            generation === handsFreeGenerationRef.current
+          )
+            void runHandsFreeTurn(generation)
+        })
       return
-    pendingHandsFreeReplyRef.current = false
-    if (handsFreeReplyTimerRef.current !== null) {
-      window.clearTimeout(handsFreeReplyTimerRef.current)
-      handsFreeReplyTimerRef.current = null
     }
-    const generation = handsFreeGenerationRef.current
-    setLiveStatus("speaking")
-    void speakText(lastMsg.content)
-      .catch((cause) =>
-        toast.error(
-          cause instanceof Error && cause.message
-            ? cause.message
-            : t("chat.voice.playbackFailed"),
-        ),
-      )
-      .finally(() => {
-        if (
-          handsFreeRef.current &&
-          generation === handsFreeGenerationRef.current
-        )
-          resumeHandsFree(generation)
-      })
-  }, [isTyping, lastMsg, messages.length, speakText, t])
+    if (!replyExpectedRef.current) return
+    replyExpectedRef.current = false
+    if (canAutoSpeak && text) void speakText(text).catch(playbackFailed)
+  })
+
+  const reply = finishedReply(messages, isTurnActive)
+  const replyId = reply?.id ?? ""
+  const replyContent = reply?.content ?? ""
+  useEffect(() => {
+    if (!replyId) return
+    const timer = window.setTimeout(
+      () => onReplyFinished(replyContent),
+      REPLY_SETTLE_MS,
+    )
+    return () => window.clearTimeout(timer)
+  }, [replyId, replyContent])
 
   const handleSend = () => {
     if ((!input.trim() && attachments.length === 0) || !canInput) return
@@ -725,7 +797,12 @@ export function ChatPage() {
         onScroll={handleScroll}
         className="min-h-0 flex-1 [scrollbar-gutter:stable] overflow-y-auto px-4 py-6 md:px-8 lg:px-24 xl:px-48"
       >
-        <div className="mx-auto flex w-full max-w-250 flex-col gap-8 pb-8">
+        <div
+          role="log"
+          aria-live="polite"
+          aria-busy={isTurnActive}
+          className="mx-auto flex w-full max-w-250 flex-col gap-8 pb-8"
+        >
           {isHandsFree && (
             <div className="flex items-center justify-between gap-2 rounded-xl border border-emerald-500/30 bg-emerald-500/10 p-3 text-emerald-600 dark:text-emerald-400">
               <div role="status" className="flex min-w-0 items-center gap-2">
@@ -755,41 +832,21 @@ export function ChatPage() {
             />
           )}
 
-          {messages.map((msg) => {
-            if (
-              !shouldShowAssistantMessage(assistantDetailVisibility, msg.kind)
-            ) {
-              return null
-            }
-
-            return (
-              <div key={msg.id} className="flex w-full min-w-0">
-                {msg.role === "assistant" ? (
-                  <AssistantMessage
-                    content={msg.content}
-                    attachments={msg.attachments}
-                    kind={msg.kind}
-                    modelName={
-                      msg.modelName
-                        ? formatModelLabel(
-                            selectionLabel(msg.modelName, selectionTargets),
-                          )
-                        : undefined
-                    }
-                    modelTarget={msg.modelName}
-                    toolCalls={msg.toolCalls}
-                    timestamp={msg.timestamp}
-                  />
-                ) : (
-                  <UserMessage
-                    content={msg.content}
-                    attachments={msg.attachments}
-                    timestamp={msg.timestamp}
-                  />
-                )}
-              </div>
-            )
-          })}
+          {messages.map((msg) =>
+            shouldShowAssistantMessage(assistantDetailVisibility, msg.kind) ? (
+              <ChatMessageItem
+                key={msg.id}
+                message={msg}
+                modelName={
+                  msg.role === "assistant" && msg.modelName
+                    ? formatModelLabel(
+                        selectionLabel(msg.modelName, selectionTargets),
+                      )
+                    : undefined
+                }
+              />
+            ) : null,
+          )}
 
           {isTyping && <TypingIndicator />}
         </div>

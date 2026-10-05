@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"strings"
@@ -12,20 +13,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"gopkg.in/yaml.v3"
 
-	"github.com/xibodev/compa/pkg/credential"
+	"github.com/xibodev/compa/pkg/approval"
 )
-
-// mustSetupSSHKey generates a temporary Ed25519 SSH key in t.TempDir() and sets
-// COMPA_SSH_KEY_PATH to its path for the duration of the test. This is required
-// whenever a test exercises encryption/decryption via credential.Encrypt or SaveConfig.
-func mustSetupSSHKey(t *testing.T) {
-	t.Helper()
-	keyPath := filepath.Join(t.TempDir(), "compa_ed25519.key")
-	if err := credential.GenerateSSHKey(keyPath); err != nil {
-		t.Fatalf("mustSetupSSHKey: %v", err)
-	}
-	t.Setenv("COMPA_SSH_KEY_PATH", keyPath)
-}
 
 func TestAgentConfig_FullParse(t *testing.T) {
 	jsonData := `{
@@ -1029,6 +1018,13 @@ func TestConfigExample_LoadsAndUsesAutoWebProvider(t *testing.T) {
 	if cfg.Heartbeat.Enabled || cfg.Heartbeat.Interval != 30 {
 		t.Fatalf("config.example.json heartbeat = %+v, want off with a 30-minute interval", cfg.Heartbeat)
 	}
+	// It shows the defaults.
+	if !cfg.Commands.OwnerOnly || !cfg.Logging.RedactSecrets ||
+		cfg.Tools.Message.Targets != MessageTargetsCurrentChat ||
+		!reflect.DeepEqual(cfg.Tools.Approval, approval.DefaultPolicy()) {
+		t.Fatalf("config.example.json does not show the defaults: commands=%+v logging=%+v message=%q approval=%+v",
+			cfg.Commands, cfg.Logging, cfg.Tools.Message.Targets, cfg.Tools.Approval)
+	}
 }
 
 func TestDefaultConfig_ToolFeedbackDisabled(t *testing.T) {
@@ -1928,9 +1924,6 @@ func TestLoadConfig_WarnsForPlaintextAPIKey(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 
-	t.Setenv("COMPA_KEY_PASSPHRASE", "test-passphrase")
-	t.Setenv("COMPA_SSH_KEY_PATH", "")
-
 	cfg, err := LoadConfig(cfgPath)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
@@ -1946,36 +1939,31 @@ func TestLoadConfig_WarnsForPlaintextAPIKey(t *testing.T) {
 	}
 }
 
-// TestSaveConfig_EncryptsPlaintextAPIKey verifies that SaveConfig writes enc:// ciphertext
-// to disk and that a subsequent LoadConfig decrypts it back to the original plaintext.
-func TestSaveConfig_EncryptsPlaintextAPIKey(t *testing.T) {
+// SaveConfig keeps secrets plain in .security.yml (0600), out of config.json,
+// and a load reads them back.
+func TestSaveConfig_KeepsSecretsPlainInSecurityFile(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.json")
 
-	t.Setenv("COMPA_KEY_PASSPHRASE", "test-passphrase")
-	mustSetupSSHKey(t)
-
 	cfg := DefaultConfig()
 	cfg.Tools.Web.Brave.SetAPIKey("sk-plaintext")
-
 	if err := SaveConfig(cfgPath, cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
 	}
 
-	// Disk must contain enc://, not the raw key.
 	secPath := filepath.Join(dir, SecurityConfigFile)
-	raw, _ := os.ReadFile(secPath)
-	if !strings.Contains(string(raw), "enc://") {
-		t.Errorf("saved file should contain enc://, got:\n%s", string(raw))
+	if got := savedBraveKeys(t, dir); !slices.Equal(got, []string{"sk-plaintext"}) {
+		t.Errorf("saved keys = %q, want the plain key", got)
 	}
-	if strings.Contains(string(raw), "sk-plaintext") {
-		t.Errorf("saved file must not contain the plaintext key")
+	if runtime.GOOS != "windows" {
+		if info, err := os.Stat(secPath); err != nil || info.Mode().Perm() != 0o600 {
+			t.Errorf("%s mode = %v (err %v), want 0600", SecurityConfigFile, info.Mode().Perm(), err)
+		}
 	}
 	if plain, _ := os.ReadFile(cfgPath); strings.Contains(string(plain), "sk-plaintext") {
-		t.Errorf("config.json must not contain the plaintext key")
+		t.Errorf("config.json must not contain the key")
 	}
 
-	// A fresh load must decrypt back to the original plaintext.
 	cfg2, err := LoadConfig(cfgPath)
 	if err != nil {
 		t.Fatalf("LoadConfig after SaveConfig: %v", err)
@@ -1985,32 +1973,9 @@ func TestSaveConfig_EncryptsPlaintextAPIKey(t *testing.T) {
 	}
 }
 
-// TestLoadConfig_NoSealWithoutPassphrase verifies that secrets are left
-// unchanged when COMPA_KEY_PASSPHRASE is not set.
-func TestLoadConfig_NoSealWithoutPassphrase(t *testing.T) {
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.json")
-	data := `{"tools":{"web":{"brave":{"api_keys":["sk-plaintext"]}}}}`
-	if err := os.WriteFile(cfgPath, []byte(data), 0o600); err != nil {
-		t.Fatalf("setup: %v", err)
-	}
-
-	t.Setenv("COMPA_KEY_PASSPHRASE", "")
-	t.Setenv("COMPA_SSH_KEY_PATH", "")
-
-	if _, err := LoadConfig(cfgPath); err != nil {
-		t.Fatalf("LoadConfig: %v", err)
-	}
-
-	raw, _ := os.ReadFile(cfgPath)
-	if strings.Contains(string(raw), "enc://") {
-		t.Error("config file must not be modified when no passphrase is set")
-	}
-}
-
-// TestLoadConfig_FileRefNotSealed verifies that file:// secret references are not
-// converted to enc:// values (they are resolved at runtime by the Resolver).
-func TestLoadConfig_FileRefNotSealed(t *testing.T) {
+// A file:// reference resolves to the file's content and is saved back as
+// the reference.
+func TestLoadConfig_FileRefResolvesAndIsKept(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.json")
 	keyFile := filepath.Join(dir, "brave.key")
@@ -2028,9 +1993,6 @@ func TestLoadConfig_FileRefNotSealed(t *testing.T) {
 		t.Fatalf("saveSecurityConfig: %v", err)
 	}
 
-	t.Setenv("COMPA_KEY_PASSPHRASE", "test-passphrase")
-	t.Setenv("COMPA_SSH_KEY_PATH", "")
-
 	cfg, err := LoadConfig(cfgPath)
 	if err != nil {
 		t.Fatalf("LoadConfig: %v", err)
@@ -2039,12 +2001,11 @@ func TestLoadConfig_FileRefNotSealed(t *testing.T) {
 		t.Errorf("api_key = %q, want the file's content", got)
 	}
 
-	raw, _ := os.ReadFile(secPath)
-	if !strings.Contains(string(raw), "file://brave.key") {
-		t.Error("file:// reference should be preserved unchanged in the config file")
+	if err := SaveConfig(cfgPath, cfg); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
 	}
-	if strings.Contains(string(raw), "enc://") {
-		t.Error("file:// reference must not be converted to enc://")
+	if got := savedBraveKeys(t, dir); !slices.Equal(got, []string{"file://brave.key"}) {
+		t.Errorf("saved keys = %q, want the reference", got)
 	}
 }
 
@@ -2068,196 +2029,33 @@ func savedBraveKeys(t *testing.T, dir string) []string {
 	return saved.Web.Brave.APIKeys
 }
 
-// TestSaveConfig_MixedKeys verifies that SaveConfig encrypts only plaintext secrets
-// and leaves already-encrypted (enc://) and file:// entries unchanged.
+// SaveConfig keeps a plain key and a file:// reference as written, and a
+// load resolves both.
 func TestSaveConfig_MixedKeys(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.json")
-
-	t.Setenv("COMPA_KEY_PASSPHRASE", "test-passphrase")
-	mustSetupSSHKey(t)
-
-	// Pre-encrypt one key so we have a genuine enc:// value to put in the config.
-	pre := &Config{}
-	pre.Tools.Web.Brave.SetAPIKey("sk-already-plain")
-	if err := SaveConfig(cfgPath, pre); err != nil {
-		t.Fatalf("setup SaveConfig: %v", err)
-	}
-	preSaved := savedBraveKeys(t, dir)
-	if len(preSaved) != 1 || !strings.HasPrefix(preSaved[0], "enc://") {
-		t.Fatalf("setup: expected one enc:// key, got %q", preSaved)
-	}
-	alreadyEncrypted := preSaved[0]
-
-	// Save three keys:
-	//   1. plaintext   → must be encrypted by SaveConfig
-	//   2. enc://      → must be left unchanged (already encrypted)
-	//   3. file://     → must be left unchanged (file reference)
-	keyFile := filepath.Join(dir, "api.key")
-	if err := os.WriteFile(keyFile, []byte("sk-from-file"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "api.key"), []byte("sk-from-file"), 0o600); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
+
 	cfg := &Config{}
-	cfg.Tools.Web.Brave.APIKeys = SimpleSecureStrings("sk-new-plaintext", alreadyEncrypted, "file://api.key")
+	cfg.Tools.Web.Brave.APIKeys = SimpleSecureStrings("sk-plain", "file://api.key")
 	if err := SaveConfig(cfgPath, cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
 	}
-
-	saved := savedBraveKeys(t, dir)
-	t.Logf("saved keys: %q", saved)
-	if len(saved) != 3 {
-		t.Fatalf("saved %d keys, want 3", len(saved))
-	}
-	// 1. Plaintext must be encrypted.
-	if !strings.HasPrefix(saved[0], "enc://") || strings.Contains(strings.Join(saved, "\n"), "sk-new-plaintext") {
-		t.Error("plaintext key must be saved encrypted")
-	}
-	// 2. The pre-existing enc:// value must still be present (byte-for-byte unchanged).
-	if saved[1] != alreadyEncrypted {
-		t.Error("pre-existing enc:// entry must be preserved unchanged")
-	}
-	// 3. file:// must be preserved.
-	if saved[2] != "file://api.key" {
-		t.Error("file:// reference must be preserved unchanged")
+	if saved := savedBraveKeys(t, dir); !slices.Equal(saved, []string{"sk-plain", "file://api.key"}) {
+		t.Errorf("saved keys = %q", saved)
 	}
 
-	// Now load and verify all three decrypt/resolve correctly.
 	cfg2, err := LoadConfig(cfgPath)
 	if err != nil {
 		t.Fatalf("LoadConfig after SaveConfig: %v", err)
 	}
-	want := []string{"sk-new-plaintext", "sk-already-plain", "sk-from-file"}
+	want := []string{"sk-plain", "sk-from-file"}
 	if got := cfg2.Tools.Web.Brave.APIKeys.Values(); !slices.Equal(got, want) {
 		t.Errorf("loaded api_keys = %q, want %q", got, want)
 	}
 }
-
-// TestLoadConfig_MixedKeys_NoPassphrase verifies that when COMPA_KEY_PASSPHRASE
-// is not set, an enc:// secret causes LoadConfig to return an error, while plaintext
-// and file:// entries in the same config are not affected.
-func TestLoadConfig_MixedKeys_NoPassphrase(t *testing.T) {
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.json")
-
-	// First encrypt a key so we have a real enc:// value.
-	t.Setenv("COMPA_KEY_PASSPHRASE", "test-passphrase")
-	mustSetupSSHKey(t)
-	pre := &Config{}
-	pre.Tools.Web.Brave.SetAPIKey("sk-secret")
-	if err := SaveConfig(cfgPath, pre); err != nil {
-		t.Fatalf("setup SaveConfig: %v", err)
-	}
-	loaded, err := LoadConfig(cfgPath)
-	if err != nil {
-		t.Fatalf("setup LoadConfig: %v", err)
-	}
-	encValue := loaded.Tools.Web.Brave.APIKeys[0].raw
-	if !strings.HasPrefix(encValue, "enc://") {
-		t.Fatalf("setup: expected an enc:// key, got %q", encValue)
-	}
-
-	// Write a mixed config: enc:// + plaintext + file://
-	keyFile := filepath.Join(dir, "api.key")
-	if err = os.WriteFile(keyFile, []byte("sk-from-file"), 0o600); err != nil {
-		t.Fatalf("setup: %v", err)
-	}
-	keys := []string{encValue, "sk-plain", "file://api.key"}
-	mixed, _ := json.Marshal(map[string]any{
-		"tools": map[string]any{"web": map[string]any{"brave": map[string]any{"api_keys": keys}}},
-	})
-	if err = os.WriteFile(cfgPath, mixed, 0o600); err != nil {
-		t.Fatalf("setup write: %v", err)
-	}
-	secs, _ := yaml.Marshal(map[string]any{
-		"web": map[string]any{"brave": map[string]any{"api_keys": keys}},
-	})
-	if err = os.WriteFile(filepath.Join(dir, SecurityConfigFile), secs, 0o600); err != nil {
-		t.Fatalf("security write: %v", err)
-	}
-
-	// Now clear the passphrase — LoadConfig must fail because enc:// cannot be decrypted.
-	t.Setenv("COMPA_KEY_PASSPHRASE", "")
-
-	if _, err = LoadConfig(cfgPath); err == nil {
-		t.Fatal("LoadConfig should fail when enc:// key is present and no passphrase is set")
-	} else if !strings.Contains(err.Error(), "passphrase required") {
-		t.Errorf("error should mention passphrase required, got: %v", err)
-	}
-}
-
-// TestSaveConfig_UsesPassphraseProvider verifies that SaveConfig encrypts plaintext
-// secrets using credential.PassphraseProvider() rather than os.Getenv directly.
-// This matters for the launcher, which clears the environment variable and redirects
-// PassphraseProvider to an in-memory SecureStore.
-func TestSaveConfig_UsesPassphraseProvider(t *testing.T) {
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.json")
-
-	// Ensure the env var is empty — passphrase must come from PassphraseProvider only.
-	t.Setenv("COMPA_KEY_PASSPHRASE", "")
-	mustSetupSSHKey(t)
-
-	// Replace PassphraseProvider with an in-memory function (simulating SecureStore).
-	const testPassphrase = "provider-passphrase"
-	orig := credential.PassphraseProvider
-	credential.PassphraseProvider = func() string { return testPassphrase }
-	t.Cleanup(func() { credential.PassphraseProvider = orig })
-
-	cfg := DefaultConfig()
-	cfg.Tools.Web.Brave.SetAPIKey("sk-plaintext")
-	if err := SaveConfig(cfgPath, cfg); err != nil {
-		t.Fatalf("SaveConfig: %v", err)
-	}
-
-	raw, _ := os.ReadFile(filepath.Join(dir, SecurityConfigFile))
-	if !strings.Contains(string(raw), "enc://") {
-		t.Errorf(
-			"SaveConfig should have encrypted plaintext key via PassphraseProvider; got:\n%s",
-			raw,
-		)
-	}
-}
-
-// TestLoadConfig_UsesPassphraseProvider verifies that LoadConfig decrypts enc:// keys
-// using credential.PassphraseProvider() rather than os.Getenv directly.
-func TestLoadConfig_UsesPassphraseProvider(t *testing.T) {
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.json")
-
-	// Ensure the env var is empty throughout.
-	t.Setenv("COMPA_KEY_PASSPHRASE", "")
-	mustSetupSSHKey(t)
-
-	const testPassphrase = "provider-passphrase"
-	const plainKey = "sk-secret"
-
-	// First, encrypt the key using the same passphrase.
-	encrypted, err := credential.Encrypt(testPassphrase, "", plainKey)
-	if err != nil {
-		t.Fatalf("Encrypt: %v", err)
-	}
-
-	raw, _ := json.Marshal(map[string]any{
-		"tools": map[string]any{"web": map[string]any{"brave": map[string]any{"api_keys": []string{encrypted}}}},
-	})
-	if err = os.WriteFile(cfgPath, raw, 0o600); err != nil {
-		t.Fatalf("setup: %v", err)
-	}
-
-	// Redirect PassphraseProvider — env var is empty, so without this the load would fail.
-	orig := credential.PassphraseProvider
-	credential.PassphraseProvider = func() string { return testPassphrase }
-	t.Cleanup(func() { credential.PassphraseProvider = orig })
-
-	cfg, err := LoadConfig(cfgPath)
-	if err != nil {
-		t.Fatalf("LoadConfig: %v", err)
-	}
-	if got := cfg.Tools.Web.Brave.APIKey(); got != plainKey {
-		t.Errorf("api_key = %q, want %q", got, plainKey)
-	}
-}
-
 func TestConfigParsesLogLevel(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.json")

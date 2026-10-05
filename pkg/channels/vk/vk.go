@@ -2,9 +2,12 @@ package vk
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/SevereCloud/vksdk/v3/api"
 	"github.com/SevereCloud/vksdk/v3/api/params"
@@ -25,6 +28,8 @@ type VKChannel struct {
 	lp          *longpoll.LongPoll
 	channelName string
 	bc          *config.Channel
+	groupID     int            // the community the bot runs as
+	mentionRe   *regexp.Regexp // a mention of groupID; see setGroupID
 	ctx         context.Context
 	cancel      context.CancelFunc
 }
@@ -73,6 +78,7 @@ func (c *VKChannel) Start(ctx context.Context) error {
 		c.cancel()
 		return fmt.Errorf("group_id is required for VK bot")
 	}
+	c.setGroupID(groupID)
 
 	lp, err := longpoll.NewLongPoll(c.vk, groupID)
 	if err != nil {
@@ -82,6 +88,7 @@ func (c *VKChannel) Start(ctx context.Context) error {
 	c.lp = lp
 
 	lp.MessageNew(func(_ context.Context, obj events.MessageNewObject) {
+		defer channels.RecoverPanic(c.Name(), "message")
 		c.handleMessage(obj.Message)
 	})
 
@@ -91,15 +98,45 @@ func (c *VKChannel) Start(ctx context.Context) error {
 		"group_id": groupID,
 	})
 
-	go func() {
-		if err := lp.Run(); err != nil {
-			logger.ErrorCF("vk", "Long poll failed", map[string]any{
-				"error": err.Error(),
-			})
-		}
-	}()
+	go c.runLongPoll(c.ctx, lp)
 
 	return nil
+}
+
+// Long-poll restart delays after a failure.
+const (
+	longPollRetryInitial = 2 * time.Second
+	longPollRetryMax     = 2 * time.Minute
+)
+
+// runLongPoll runs the long poll until ctx ends, restarting it with a
+// growing delay when it fails, for example when the network drops.
+func (c *VKChannel) runLongPoll(ctx context.Context, lp *longpoll.LongPoll) {
+	defer channels.RecoverPanic(c.Name(), "long poll")
+	delay := longPollRetryInitial
+	for {
+		started := time.Now()
+		err := lp.RunWithContext(ctx)
+		if ctx.Err() != nil {
+			return
+		}
+		if err == nil {
+			err = errors.New("long poll stopped")
+		}
+		if time.Since(started) > longPollRetryMax {
+			delay = longPollRetryInitial
+		}
+		logger.ErrorCF("vk", "Long poll failed, restarting", map[string]any{
+			"error": err.Error(),
+			"delay": delay.String(),
+		})
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(delay):
+		}
+		delay = min(delay*2, longPollRetryMax)
+	}
 }
 
 func (c *VKChannel) Stop(ctx context.Context) error {
@@ -132,19 +169,17 @@ func (c *VKChannel) handleMessage(msg object.MessagesMessage) {
 	fromID := msg.FromID
 	userID := strconv.Itoa(fromID)
 
+	isGroupChat := peerID != fromID
+	chatType := "direct"
+	if isGroupChat {
+		chatType = "group"
+	}
+
 	platformID := userID
 	sender := bus.SenderInfo{
 		Platform:    "vk",
 		PlatformID:  platformID,
 		CanonicalID: identity.BuildCanonicalID("vk", platformID),
-		DisplayName: c.getUserName(fromID),
-	}
-
-	if !c.IsAllowedSender(sender) {
-		logger.DebugCF("vk", "Message from unauthorized user", map[string]any{
-			"peer_id": peerID,
-		})
-		return
 	}
 
 	text := msg.Text
@@ -156,8 +191,30 @@ func (c *VKChannel) handleMessage(msg object.MessagesMessage) {
 		return
 	}
 
-	groupTrigger := c.bc.GroupTrigger
-	isGroupChat := peerID != fromID
+	inboundCtx := bus.InboundContext{
+		Channel:   c.Name(),
+		ChatID:    chatID,
+		ChatType:  chatType,
+		SenderID:  userID,
+		MessageID: strconv.Itoa(msg.ConversationMessageID),
+		Raw: map[string]string{
+			"user_id":  userID,
+			"is_group": fmt.Sprintf("%t", isGroupChat),
+		},
+	}
+
+	// Decide before looking the sender up in the VK API. A direct message
+	// from an unpaired sender still goes to the access policy, which records
+	// the sender.
+	if !c.Admits(chatType, sender, chatID) {
+		logger.DebugCF("vk", "Message from unauthorized user", map[string]any{
+			"peer_id": peerID,
+		})
+		if !isGroupChat {
+			c.HandleInboundContext(c.ctx, chatID, text, nil, inboundCtx, sender)
+		}
+		return
+	}
 
 	if isGroupChat {
 		isMentioned := c.isMentioned(msg)
@@ -169,30 +226,11 @@ func (c *VKChannel) handleMessage(msg object.MessagesMessage) {
 			return
 		}
 		text = cleaned
-		_ = groupTrigger
+		inboundCtx.Mentioned = isMentioned
 	}
 
-	chatType := "direct"
-	if isGroupChat {
-		chatType = "group"
-	}
-
-	messageID := strconv.Itoa(msg.ConversationMessageID)
-
-	metadata := map[string]string{
-		"user_id":  userID,
-		"is_group": fmt.Sprintf("%t", isGroupChat),
-	}
-
-	c.HandleInboundContext(c.ctx, chatID, text, nil, bus.InboundContext{
-		Channel:   "vk",
-		ChatID:    chatID,
-		ChatType:  chatType,
-		SenderID:  userID,
-		MessageID: messageID,
-		Mentioned: isGroupChat && c.isMentioned(msg),
-		Raw:       metadata,
-	}, sender)
+	sender.DisplayName = c.getUserName(fromID)
+	c.HandleInboundContext(c.ctx, chatID, text, nil, inboundCtx, sender)
 }
 
 func (c *VKChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]string, error) {
@@ -234,7 +272,7 @@ func (c *VKChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]string
 				"error":   err.Error(),
 				"peer_id": peerID,
 			})
-			return messageIDs, fmt.Errorf("failed to send message: %w", err)
+			return messageIDs, classifySendError(err)
 		}
 
 		messageIDs = append(messageIDs, strconv.Itoa(resp))
@@ -243,12 +281,49 @@ func (c *VKChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]string
 	return messageIDs, nil
 }
 
+// classifySendError maps a VK error to the channel error kinds, so that the
+// manager retries rate limits and server errors and gives up on the rest.
+func classifySendError(err error) error {
+	switch {
+	case errors.Is(err, api.ErrTooMany), errors.Is(err, api.ErrFlood):
+		return fmt.Errorf("failed to send message: %w: %v", channels.ErrRateLimit, err)
+	case errors.Is(err, api.ErrServer), errors.Is(err, api.ErrUnknown):
+		return fmt.Errorf("failed to send message: %w: %v", channels.ErrTemporary, err)
+	}
+	var apiErr *api.Error
+	if errors.As(err, &apiErr) {
+		return fmt.Errorf("failed to send message: %w: %v", channels.ErrSendFailed, err)
+	}
+	return channels.ClassifyNetError(err)
+}
+
+// setGroupID records the community the bot runs as, which mentions name.
+func (c *VKChannel) setGroupID(groupID int) {
+	c.groupID = groupID
+	id := strconv.Itoa(groupID)
+	// VK writes a mention of a community as "[club123|Name]" ("public" for
+	// public pages); a typed "@club123" may arrive unconverted.
+	c.mentionRe = regexp.MustCompile(`\[(?:club|public)` + id + `\|[^\]]*\]|@(?:club|public)` + id + `\b`)
+}
+
+// isMentioned reports whether a chat message is addressed to the bot: it
+// mentions the bot's community, or replies to one of the bot's messages
+// (which come from the negated community ID).
 func (c *VKChannel) isMentioned(msg object.MessagesMessage) bool {
-	return false
+	if c.groupID == 0 || c.mentionRe == nil {
+		return false
+	}
+	if c.mentionRe.MatchString(msg.Text) {
+		return true
+	}
+	return msg.ReplyMessage != nil && msg.ReplyMessage.FromID == -c.groupID
 }
 
 func (c *VKChannel) stripBotMention(text string) string {
-	return strings.TrimSpace(text)
+	if c.mentionRe != nil {
+		text = c.mentionRe.ReplaceAllString(text, "")
+	}
+	return strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(text), ",:"))
 }
 
 func (c *VKChannel) getUserName(userID int) string {
@@ -290,6 +365,8 @@ func (c *VKChannel) processAttachments(attachments []object.MessagesMessageAttac
 	return strings.Join(parts, " ")
 }
 
+// VoiceCapabilities reports no voice support: the channel neither downloads
+// voice messages nor uploads audio.
 func (c *VKChannel) VoiceCapabilities() channels.VoiceCapabilities {
-	return channels.VoiceCapabilities{ASR: true, TTS: true}
+	return channels.VoiceCapabilities{}
 }

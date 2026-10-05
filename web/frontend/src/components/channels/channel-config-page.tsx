@@ -1,6 +1,13 @@
 import { IconArrowLeft, IconLoader2 } from "@tabler/icons-react"
 import { Link } from "@tanstack/react-router"
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import {
+  useCallback,
+  useEffect,
+  useEffectEvent,
+  useMemo,
+  useRef,
+  useState,
+} from "react"
 import { useTranslation } from "react-i18next"
 
 import {
@@ -12,6 +19,8 @@ import {
 } from "@/api/channels"
 import { type ArrayFieldFlusher } from "@/components/channels/channel-array-list-field"
 import {
+  asStringArray,
+  mergeUniqueStringItems,
   normalizeAllowFromValues,
   serializeStringArrayForSubmit,
 } from "@/components/channels/channel-array-utils"
@@ -30,10 +39,12 @@ import { SlackForm } from "@/components/channels/channel-forms/slack-form"
 import { TelegramForm } from "@/components/channels/channel-forms/telegram-form"
 import { WecomForm } from "@/components/channels/channel-forms/wecom-form"
 import { WeixinForm } from "@/components/channels/channel-forms/weixin-form"
+import { ChannelPairingRequests } from "@/components/channels/channel-pairing-requests"
 import { ConfigChangeNotice } from "@/components/config-change-notice"
 import { PageHeader } from "@/components/page-header"
 import { Button } from "@/components/ui/button"
 import { Switch } from "@/components/ui/switch"
+import { UnsavedChangesGuard } from "@/components/unsaved-changes-guard"
 import { useGateway } from "@/hooks/use-gateway"
 import { showSaveSuccessOrRestartToast } from "@/lib/restart-required"
 import { refreshGatewayState } from "@/store/gateway"
@@ -96,6 +107,8 @@ function serializeGroupTriggerForSubmit(value: unknown): unknown {
 
 const CHANNEL_COMMON_CONFIG_KEYS = new Set([
   "allow_from",
+  "dm_policy",
+  "group_policy",
   "group_trigger",
   "placeholder",
   "reasoning_channel_id",
@@ -112,6 +125,11 @@ function normalizeConfig(
   }
   if (channel.name === "whatsapp") {
     config.use_native = false
+  }
+  if (channel.name === "line") {
+    // The gateway serves the LINE webhook; these never had an effect.
+    delete config.webhook_host
+    delete config.webhook_port
   }
   return config
 }
@@ -359,15 +377,6 @@ export function ChannelConfigPage({ channelName }: ChannelConfigPageProps) {
     loadData()
   }, [loadData, resetPageState])
 
-  const previousGatewayStatusRef = useRef(gatewayState)
-  useEffect(() => {
-    const previousStatus = previousGatewayStatusRef.current
-    if (previousStatus !== "running" && gatewayState === "running") {
-      void loadData()
-    }
-    previousGatewayStatusRef.current = gatewayState
-  }, [gatewayState, loadData])
-
   const configured = useMemo(() => {
     if (!channel) return false
     return isConfigured(channel, editConfig, configuredSecrets)
@@ -383,6 +392,19 @@ export function ChannelConfigPage({ channelName }: ChannelConfigPageProps) {
     const currentPayload = buildSavePayload(channel, editConfig, enabled)
     return JSON.stringify(basePayload) !== JSON.stringify(currentPayload)
   }, [baseConfig, channel, channelName, editConfig, enabled, loading])
+
+  // The gateway coming up reloads the channel, but never over unsaved edits.
+  const onGatewayRunning = useEffectEvent(() => {
+    if (!isDirty) void loadData()
+  })
+  const previousGatewayStatusRef = useRef(gatewayState)
+  useEffect(() => {
+    const previousStatus = previousGatewayStatusRef.current
+    if (previousStatus !== "running" && gatewayState === "running") {
+      onGatewayRunning()
+    }
+    previousGatewayStatusRef.current = gatewayState
+  }, [gatewayState])
 
   const channelDisplayName = useMemo(() => {
     if (!channel) return channelName
@@ -548,6 +570,21 @@ export function ChannelConfigPage({ channelName }: ChannelConfigPageProps) {
     [loadData, t],
   )
 
+  // An approved sender is in the saved allow_from now. Adding it to the
+  // loaded and the edited config keeps unsaved edits, and a later save
+  // keeps the sender.
+  const handlePairingApproved = useCallback((senderID: string) => {
+    const withSender = (config: ChannelConfig): ChannelConfig => ({
+      ...config,
+      allow_from: mergeUniqueStringItems(asStringArray(config.allow_from), [
+        senderID,
+      ]),
+    })
+    setBaseConfig(withSender)
+    setEditConfig(withSender)
+    void refreshGatewayState({ force: true })
+  }, [])
+
   const renderForm = () => {
     if (!channel) return null
     const isEdit = configured
@@ -635,6 +672,7 @@ export function ChannelConfigPage({ channelName }: ChannelConfigPageProps) {
               hiddenKeys={[...hiddenKeys, "bot_id"]}
               requiredKeys={requiredKeys}
               supportsStreaming
+              accessPolicy
               fieldErrors={fieldErrors}
               registerArrayFieldFlusher={registerArrayFieldFlusher}
               arrayFieldResetVersion={arrayFieldResetVersion}
@@ -650,6 +688,8 @@ export function ChannelConfigPage({ channelName }: ChannelConfigPageProps) {
             hiddenKeys={hiddenKeys}
             requiredKeys={requiredKeys}
             supportsStreaming={channel?.name === "web"}
+            accessPolicy={channel.name !== "web"}
+            whatsAppChats={channel.name === "whatsapp_native"}
             fieldErrors={fieldErrors}
             registerArrayFieldFlusher={registerArrayFieldFlusher}
             arrayFieldResetVersion={arrayFieldResetVersion}
@@ -660,6 +700,7 @@ export function ChannelConfigPage({ channelName }: ChannelConfigPageProps) {
 
   return (
     <div className="flex h-full flex-col">
+      <UnsavedChangesGuard when={isDirty} />
       <PageHeader title={channelDisplayName}>
         <Button variant="ghost" size="sm" asChild>
           <Link to="/channels">
@@ -693,8 +734,19 @@ export function ChannelConfigPage({ channelName }: ChannelConfigPageProps) {
                 <p className="text-sm font-medium">
                   {t("channels.page.enableLabel")}
                 </p>
-                <Switch checked={enabled} onCheckedChange={setEnabled} />
+                <Switch
+                  checked={enabled}
+                  onCheckedChange={setEnabled}
+                  aria-label={t("channels.page.enableLabel")}
+                />
               </div>
+            )}
+
+            {channel && channel.name !== "web" && (
+              <ChannelPairingRequests
+                channelName={channel.name}
+                onApproved={handlePairingApproved}
+              />
             )}
 
             {renderForm()}

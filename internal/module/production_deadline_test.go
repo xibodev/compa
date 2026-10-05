@@ -39,7 +39,18 @@ func TestEveryProductionInvocationSetsItsOwnDeadline(t *testing.T) {
 	var checked int
 	for _, dir := range []string{"internal", "cmd", "web"} {
 		_ = filepath.WalkDir(filepath.Join(root, dir), func(path string, d os.DirEntry, err error) error {
-			if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") {
+			if err != nil {
+				return nil
+			}
+			if d.IsDir() {
+				// The frontend's dependencies and the tool caches hold no Go
+				// and are large.
+				if name := d.Name(); name == "node_modules" || strings.HasPrefix(name, ".") {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if !strings.HasSuffix(path, ".go") {
 				return nil
 			}
 			if strings.HasSuffix(path, "_test.go") {

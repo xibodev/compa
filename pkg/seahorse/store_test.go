@@ -884,7 +884,8 @@ func TestResequenceContextItemsTxAssignsUniqueOrdinals(t *testing.T) {
 	}
 	defer tx.Rollback()
 
-	err = s.resequenceContextItemsTx(ctx, tx, conv.ConversationID, summary.SummaryID)
+	// A position past every item puts the summary at the end.
+	err = s.resequenceContextItemsTx(ctx, tx, conv.ConversationID, summary.SummaryID, 1000)
 	if err != nil {
 		t.Fatalf("resequenceContextItemsTx: %v", err)
 	}

@@ -52,8 +52,10 @@ Act directly and use tools first.
 	if len(definition.Agent.Frontmatter.Tools) != 2 {
 		t.Fatalf("expected tools to be parsed, got %v", definition.Agent.Frontmatter.Tools)
 	}
-	if definition.Agent.Frontmatter.MaxTurns == nil || *definition.Agent.Frontmatter.MaxTurns != 8 {
-		t.Fatalf("expected maxTurns to be parsed, got %v", definition.Agent.Frontmatter.MaxTurns)
+	// maxTurns was never implemented: an AGENT.md that still sets it loads,
+	// and the key stays among the raw fields.
+	if definition.Agent.FrontmatterErr != "" || definition.Agent.Frontmatter.Fields["maxTurns"] == nil {
+		t.Fatalf("expected an AGENT.md with maxTurns to load, got error %q", definition.Agent.FrontmatterErr)
 	}
 	if len(definition.Agent.Frontmatter.Skills) != 2 {
 		t.Fatalf("expected skills to be parsed, got %v", definition.Agent.Frontmatter.Skills)
@@ -141,7 +143,6 @@ Keep going.
 	if definition.Agent.Frontmatter.Name != "" ||
 		definition.Agent.Frontmatter.Description != "" ||
 		definition.Agent.Frontmatter.Model != "" ||
-		definition.Agent.Frontmatter.MaxTurns != nil ||
 		len(definition.Agent.Frontmatter.Tools) != 0 ||
 		len(definition.Agent.Frontmatter.Skills) != 0 ||
 		len(definition.Agent.Frontmatter.MCPServers) != 0 ||

@@ -76,6 +76,8 @@ func (al *AgentLoop) switchModel(agent *AgentInstance, value string) (string, er
 		return "", fmt.Errorf("model %q is not available: %w", selection, err)
 	}
 
+	// Turns run on snapshots of the model and hold no lock: the switch never
+	// waits for them, and takes effect on the next turn.
 	modelMu := agent.modelStateMutex()
 	modelMu.Lock()
 	previous := agent.Model

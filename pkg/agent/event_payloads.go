@@ -55,6 +55,9 @@ type TurnEndPayload struct {
 	ToolExecutions        []ToolExecutionRecord
 	// Error says why a turn that ended with TurnEndStatusError failed.
 	Error string
+	// FromOwner reports that the turn's message came from the instance's
+	// owner (see inboundFromOwner).
+	FromOwner bool
 }
 
 // LLMRequestPayload describes an outbound LLM request.
@@ -210,19 +213,26 @@ type ArtifactProducedPayload struct {
 	ToolName    string `json:"tool_name,omitempty"`
 }
 
-// ApprovalRequestedPayload describes a required human approval.
+// ApprovalRequestedPayload describes a tool call the approval policy
+// (tools.approval) asks about, before the approvers or the owner answer.
 type ApprovalRequestedPayload struct {
-	ApprovalID string         `json:"approval_id"`
+	// ApprovalID pairs the request with its ApprovalResolvedPayload.
+	ApprovalID string `json:"approval_id"`
+	// ActionID is the ID of the tool call in its turn; empty for a call
+	// made outside a turn, such as a scheduled command.
 	ActionID   string         `json:"action_id"`
 	Tool       string         `json:"tool"`
 	Parameters map[string]any `json:"parameters,omitempty"`
-	Reason     string         `json:"reason"`
-	State      string         `json:"state"` // "pending", "approved", "rejected", "cancelled"
+	// Reason names the part of the policy that asks.
+	Reason string `json:"reason"`
+	State  string `json:"state"` // "pending", "approved", "rejected", "cancelled"
 }
 
-// ApprovalResolvedPayload describes human approval resolution.
+// ApprovalResolvedPayload describes the answer to an approval request.
 type ApprovalResolvedPayload struct {
 	ApprovalID string `json:"approval_id"`
+	// Resolution is "cancelled" when the turn or job ended before the answer.
 	Resolution string `json:"resolution"` // "approved", "rejected", "cancelled"
-	Reason     string `json:"reason,omitempty"`
+	// Reason tells why a call that was not approved may not run.
+	Reason string `json:"reason,omitempty"`
 }

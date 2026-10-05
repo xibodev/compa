@@ -8,7 +8,6 @@ package utils
 
 import (
 	"encoding/json"
-	"fmt"
 	"unicode/utf8"
 
 	"github.com/xibodev/compa/pkg/providers"
@@ -77,97 +76,4 @@ func MeasureContextRunes(messages []providers.Message) int {
 		totalRunes += utf8.RuneCountInString(msg.ToolCallID)
 	}
 	return totalRunes
-}
-
-// TruncateContextSmart intelligently truncates message history to fit within maxRunes.
-//
-// Strategy:
-//  1. Always preserve system messages (they define the agent's behavior)
-//  2. Keep the most recent messages (they contain current context)
-//  3. Drop older middle messages when necessary
-//  4. Insert a truncation notice to inform the LLM
-//
-// Returns the truncated message list.
-func TruncateContextSmart(messages []providers.Message, maxRunes int) []providers.Message {
-	if len(messages) == 0 {
-		return messages
-	}
-
-	// Separate system messages from others
-	var systemMsgs []providers.Message
-	var otherMsgs []providers.Message
-
-	for _, msg := range messages {
-		if msg.Role == "system" {
-			systemMsgs = append(systemMsgs, msg)
-		} else {
-			otherMsgs = append(otherMsgs, msg)
-		}
-	}
-
-	// Calculate system message size
-	systemRunes := 0
-	for _, msg := range systemMsgs {
-		systemRunes += utf8.RuneCountInString(msg.Content)
-		systemRunes += utf8.RuneCountInString(msg.ReasoningContent)
-	}
-
-	// Reserve space for truncation notice (estimate ~80 runes)
-	const truncationNoticeEstimate = 80
-
-	// Allocate remaining space for other messages
-	remainingRunes := maxRunes - systemRunes - truncationNoticeEstimate
-	if remainingRunes <= 0 {
-		// System messages already exceed limit - return only system messages
-		return systemMsgs
-	}
-
-	// Collect recent messages in reverse order until we hit the limit
-	var keptMsgs []providers.Message
-	currentRunes := 0
-
-	for i := len(otherMsgs) - 1; i >= 0; i-- {
-		msg := otherMsgs[i]
-		msgRunes := utf8.RuneCountInString(msg.Content) +
-			utf8.RuneCountInString(msg.ReasoningContent)
-
-		// Estimate tool call size
-		if len(msg.ToolCalls) > 0 {
-			for _, tc := range msg.ToolCalls {
-				msgRunes += utf8.RuneCountInString(tc.Name)
-				if argsJSON, err := json.Marshal(tc.Arguments); err == nil {
-					msgRunes += utf8.RuneCount(argsJSON)
-				} else {
-					msgRunes += 100
-				}
-			}
-		}
-		msgRunes += utf8.RuneCountInString(msg.ToolCallID)
-
-		if currentRunes+msgRunes > remainingRunes {
-			// Would exceed limit, stop collecting
-			break
-		}
-
-		// Prepend to maintain chronological order
-		keptMsgs = append([]providers.Message{msg}, keptMsgs...)
-		currentRunes += msgRunes
-	}
-
-	// If we dropped messages, add a truncation notice
-	result := systemMsgs
-	if len(keptMsgs) < len(otherMsgs) {
-		droppedCount := len(otherMsgs) - len(keptMsgs)
-		truncationNotice := providers.Message{
-			Role: "system",
-			Content: fmt.Sprintf(
-				"[Context truncated: %d earlier messages omitted to stay within context limits]",
-				droppedCount,
-			),
-		}
-		result = append(result, truncationNotice)
-	}
-
-	result = append(result, keptMsgs...)
-	return result
 }

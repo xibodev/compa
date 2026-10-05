@@ -1,9 +1,13 @@
+import {
+  readStoredValue,
+  removeStoredValue,
+  writeStoredValue,
+} from "@/lib/storage"
+
 const LAST_SESSION_STORAGE_KEY = "compa:last-session-id"
 
 function readStorageValue() {
-  return (
-    globalThis.localStorage?.getItem(LAST_SESSION_STORAGE_KEY)?.trim() || ""
-  )
+  return readStoredValue(LAST_SESSION_STORAGE_KEY)?.trim() || ""
 }
 
 export function readStoredSessionId(): string {
@@ -12,15 +16,15 @@ export function readStoredSessionId(): string {
 
 export function writeStoredSessionId(sessionId: string) {
   if (sessionId) {
-    globalThis.localStorage?.setItem(LAST_SESSION_STORAGE_KEY, sessionId)
+    writeStoredValue(LAST_SESSION_STORAGE_KEY, sessionId)
     return
   }
 
-  globalThis.localStorage?.removeItem(LAST_SESSION_STORAGE_KEY)
+  removeStoredValue(LAST_SESSION_STORAGE_KEY)
 }
 
 export function clearStoredSessionId() {
-  globalThis.localStorage?.removeItem(LAST_SESSION_STORAGE_KEY)
+  removeStoredValue(LAST_SESSION_STORAGE_KEY)
 }
 
 export function generateSessionId(): string {

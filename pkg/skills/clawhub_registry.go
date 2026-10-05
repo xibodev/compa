@@ -1,6 +1,7 @@
 package skills
 
 import (
+	"archive/zip"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -264,9 +265,11 @@ func (c *ClawHubRegistry) GetSkillMeta(ctx context.Context, slug string) (*Skill
 
 // --- DownloadAndInstall ---
 
-// DownloadAndInstall fetches metadata (with fallback), resolves version,
-// downloads the skill ZIP, and extracts it to targetDir.
-// Returns an InstallResult for the caller to use for moderation decisions.
+// DownloadAndInstall fetches metadata, resolves version, downloads the skill
+// ZIP, and extracts it to targetDir. Moderation is checked before anything is
+// downloaded: a skill whose metadata can't be fetched isn't installed, and a
+// blocked one is reported through InstallResult.IsMalwareBlocked without
+// being extracted.
 func (c *ClawHubRegistry) DownloadAndInstall(
 	ctx context.Context,
 	slug, version, targetDir string,
@@ -275,29 +278,32 @@ func (c *ClawHubRegistry) DownloadAndInstall(
 		return nil, fmt.Errorf("invalid slug %q: error: %s", slug, err.Error())
 	}
 
-	// Step 1: Fetch metadata (with fallback).
-	result := &InstallResult{}
+	// Step 1: Fetch metadata. Without it the moderation status is unknown,
+	// so the install stops (fail closed).
 	meta, err := c.GetSkillMeta(ctx, slug)
 	if err != nil {
-		// Fallback: proceed without metadata.
-		meta = nil
+		return nil, fmt.Errorf("couldn't verify skill %q with %s: %w", slug, c.Name(), err)
 	}
 
-	if meta != nil {
-		result.IsMalwareBlocked = meta.IsMalwareBlocked
-		result.IsSuspicious = meta.IsSuspicious
-		result.Summary = meta.Summary
+	result := &InstallResult{
+		IsMalwareBlocked: meta.IsMalwareBlocked,
+		IsSuspicious:     meta.IsSuspicious,
+		Summary:          meta.Summary,
 	}
 
 	// Step 2: Resolve version.
 	installVersion := version
-	if installVersion == "" && meta != nil {
+	if installVersion == "" {
 		installVersion = meta.LatestVersion
 	}
 	if installVersion == "" {
 		installVersion = "latest"
 	}
 	result.Version = installVersion
+
+	if result.IsMalwareBlocked {
+		return result, nil
+	}
 
 	// Step 3: Download ZIP to temp file (streams in ~32KB chunks).
 	u, err := url.Parse(c.baseURL + c.downloadPath)
@@ -318,12 +324,50 @@ func (c *ClawHubRegistry) DownloadAndInstall(
 	}
 	defer os.Remove(tmpPath)
 
-	// Step 4: Extract from file on disk.
+	// Step 4: Check the archive's shape, then extract from file on disk.
+	if err := checkSkillArchive(tmpPath); err != nil {
+		return nil, err
+	}
 	if err := utils.ExtractZipFile(tmpPath, targetDir); err != nil {
 		return nil, err
 	}
 
 	return result, nil
+}
+
+// checkSkillArchive bounds what extracting a skill archive may write: the
+// entry count and the total uncompressed size, counted by decompressing
+// rather than trusting the headers.
+func checkSkillArchive(zipPath string) error {
+	reader, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return fmt.Errorf("invalid ZIP: %w", err)
+	}
+	defer reader.Close()
+
+	if len(reader.File) > maxSkillFiles {
+		return fmt.Errorf("skill archive has %d entries (limit %d)", len(reader.File), maxSkillFiles)
+	}
+	var total int64
+	for _, f := range reader.File {
+		if f.FileInfo().IsDir() {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			return fmt.Errorf("failed to open zip entry %q: %w", f.Name, err)
+		}
+		n, err := io.Copy(io.Discard, io.LimitReader(rc, maxSkillTotalBytes-total+1))
+		_ = rc.Close()
+		if err != nil {
+			return fmt.Errorf("failed to read zip entry %q: %w", f.Name, err)
+		}
+		total += n
+		if total > maxSkillTotalBytes {
+			return fmt.Errorf("skill archive unpacks to more than %d MB", maxSkillTotalBytes>>20)
+		}
+	}
+	return nil
 }
 
 // --- HTTP helper ---

@@ -21,12 +21,14 @@ curl -fsSL https://github.com/xibodev/compa/releases/latest/download/install.sh 
 ```
 
 The installer checks the download against the release's SHA-256 checksums,
-installs two programs, `compa` and `compa-kernel`, and starts Compa. Where it
-installs, options, updating and uninstalling: [docs/install.md](docs/install.md).
+installs two programs, `compa` and `compa-kernel`, and, in a terminal on your
+desktop, starts Compa. Compa runs on Windows 10 or later, macOS 12 or later
+and Linux. Where it installs, options, updating and uninstalling:
+[docs/install.md](docs/install.md).
 
 ## Your first chat
 
-1. Compa opens http://127.0.0.1:18800 in your browser (open it yourself if it
+1. Compa opens http://localhost:18800 in your browser (open it yourself if it
    doesn't). Set a password.
 2. Go to **Models**. Press **Try free providers**, or connect a provider with
    an API key or a model server on your computer.
@@ -82,8 +84,12 @@ go build -tags goolm,stdjson -o build/compa ./web/backend
 
 On Windows, name the outputs `compa-kernel.exe` and `compa.exe`. Keep both
 programs in one folder: `compa` runs the `compa-kernel` beside it. More in
-[docs/install.md](docs/install.md#run-from-source).
+[docs/install.md](docs/install.md#run-from-source); tests, checks and how to
+contribute are in [CONTRIBUTING.md](CONTRIBUTING.md), and how to report a
+security problem in [SECURITY.md](SECURITY.md). Changes are listed in
+[CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
-MIT. See [LICENSE](LICENSE), and [NOTICE](NOTICE) for upstream attribution.
+MIT. See [LICENSE](LICENSE), and [NOTICE](NOTICE) for upstream attribution and
+for the Compa name and artwork, which the MIT License doesn't cover.

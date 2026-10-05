@@ -1,4 +1,4 @@
-import { launcherFetch } from "@/api/http"
+import { HttpError, launcherFetch } from "@/api/http"
 
 export type InstanceState = "enabled" | "disabled"
 
@@ -183,7 +183,10 @@ export interface AutoConnectFreeResult {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await launcherFetch(path, init)
   if (!response.ok)
-    throw new Error((await response.text()) || response.statusText)
+    throw new HttpError(
+      (await response.text()) || response.statusText,
+      response.status,
+    )
   return response.json() as Promise<T>
 }
 

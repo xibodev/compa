@@ -8,22 +8,40 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/xibodev/compa/pkg/fileutil"
+	"github.com/xibodev/compa/pkg/logger"
 	"github.com/xibodev/compa/pkg/skills"
 )
 
+// recordRetention is how long the store keeps a task or pattern record after
+// it last changed.
+const recordRetention = 30 * 24 * time.Hour
+
 type Store struct {
 	paths Paths
+	// now is the clock of record retention: with one, loading or rewriting
+	// the task or pattern records drops those older than recordRetention,
+	// from the file too. Without one every record is kept. The runtime's
+	// stores run on its clock.
+	now func() time.Time
 }
 
 func NewStore(paths Paths) *Store {
 	return &Store{paths: paths}
+}
+
+// withClock returns the store for the same paths with now as the clock of
+// record retention.
+func (s *Store) withClock(now func() time.Time) *Store {
+	return &Store{paths: s.paths, now: now}
 }
 
 var storeFileLocks sync.Map
@@ -83,6 +101,12 @@ func (s *Store) appendJSONLRecords(ctx context.Context, path string, records []L
 	if mkdirErr := os.MkdirAll(filepath.Dir(path), 0o755); mkdirErr != nil {
 		return mkdirErr
 	}
+	// A crash mid-write can leave a partial last line; start on a fresh line
+	// so the new record isn't glued onto it.
+	needsNewline, err := lacksTrailingNewline(path)
+	if err != nil {
+		return err
+	}
 
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
@@ -93,6 +117,11 @@ func (s *Store) appendJSONLRecords(ctx context.Context, path string, records []L
 			err = closeErr
 		}
 	}()
+	if needsNewline {
+		if _, err := f.Write([]byte{'\n'}); err != nil {
+			return err
+		}
+	}
 
 	enc := json.NewEncoder(f)
 	for _, record := range records {
@@ -121,30 +150,155 @@ func (s *Store) LoadLearningRecords() ([]LearningRecord, error) {
 }
 
 func (s *Store) LoadTaskRecords() ([]LearningRecord, error) {
-	return s.loadRecordsFromPath(s.paths.TaskRecords)
+	return s.loadRecords(s.paths.TaskRecords)
 }
 
 func (s *Store) LoadPatternRecords() ([]LearningRecord, error) {
-	return s.loadRecordsFromPath(s.paths.PatternRecords)
+	return s.loadRecords(s.paths.PatternRecords)
 }
 
-func (s *Store) loadRecordsFromPath(path string) ([]LearningRecord, error) {
-	var records []LearningRecord
-	if err := decodeJSONLLines(path, func(line []byte) error {
+// loadRecords loads the records at path. When some are past retention, the
+// file is rewritten without them.
+func (s *Store) loadRecords(path string) ([]LearningRecord, error) {
+	if s.now == nil {
+		records, _, err := s.loadRecordsFromPath(path)
+		return records, err
+	}
+	unlock := lockStoreFile(path)
+	defer unlock()
+	records, expired, err := s.loadRecordsFromPath(path)
+	if err != nil || !expired {
+		return records, err
+	}
+	return records, s.saveJSONLRecordsLocked(path, records)
+}
+
+// loadRecordsFromPath reads the records at path, without those past
+// retention; expired reports that it left some out.
+func (s *Store) loadRecordsFromPath(path string) (records []LearningRecord, expired bool, err error) {
+	var cutoff time.Time
+	if s.now != nil {
+		cutoff = s.now().Add(-recordRetention)
+	}
+	corrupt, err := decodeJSONLLines(path, func(line []byte) error {
 		var record LearningRecord
 		if err := json.Unmarshal(line, &record); err != nil {
 			return err
 		}
+		if !cutoff.IsZero() && recordExpired(record, cutoff) {
+			expired = true
+			return nil
+		}
 		records = append(records, record)
 		return nil
-	}); err != nil {
-		return nil, err
+	})
+	if err != nil {
+		return nil, false, err
 	}
-	return records, nil
+	if len(corrupt) > 0 {
+		// Keep loading what is readable instead of failing every run, and
+		// keep the bad lines next to the file for inspection.
+		logger.WarnCF("evolution", "Skipped corrupt lines in evolution store", map[string]any{
+			"path":  path,
+			"lines": len(corrupt),
+		})
+		if qErr := quarantineLines(path, corrupt); qErr != nil {
+			logger.WarnCF("evolution", "Could not save corrupt evolution store lines", map[string]any{
+				"path":  path,
+				"error": qErr.Error(),
+			})
+		}
+	}
+	return records, expired, nil
+}
+
+// recordExpired reports whether record last changed before cutoff. A record
+// without a time is kept.
+func recordExpired(record LearningRecord, cutoff time.Time) bool {
+	changed := record.CreatedAt
+	if record.UpdatedAt != nil && record.UpdatedAt.After(changed) {
+		changed = *record.UpdatedAt
+	}
+	return !changed.IsZero() && changed.Before(cutoff)
+}
+
+// quarantineLines appends lines to <path>.corrupt. The lines stay in the
+// store file until its next rewrite, which drops them; the quarantine file
+// keeps each distinct line once.
+func quarantineLines(path string, lines [][]byte) error {
+	qPath := path + ".corrupt"
+	existing, err := os.ReadFile(qPath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	seen := make(map[string]struct{})
+	for _, line := range bytes.Split(existing, []byte{'\n'}) {
+		seen[string(bytes.TrimSpace(line))] = struct{}{}
+	}
+	var buf bytes.Buffer
+	for _, line := range lines {
+		if _, ok := seen[string(line)]; ok {
+			continue
+		}
+		seen[string(line)] = struct{}{}
+		buf.Write(line)
+		buf.WriteByte('\n')
+	}
+	if buf.Len() == 0 {
+		return nil
+	}
+	f, err := os.OpenFile(qPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(buf.Bytes()); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// lacksTrailingNewline reports whether path is a non-empty file whose last
+// byte isn't a newline.
+func lacksTrailingNewline(path string) (bool, error) {
+	f, err := os.Open(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || info.Size() == 0 {
+		return false, err
+	}
+	last := make([]byte, 1)
+	if _, err := f.ReadAt(last, info.Size()-1); err != nil {
+		return false, err
+	}
+	return last[0] != '\n', nil
 }
 
 func (s *Store) SaveTaskRecords(records []LearningRecord) error {
 	return s.saveJSONLRecords(s.paths.TaskRecords, records)
+}
+
+// UpdateTaskRecords loads the task records, lets update change them in place,
+// and saves them when update reports a change or records expired. The file
+// stays locked throughout, so concurrent appends aren't lost.
+func (s *Store) UpdateTaskRecords(update func(records []LearningRecord) bool) error {
+	unlock := lockStoreFile(s.paths.TaskRecords)
+	defer unlock()
+
+	records, expired, err := s.loadRecordsFromPath(s.paths.TaskRecords)
+	if err != nil {
+		return err
+	}
+	if !update(records) && !expired {
+		return nil
+	}
+	return s.saveJSONLRecordsLocked(s.paths.TaskRecords, records)
 }
 
 func (s *Store) MarkTaskRecordsClustered(ids []string) error {
@@ -166,7 +320,7 @@ func (s *Store) MarkTaskRecordsClustered(ids []string) error {
 	unlock := lockStoreFile(s.paths.TaskRecords)
 	defer unlock()
 
-	records, err := s.loadRecordsFromPath(s.paths.TaskRecords)
+	records, expired, err := s.loadRecordsFromPath(s.paths.TaskRecords)
 	if err != nil {
 		return err
 	}
@@ -194,7 +348,7 @@ func (s *Store) MarkTaskRecordsClustered(ids []string) error {
 		records[i].Status = RecordStatus("clustered")
 		changed = true
 	}
-	if !changed {
+	if !changed && !expired {
 		return nil
 	}
 	return s.saveJSONLRecordsLocked(s.paths.TaskRecords, records)
@@ -212,7 +366,7 @@ func (s *Store) MergePatternRecords(records []LearningRecord) error {
 	unlock := lockStoreFile(s.paths.PatternRecords)
 	defer unlock()
 
-	current, err := s.loadRecordsFromPath(s.paths.PatternRecords)
+	current, _, err := s.loadRecordsFromPath(s.paths.PatternRecords)
 	if err != nil {
 		return err
 	}
@@ -460,13 +614,16 @@ func (s *Store) LoadProfiles() ([]SkillProfile, error) {
 	return profiles, nil
 }
 
-func decodeJSONLLines(path string, decode func(line []byte) error) error {
+// decodeJSONLLines decodes each non-empty line of path. Lines that aren't
+// valid JSON records are skipped and returned, so one damaged line (from a
+// crash mid-write) doesn't make the whole store unreadable.
+func decodeJSONLLines(path string, decode func(line []byte) error) ([][]byte, error) {
 	f, err := os.Open(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil
+		return nil, nil
 	}
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer f.Close()
 
@@ -481,18 +638,20 @@ func decodeJSONLLines(path string, decode func(line []byte) error) error {
 		lines = append(lines, append([]byte(nil), line...))
 	}
 	if err := scanner.Err(); err != nil {
-		return err
+		return nil, err
 	}
 
-	for i, line := range lines {
+	var corrupt [][]byte
+	for _, line := range lines {
 		if err := decode(line); err != nil {
-			if i == len(lines)-1 && isInvalidJSON(err) {
-				return nil
+			if isInvalidJSON(err) {
+				corrupt = append(corrupt, line)
+				continue
 			}
-			return err
+			return nil, err
 		}
 	}
-	return nil
+	return corrupt, nil
 }
 
 func draftKey(workspaceID, id string) string {
@@ -501,7 +660,9 @@ func draftKey(workspaceID, id string) string {
 
 func isInvalidJSON(err error) bool {
 	var syntaxErr *json.SyntaxError
-	return errors.As(err, &syntaxErr)
+	var typeErr *json.UnmarshalTypeError
+	return errors.As(err, &syntaxErr) || errors.As(err, &typeErr) ||
+		errors.Is(err, io.ErrUnexpectedEOF)
 }
 
 func lockStoreFile(path string) func() {

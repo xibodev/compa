@@ -18,11 +18,18 @@ import (
 
 var isolatedCommandTerminateDuration = 5 * time.Second
 
+// stdioWaitDelay bounds how long stopping a server waits for its output
+// pipes once it has exited; a process it started may still hold them.
+const stdioWaitDelay = 2 * time.Second
+
 // isolatedCommandTransport mirrors the SDK command transport but routes
 // process startup through pkg/isolation so Windows post-start hooks run too.
 type isolatedCommandTransport struct {
 	Command           *exec.Cmd
 	TerminateDuration time.Duration
+
+	mu   sync.Mutex
+	conn *isolatedIOConn
 }
 
 func (t *isolatedCommandTransport) Connect(ctx context.Context) (sdkmcp.Connection, error) {
@@ -42,7 +49,23 @@ func (t *isolatedCommandTransport) Connect(ctx context.Context) (sdkmcp.Connecti
 	if td <= 0 {
 		td = isolatedCommandTerminateDuration
 	}
-	return newIsolatedIOConn(&isolatedPipeRWC{cmd: t.Command, stdout: stdout, stdin: stdin, terminateDuration: td}), nil
+	conn := newIsolatedIOConn(&isolatedPipeRWC{cmd: t.Command, stdout: stdout, stdin: stdin, terminateDuration: td})
+	t.mu.Lock()
+	t.conn = conn
+	t.mu.Unlock()
+	return conn, nil
+}
+
+// abort stops the server of a connection that was given up on before it
+// became a session. Stopping waits for the server, so it runs in the
+// background; closing twice is harmless.
+func (t *isolatedCommandTransport) abort() {
+	t.mu.Lock()
+	conn := t.conn
+	t.mu.Unlock()
+	if conn != nil {
+		go func() { _ = conn.Close() }()
+	}
 }
 
 type isolatedPipeRWC struct {

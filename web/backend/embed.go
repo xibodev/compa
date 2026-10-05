@@ -10,10 +10,22 @@ import (
 	"strings"
 
 	"github.com/xibodev/compa/pkg/logger"
+	"github.com/xibodev/compa/web/backend/middleware"
 )
 
 //go:embed all:dist
 var frontendFS embed.FS
+
+// dashboardScriptHashes returns the CSP hashes of the inline scripts in the
+// embedded dashboard page, so the policy follows the page that ships. Nil,
+// without a built page, makes the policy use its default hash.
+func dashboardScriptHashes() []string {
+	page, err := fs.ReadFile(frontendFS, "dist/index.html")
+	if err != nil {
+		return nil
+	}
+	return middleware.InlineScriptHashes(page)
+}
 
 // registerEmbedRoutes sets up the HTTP handler to serve the embedded frontend files
 func registerEmbedRoutes(mux *http.ServeMux) {

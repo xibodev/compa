@@ -19,6 +19,9 @@
 
 ### Setup Steps for I2C-1
 
+These commands stop WiFi until reboot and write raw registers as root. They are for the
+user to run; the agent runs them only when the user explicitly asks.
+
 ```bash
 # 1. Stop WiFi (shares pins with I2C-1)
 /etc/init.d/S30wifi stop
@@ -35,6 +38,8 @@ ls /dev/i2c-*
 ```
 
 ### Setup Steps for SPI-2
+
+Same caution as I2C-1: user-run, or only on the user's explicit request.
 
 ```bash
 # 1. Stop WiFi (shares pins with SPI-2)

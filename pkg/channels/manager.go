@@ -82,6 +82,31 @@ type channelWorker struct {
 	done       chan struct{}
 	mediaDone  chan struct{}
 	limiter    *rate.Limiter
+
+	// pending and mediaPending hold the messages dispatched to the channel
+	// until its queues take them, so that the dispatcher never waits for a
+	// slow channel and holds up every other one. Each is one FIFO, which
+	// keeps the order of every chat's messages.
+	pending      pendingQueue[bus.OutboundMessage]
+	mediaPending pendingQueue[bus.OutboundMediaMessage]
+
+	// The queues are never closed: a dispatcher or sender racing with the
+	// worker's removal would panic on a closed channel. Instead, stop is
+	// closed (by cancel) when the worker is removed, and both goroutines
+	// exit. Set by startWorkerLocked; nil for a worker never started.
+	stop    <-chan struct{}
+	cancel  context.CancelFunc
+	started bool
+}
+
+// halt stops the worker's goroutines and waits until they have exited.
+func (w *channelWorker) halt() {
+	if w == nil || !w.started {
+		return
+	}
+	w.cancel()
+	<-w.done
+	<-w.mediaDone
 }
 
 type Manager struct {
@@ -152,6 +177,7 @@ type toolFeedbackMessageContentPreparer interface {
 }
 
 type asyncTask struct {
+	ctx    context.Context
 	cancel context.CancelFunc
 }
 
@@ -306,10 +332,34 @@ func (m *Manager) toolFeedbackSeparateMessagesEnabled() bool {
 }
 
 // RecordPlaceholder registers a placeholder message for later editing.
-// Implements PlaceholderRecorder.
+// Implements PlaceholderRecorder. Only the latest placeholder of a chat is
+// edited by a reply, so an earlier one still waiting is deleted where the
+// channel can, rather than left saying "Thinking…" for good.
 func (m *Manager) RecordPlaceholder(channel, chatID, placeholderID string) {
 	key := channel + ":" + chatID
-	m.placeholders.Store(key, placeholderEntry{id: placeholderID, createdAt: time.Now()})
+	previous, loaded := m.placeholders.Swap(key, placeholderEntry{id: placeholderID, createdAt: time.Now()})
+	if !loaded {
+		return
+	}
+	old, ok := previous.(placeholderEntry)
+	if !ok || old.id == "" || old.id == placeholderID {
+		return
+	}
+	// Off the inbound handler: Reload holds m.mu while a channel stops, and
+	// a channel may wait for its handlers to stop.
+	go func() {
+		defer RecoverPanic(channel, "placeholder cleanup")
+		m.mu.RLock()
+		ch := m.channels[channel]
+		m.mu.RUnlock()
+		deleter, ok := ch.(MessageDeleter)
+		if !ok {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_ = deleter.DeleteMessage(ctx, chatID, old.id)
+	}()
 }
 
 // SendPlaceholder sends a "Thinking…" placeholder for the given channel/chatID
@@ -359,10 +409,16 @@ func (m *Manager) InvokeTypingStop(channel, chatID string) {
 }
 
 // RecordReactionUndo registers a reaction undo function for later invocation.
-// Implements PlaceholderRecorder.
+// Implements PlaceholderRecorder. A newer message in the same chat replaces
+// the entry, so the earlier reaction is undone now instead of never.
 func (m *Manager) RecordReactionUndo(channel, chatID string, undo func()) {
 	key := channel + ":" + chatID
-	m.reactionUndos.Store(key, reactionEntry{undo: undo, createdAt: time.Now()})
+	entry := reactionEntry{undo: undo, createdAt: time.Now()}
+	if previous, loaded := m.reactionUndos.Swap(key, entry); loaded {
+		if old, ok := previous.(reactionEntry); ok && old.undo != nil {
+			old.undo()
+		}
+	}
 }
 
 // preSend handles typing stop, reaction undo, and placeholder editing before sending a message.
@@ -1005,6 +1061,7 @@ func (m *Manager) initChannel(typeName, channelName string) {
 			"error":   err.Error(),
 		})
 	} else {
+		m.applyChannelConfig(channelName, typeName, ch)
 		// Inject MediaStore if channel supports it
 		if m.mediaStore != nil {
 			if setter, ok := ch.(mediaStoreSetter); ok {
@@ -1032,6 +1089,27 @@ func (m *Manager) initChannel(typeName, channelName string) {
 			"type":    typeName,
 		})
 	}
+}
+
+// applyChannelConfig gives a newly constructed channel the parts of its
+// channel_list entry that every channel shares: its configured name, which
+// inbound messages, replies and pairing requests use, and its access
+// policies. The dashboard's web chat, which only authenticated users reach,
+// has none; the web client, which talks to a remote web-chat server, is a
+// chat channel like the others.
+func (m *Manager) applyChannelConfig(channelName, typeName string, ch Channel) {
+	if setter, ok := ch.(interface{ SetName(name string) }); ok {
+		setter.SetName(channelName)
+	}
+	var bc *config.Channel
+	if m.config != nil {
+		bc = m.config.Channels[channelName]
+	}
+	if setter, ok := ch.(interface{ SetAccessPolicy(dm, group string) }); ok && bc != nil &&
+		typeName != config.ChannelWeb {
+		setter.SetAccessPolicy(bc.EffectiveDMPolicy(), bc.EffectiveGroupPolicy())
+	}
+	warnIfOpenToEveryone(channelName, ch)
 }
 
 func (m *Manager) getChannelConfigAndEnabled(channelName string) (*config.Channel, bool) {
@@ -1234,7 +1312,7 @@ func (m *Manager) StartAll(ctx context.Context) error {
 	logger.InfoC("channels", "Starting all channels")
 
 	dispatchCtx, cancel := context.WithCancel(ctx)
-	m.dispatchTask = &asyncTask{cancel: cancel}
+	m.dispatchTask = &asyncTask{ctx: dispatchCtx, cancel: cancel}
 	failedStarts := make([]error, 0, len(m.channels))
 	failedNames := make([]string, 0, len(m.channels))
 
@@ -1259,16 +1337,7 @@ func (m *Manager) StartAll(ctx context.Context) error {
 			continue
 		}
 		// Lazily create worker only after channel starts successfully
-		channelType := name
-		if m.config != nil {
-			if bc := m.config.Channels.Get(name); bc != nil && bc.Type != "" {
-				channelType = bc.Type
-			}
-		}
-		w := newChannelWorker(name, channel, channelType)
-		m.workers[name] = w
-		go m.runWorker(dispatchCtx, name, w)
-		go m.runMediaWorker(dispatchCtx, name, w)
+		channelType := m.startWorkerLocked(dispatchCtx, name, channel)
 		m.publishChannelEvent(
 			runtimeevents.KindChannelLifecycleStarted,
 			name,
@@ -1315,8 +1384,10 @@ func (m *Manager) StartAll(ctx context.Context) error {
 	// Start the TTL janitor that cleans up stale typing/placeholder entries
 	go m.runTTLJanitor(dispatchCtx)
 
-	// Start shared HTTP server if configured
-	if m.httpServer != nil {
+	// Start shared HTTP server if configured. A serve error is logged, not
+	// fatal: it takes down the channel webhooks, not the whole kernel. The
+	// goroutines keep their own reference, as StopAll clears m.httpServer.
+	if srv := m.httpServer; srv != nil {
 		if len(m.httpListeners) > 0 {
 			for _, listener := range m.httpListeners {
 				ln := listener
@@ -1334,8 +1405,8 @@ func (m *Manager) StartAll(ctx context.Context) error {
 					logger.InfoCF("channels", "Shared HTTP server listening", map[string]any{
 						"addr": ln.Addr().String(),
 					})
-					if err := m.httpServer.Serve(ln); err != nil && err != http.ErrServerClosed {
-						logger.FatalCF("channels", "Shared HTTP server error", map[string]any{
+					if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed {
+						logger.ErrorCF("channels", "Shared HTTP server error", map[string]any{
 							"addr":  ln.Addr().String(),
 							"error": err.Error(),
 						})
@@ -1348,17 +1419,17 @@ func (m *Manager) StartAll(ctx context.Context) error {
 					if r := recover(); r != nil {
 						logger.ErrorCF("channels", "HTTP server goroutine panic recovered",
 							map[string]any{
-								"addr":  m.httpServer.Addr,
+								"addr":  srv.Addr,
 								"panic": fmt.Sprintf("%v", r),
 								"stack": string(debug.Stack()),
 							})
 					}
 				}()
 				logger.InfoCF("channels", "Shared HTTP server listening", map[string]any{
-					"addr": m.httpServer.Addr,
+					"addr": srv.Addr,
 				})
-				if err := m.httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-					logger.FatalCF("channels", "Shared HTTP server error", map[string]any{
+				if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+					logger.ErrorCF("channels", "Shared HTTP server error", map[string]any{
 						"error": err.Error(),
 					})
 				}
@@ -1399,27 +1470,12 @@ func (m *Manager) StopAll(ctx context.Context) error {
 		m.dispatchTask = nil
 	}
 
-	// Close all worker queues and wait for them to drain
-	for _, w := range m.workers {
-		if w != nil {
-			close(w.queue)
-		}
-	}
-	for _, w := range m.workers {
-		if w != nil {
-			<-w.done
-		}
-	}
-	// Close all media worker queues and wait for them to drain
-	for _, w := range m.workers {
-		if w != nil {
-			close(w.mediaQueue)
-		}
-	}
-	for _, w := range m.workers {
-		if w != nil {
-			<-w.mediaDone
-		}
+	// Stop the workers and wait for them to exit. Their queues stay open, so
+	// a sender racing with the shutdown finds the worker gone instead of
+	// panicking on a closed channel.
+	for name, w := range m.workers {
+		w.halt()
+		delete(m.workers, name)
 	}
 
 	// Stop all channels
@@ -1464,6 +1520,29 @@ func newChannelWorker(name string, ch Channel, channelType string) *channelWorke
 		mediaDone:  make(chan struct{}),
 		limiter:    rate.NewLimiter(rate.Limit(rateVal), burst),
 	}
+}
+
+// startWorkerLocked creates the outbound worker of a started channel and
+// runs it until parent ends or the worker is halted. It returns the
+// channel's type. Caller must hold m.mu.
+func (m *Manager) startWorkerLocked(parent context.Context, name string, channel Channel) string {
+	channelType := name
+	if m.config != nil {
+		if bc := m.config.Channels.Get(name); bc != nil && bc.Type != "" {
+			channelType = bc.Type
+		}
+	}
+	w := newChannelWorker(name, channel, channelType)
+	ctx, cancel := context.WithCancel(parent)
+	w.stop = ctx.Done()
+	w.cancel = cancel
+	w.started = true
+	m.workers[name] = w
+	go m.runWorker(ctx, name, w)
+	go m.runMediaWorker(ctx, name, w)
+	go w.pending.forward(w.queue, w.stop)
+	go w.mediaPending.forward(w.mediaQueue, w.stop)
+	return channelType
 }
 
 // runWorker processes outbound messages for a single channel.
@@ -1555,14 +1634,16 @@ func splitOutboundMessageContent(msg bus.OutboundMessage, maxLen int) []string {
 // sendWithRetry sends a message through the channel with rate limiting and
 // retry logic. It classifies errors to determine the retry strategy:
 //   - ErrNotRunning / ErrSendFailed: permanent, no retry
-//   - ErrRateLimit: fixed delay retry
+//   - ErrRateLimit: retry after the delay a RateLimitError asks for, or a fixed delay
 //   - ErrTemporary / unknown: exponential backoff retry
+//
+// It returns the delivered message IDs, or the error that ended delivery.
 func (m *Manager) sendWithRetry(
 	ctx context.Context,
 	name string,
 	w *channelWorker,
 	msg bus.OutboundMessage,
-) ([]string, bool) {
+) ([]string, error) {
 	// Rate limit: wait for token
 	if err := w.limiter.Wait(ctx); err != nil {
 		// ctx canceled, shutting down
@@ -1577,13 +1658,13 @@ func (m *Manager) sendWithRetry(
 				Error:            err.Error(),
 			},
 		)
-		return nil, false
+		return nil, err
 	}
 
 	// Pre-send: stop typing and try to edit placeholder
 	if msgIDs, handled := m.preSend(ctx, name, msg, w.ch); handled {
 		m.publishOutboundSent(name, msg, msgIDs)
-		return msgIDs, true
+		return msgIDs, nil
 	}
 
 	var lastErr error
@@ -1592,7 +1673,7 @@ func (m *Manager) sendWithRetry(
 		msgIDs, lastErr = w.ch.Send(ctx, msg)
 		if lastErr == nil {
 			m.publishOutboundSent(name, msg, msgIDs)
-			return msgIDs, true
+			return msgIDs, nil
 		}
 
 		// Permanent failures — don't retry
@@ -1605,22 +1686,12 @@ func (m *Manager) sendWithRetry(
 			break
 		}
 
-		// Rate limit error — fixed delay
-		if errors.Is(lastErr, ErrRateLimit) {
-			select {
-			case <-time.After(rateLimitDelay):
-				continue
-			case <-ctx.Done():
-				return nil, false
-			}
-		}
-
-		// ErrTemporary or unknown error — exponential backoff
-		backoff := min(time.Duration(float64(baseBackoff)*math.Pow(2, float64(attempt))), maxBackoff)
+		// Rate limits wait as long as the platform asks; other errors back
+		// off exponentially.
 		select {
-		case <-time.After(backoff):
+		case <-time.After(retryDelay(lastErr, attempt)):
 		case <-ctx.Done():
-			return nil, false
+			return nil, ctx.Err()
 		}
 	}
 
@@ -1633,7 +1704,7 @@ func (m *Manager) sendWithRetry(
 	})
 	m.publishOutboundFailed(name, msg, lastErr, false)
 
-	return nil, false
+	return nil, lastErr
 }
 
 func dispatchLoop[M any](
@@ -1692,13 +1763,19 @@ func (m *Manager) dispatchOutbound(ctx context.Context) {
 		m.bus.OutboundChan(),
 		func(msg bus.OutboundMessage) string { return outboundMessageChannel(msg) },
 		func(ctx context.Context, w *channelWorker, msg bus.OutboundMessage) bool {
-			select {
-			case w.queue <- msg:
-				m.publishOutboundQueued(outboundMessageChannel(msg), msg)
-				return true
-			case <-ctx.Done():
-				return false
+			name := outboundMessageChannel(msg)
+			switch w.pending.push(msg, w.stop) {
+			case pushStopped:
+				logger.WarnCF("channels", "Channel worker stopped, dropping outbound message",
+					map[string]any{"channel": name})
+			case pushFull:
+				logger.WarnCF("channels", "Too many outbound messages waiting for the channel, dropping message",
+					map[string]any{"channel": name, "chat_id": outboundMessageChatID(msg)})
+				m.publishOutboundFailed(name, msg, errOutboundBacklog, false)
+			default:
+				m.publishOutboundQueued(name, msg)
 			}
+			return true
 		},
 		"Outbound dispatcher started",
 		"Outbound dispatcher stopped",
@@ -1713,13 +1790,19 @@ func (m *Manager) dispatchOutboundMedia(ctx context.Context) {
 		m.bus.OutboundMediaChan(),
 		func(msg bus.OutboundMediaMessage) string { return outboundMediaChannel(msg) },
 		func(ctx context.Context, w *channelWorker, msg bus.OutboundMediaMessage) bool {
-			select {
-			case w.mediaQueue <- msg:
-				m.publishOutboundMediaQueued(outboundMediaChannel(msg), msg)
-				return true
-			case <-ctx.Done():
-				return false
+			name := outboundMediaChannel(msg)
+			switch w.mediaPending.push(msg, w.stop) {
+			case pushStopped:
+				logger.WarnCF("channels", "Channel worker stopped, dropping outbound media message",
+					map[string]any{"channel": name})
+			case pushFull:
+				logger.WarnCF("channels", "Too many outbound media messages waiting for the channel, dropping message",
+					map[string]any{"channel": name, "chat_id": outboundMediaChatID(msg)})
+				m.publishOutboundMediaFailed(name, msg, errOutboundBacklog)
+			default:
+				m.publishOutboundMediaQueued(name, msg)
 			}
+			return true
 		},
 		"Outbound media dispatcher started",
 		"Outbound media dispatcher stopped",
@@ -1800,20 +1883,10 @@ func (m *Manager) sendMediaWithRetry(
 			break
 		}
 
-		// Rate limit error — fixed delay
-		if errors.Is(lastErr, ErrRateLimit) {
-			select {
-			case <-time.After(rateLimitDelay):
-				continue
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			}
-		}
-
-		// ErrTemporary or unknown error — exponential backoff
-		backoff := min(time.Duration(float64(baseBackoff)*math.Pow(2, float64(attempt))), maxBackoff)
+		// Rate limits wait as long as the platform asks; other errors back
+		// off exponentially.
 		select {
-		case <-time.After(backoff):
+		case <-time.After(retryDelay(lastErr, attempt)):
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
@@ -1912,8 +1985,9 @@ func (m *Manager) GetEnabledChannels() []string {
 	return names
 }
 
-// Reload updates the config reference without restarting channels.
-// This is used when channel config hasn't changed but other parts of the config have.
+// Reload applies cfg to the channels: it stops the channels that cfg removed
+// or changed and starts those it added or changed, each with a new worker.
+// Unchanged channels, and the outbound dispatcher, keep running.
 func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -1927,41 +2001,35 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 	list := toChannelHashes(cfg)
 	added, removed := compareChannels(m.channelHashes, list)
 
-	deferFuncs := make([]func(), 0, len(removed)+len(added))
+	// Stop the removed and changed channels; a changed one is created anew
+	// below. A channel that never initialized has nothing to stop.
 	for _, name := range removed {
-		// Stop all channels
-		channel := m.channels[name]
-		logger.InfoCF("channels", "Stopping channel", map[string]any{
-			"channel": name,
-		})
-		if err := channel.Stop(ctx); err != nil {
-			logger.ErrorCF("channels", "Error stopping channel", map[string]any{
-				"channel": name,
-				"error":   err.Error(),
-			})
-		}
-		deferFuncs = append(deferFuncs, func() {
-			m.UnregisterChannel(name)
-		})
+		m.removeChannelLocked(ctx, name)
 	}
-	dispatchCtx, cancel := context.WithCancel(ctx)
-	m.dispatchTask = &asyncTask{cancel: cancel}
 	cc, err := toChannelConfig(cfg, added)
 	if err != nil {
 		logger.ErrorC("channels", fmt.Sprintf("toChannelConfig error: %v", err))
 		m.config = oldConfig
-		cancel()
 		return err
 	}
 	err = m.initChannels(cc)
 	if err != nil {
 		logger.ErrorC("channels", fmt.Sprintf("initChannels error: %v", err))
 		m.config = oldConfig
-		cancel()
 		return err
 	}
+	// The dispatcher keeps running across reloads; new workers run under its
+	// context, so StopAll ends them with the rest.
+	parent := ctx
+	if m.dispatchTask != nil {
+		parent = m.dispatchTask.ctx
+	}
 	for _, name := range added {
-		channel := m.channels[name]
+		channel, ok := m.channels[name]
+		if !ok || channel == nil {
+			// Not ready, or failed to initialize: initChannels logged why.
+			continue
+		}
 		logger.InfoCF("channels", "Starting channel", map[string]any{
 			"channel": name,
 		})
@@ -1980,16 +2048,7 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 			continue
 		}
 		// Lazily create worker only after channel starts successfully
-		channelType := name
-		if m.config != nil {
-			if bc := m.config.Channels.Get(name); bc != nil && bc.Type != "" {
-				channelType = bc.Type
-			}
-		}
-		w := newChannelWorker(name, channel, channelType)
-		m.workers[name] = w
-		go m.runWorker(dispatchCtx, name, w)
-		go m.runMediaWorker(dispatchCtx, name, w)
+		channelType := m.startWorkerLocked(parent, name, channel)
 		m.publishChannelEvent(
 			runtimeevents.KindChannelLifecycleStarted,
 			name,
@@ -1997,28 +2056,46 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 			runtimeevents.SeverityInfo,
 			ChannelLifecyclePayload{Type: channelType},
 		)
-		deferFuncs = append(deferFuncs, func() {
-			m.RegisterChannel(name, channel)
-		})
+		if m.mux != nil {
+			m.registerChannelHTTPHandler(name, channel)
+		}
 	}
 
 	// Commit hashes only on full success.
 	m.channelHashes = list
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				logger.ErrorCF("channels", "channel registration goroutine panic recovered",
-					map[string]any{
-						"panic": fmt.Sprintf("%v", r),
-						"stack": string(debug.Stack()),
-					})
-			}
-		}()
-		for _, f := range deferFuncs {
-			f()
-		}
-	}()
 	return nil
+}
+
+// removeChannelLocked stops a channel's worker, then the channel, and
+// forgets both. Caller must hold m.mu.
+func (m *Manager) removeChannelLocked(ctx context.Context, name string) {
+	m.workers[name].halt()
+	delete(m.workers, name)
+	channel, ok := m.channels[name]
+	delete(m.channels, name)
+	if !ok || channel == nil {
+		return
+	}
+	if m.mux != nil {
+		m.unregisterChannelHTTPHandler(name, channel)
+	}
+	logger.InfoCF("channels", "Stopping channel", map[string]any{
+		"channel": name,
+	})
+	if err := channel.Stop(ctx); err != nil {
+		logger.ErrorCF("channels", "Error stopping channel", map[string]any{
+			"channel": name,
+			"error":   err.Error(),
+		})
+		return
+	}
+	m.publishChannelEvent(
+		runtimeevents.KindChannelLifecycleStopped,
+		name,
+		runtimeevents.Scope{Channel: name},
+		runtimeevents.SeverityInfo,
+		ChannelLifecyclePayload{Type: channelTypeForEvent(m, name)},
+	)
 }
 
 func (m *Manager) RegisterChannel(name string, channel Channel) {
@@ -2030,18 +2107,15 @@ func (m *Manager) RegisterChannel(name string, channel Channel) {
 	}
 }
 
+// UnregisterChannel forgets a channel and stops its worker, without stopping
+// the channel itself.
 func (m *Manager) UnregisterChannel(name string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if ch, ok := m.channels[name]; ok && m.mux != nil {
 		m.unregisterChannelHTTPHandler(name, ch)
 	}
-	if w, ok := m.workers[name]; ok && w != nil {
-		close(w.queue)
-		<-w.done
-		close(w.mediaQueue)
-		<-w.mediaDone
-	}
+	m.workers[name].halt()
 	delete(m.workers, name)
 	delete(m.channels, name)
 }
@@ -2049,7 +2123,9 @@ func (m *Manager) UnregisterChannel(name string) {
 // SendMessage sends an outbound message synchronously through the channel
 // worker's rate limiter and retry logic. It blocks until the message is
 // delivered (or all retries are exhausted), which preserves ordering when
-// a subsequent operation depends on the message having been sent.
+// a subsequent operation depends on the message having been sent. It returns
+// the error that ended delivery, like SendMedia; a split message stops at the
+// first chunk that fails.
 func (m *Manager) SendMessage(ctx context.Context, msg bus.OutboundMessage) error {
 	msg = bus.NormalizeOutboundMessage(msg)
 	channelName := outboundMessageChannel(msg)
@@ -2074,15 +2150,16 @@ func (m *Manager) SendMessage(ctx context.Context, msg bus.OutboundMessage) erro
 		for _, chunk := range chunks {
 			chunkMsg := msg
 			chunkMsg.Content = chunk
-			m.sendWithRetry(ctx, channelName, w, chunkMsg)
+			if _, err := m.sendWithRetry(ctx, channelName, w, chunkMsg); err != nil {
+				return err
+			}
 		}
-	} else {
-		if len(chunks) == 1 {
-			msg.Content = chunks[0]
-		}
-		m.sendWithRetry(ctx, channelName, w, msg)
+		return nil
+	} else if len(chunks) == 1 {
+		msg.Content = chunks[0]
 	}
-	return nil
+	_, err := m.sendWithRetry(ctx, channelName, w, msg)
+	return err
 }
 
 // SendMedia sends outbound media synchronously through the channel worker's
@@ -2126,17 +2203,17 @@ func (m *Manager) SendToChannel(ctx context.Context, channelName, chatID, conten
 	msg = bus.NormalizeOutboundMessage(msg)
 
 	if wExists && w != nil {
-		select {
-		case w.queue <- msg:
-			m.publishOutboundQueued(channelName, msg)
-			return nil
-		case <-ctx.Done():
-			return ctx.Err()
+		// Behind the messages already dispatched to the channel, in order.
+		switch w.pending.push(msg, w.stop) {
+		case pushStopped:
+			return fmt.Errorf("channel %s stopped", channelName)
+		case pushFull:
+			return fmt.Errorf("channel %s: %w", channelName, errOutboundBacklog)
 		}
+		m.publishOutboundQueued(channelName, msg)
+		return nil
 	}
 
-	// Fallback: direct send (should not happen)
-	channel, _ := m.channels[channelName]
-	_, err := channel.Send(ctx, msg)
-	return err
+	// A channel without a worker failed to start, or the manager stopped.
+	return fmt.Errorf("channel %s has no active worker", channelName)
 }

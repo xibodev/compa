@@ -951,7 +951,8 @@ describe("ModelsWorkspace", () => {
       await waitFor(() =>
         expect(screen.queryByRole("dialog")).not.toBeInTheDocument(),
       )
-    })
+      // Types into every advanced field; slow on a loaded CI runner.
+    }, 20_000)
 
     it("blocks the save on invalid extra body JSON and shows why", async () => {
       const user = userEvent.setup()

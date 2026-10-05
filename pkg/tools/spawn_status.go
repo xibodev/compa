@@ -112,11 +112,14 @@ func (t *SpawnStatusTool) Execute(ctx context.Context, args map[string]any) *Too
 		return NewToolResult("No subagents found for this conversation.")
 	}
 
-	// Order by creation time (ascending) so spawning order is preserved.
-	// Fall back to ID string for tasks created in the same millisecond.
+	// Order by creation time (ascending) so spawning order is preserved,
+	// then by start order for tasks created in the same millisecond.
 	sort.Slice(tasks, func(i, j int) bool {
 		if tasks[i].Created != tasks[j].Created {
 			return tasks[i].Created < tasks[j].Created
+		}
+		if tasks[i].seq != tasks[j].seq {
+			return tasks[i].seq < tasks[j].seq
 		}
 		return tasks[i].ID < tasks[j].ID
 	})

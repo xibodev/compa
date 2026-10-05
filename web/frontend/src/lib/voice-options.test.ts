@@ -30,7 +30,12 @@ describe("voiceLocale", () => {
   })
 
   it("does not mistake model names for languages", () => {
-    for (const name of ["gpt-4o-mini-tts", "tts-1-hd", "eleven_v3", "whisper-1"])
+    for (const name of [
+      "gpt-4o-mini-tts",
+      "tts-1-hd",
+      "eleven_v3",
+      "whisper-1",
+    ])
       expect(voiceLocale(option(`m/${name}`))).toBeUndefined()
   })
 })
@@ -79,9 +84,7 @@ describe("voiceOptionProvider", () => {
         labels,
       ),
     ).toBe("Own Label")
-    expect(voiceOptionProvider(option("ext-a/v1"), labels)).toBe(
-      "Alpha Voices",
-    )
+    expect(voiceOptionProvider(option("ext-a/v1"), labels)).toBe("Alpha Voices")
     expect(voiceOptionProvider(option("ext-b/v2"), labels)).toBe("Beta Voices")
   })
 

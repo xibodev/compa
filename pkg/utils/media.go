@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -69,6 +70,33 @@ type DownloadOptions struct {
 	LoggerPrefix        string
 	ProxyURL            string
 	BlockPrivateTargets bool
+	// MaxBytes is the largest file accepted; zero or less means
+	// DefaultDownloadMaxBytes.
+	MaxBytes int64
+}
+
+// DefaultDownloadMaxBytes bounds a download that sets no limit of its own.
+const DefaultDownloadMaxBytes int64 = 100 << 20
+
+// LogSafeURL returns the scheme and host of raw, all a log line or an error
+// may show of a URL: its path and query may carry a token, as Telegram's
+// /file/bot<token>/ paths do.
+func LogSafeURL(raw string) string {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Host == "" {
+		return "(url)"
+	}
+	return parsed.Scheme + "://" + parsed.Host
+}
+
+// withoutURL returns err with the URL an *url.Error names reduced to
+// LogSafeURL's, so the error can be logged.
+func withoutURL(err error) error {
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		return &url.Error{Op: urlErr.Op, URL: LogSafeURL(urlErr.URL), Err: urlErr.Err}
+	}
+	return err
 }
 
 // DownloadFile downloads a file from URL to a local temp directory.
@@ -100,8 +128,8 @@ func DownloadFile(urlStr, filename string, opts DownloadOptions) string {
 		validateErr := ValidateSafeHTTPURL(urlStr, nil, nil)
 		if validateErr != nil {
 			logger.ErrorCF(opts.LoggerPrefix, "Blocked unsafe download URL", map[string]any{
-				"error": validateErr.Error(),
-				"url":   urlStr,
+				"error": withoutURL(validateErr).Error(),
+				"host":  LogSafeURL(urlStr),
 			})
 			return ""
 		}
@@ -122,8 +150,7 @@ func DownloadFile(urlStr, filename string, opts DownloadOptions) string {
 			proxyURL, parseErr := url.Parse(opts.ProxyURL)
 			if parseErr != nil {
 				logger.ErrorCF(opts.LoggerPrefix, "Invalid proxy URL for download", map[string]any{
-					"error": parseErr.Error(),
-					"proxy": opts.ProxyURL,
+					"error": "the proxy URL does not parse",
 				})
 				return ""
 			}
@@ -136,7 +163,8 @@ func DownloadFile(urlStr, filename string, opts DownloadOptions) string {
 	req, err := http.NewRequest(http.MethodGet, urlStr, nil)
 	if err != nil {
 		logger.ErrorCF(opts.LoggerPrefix, "Failed to create download request", map[string]any{
-			"error": err.Error(),
+			"error": withoutURL(err).Error(),
+			"host":  LogSafeURL(urlStr),
 		})
 		return ""
 	}
@@ -152,8 +180,8 @@ func DownloadFile(urlStr, filename string, opts DownloadOptions) string {
 	resp, err := client.Do(req)
 	if err != nil {
 		logger.ErrorCF(opts.LoggerPrefix, "Failed to download file", map[string]any{
-			"error": err.Error(),
-			"url":   urlStr,
+			"error": withoutURL(err).Error(),
+			"host":  LogSafeURL(urlStr),
 		})
 		return ""
 	}
@@ -162,7 +190,7 @@ func DownloadFile(urlStr, filename string, opts DownloadOptions) string {
 	if resp.StatusCode != http.StatusOK {
 		logger.ErrorCF(opts.LoggerPrefix, "File download returned non-200 status", map[string]any{
 			"status": resp.StatusCode,
-			"url":    urlStr,
+			"host":   LogSafeURL(urlStr),
 		})
 		return ""
 	}
@@ -175,11 +203,25 @@ func DownloadFile(urlStr, filename string, opts DownloadOptions) string {
 		return ""
 	}
 
-	if _, err := io.Copy(out, resp.Body); err != nil {
+	maxBytes := opts.MaxBytes
+	if maxBytes <= 0 {
+		maxBytes = DefaultDownloadMaxBytes
+	}
+	written, err := io.CopyN(out, resp.Body, maxBytes+1)
+	if err != nil && !errors.Is(err, io.EOF) {
 		_ = out.Close()
 		os.Remove(localPath)
 		logger.ErrorCF(opts.LoggerPrefix, "Failed to write file", map[string]any{
-			"error": err.Error(),
+			"error": withoutURL(err).Error(),
+		})
+		return ""
+	}
+	if written > maxBytes {
+		_ = out.Close()
+		os.Remove(localPath)
+		logger.ErrorCF(opts.LoggerPrefix, "File download exceeds the size limit", map[string]any{
+			"max_bytes": maxBytes,
+			"host":      LogSafeURL(urlStr),
 		})
 		return ""
 	}

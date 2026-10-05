@@ -1,4 +1,4 @@
-import { launcherFetch } from "@/api/http"
+import { HttpError, launcherFetch } from "@/api/http"
 
 /**
  * The default model: the selection a chat without its own model runs with.
@@ -15,8 +15,9 @@ async function request(init?: RequestInit): Promise<DefaultModel> {
   const response = await launcherFetch(PATH, init)
   if (!response.ok) {
     const detail = (await response.text()).trim()
-    throw new Error(
+    throw new HttpError(
       detail || response.statusText || `Request failed (${response.status})`,
+      response.status,
     )
   }
   const body = (await response.json()) as Partial<DefaultModel>

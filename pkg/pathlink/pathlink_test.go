@@ -117,3 +117,46 @@ func TestIsLinkSeesAJunction(t *testing.T) {
 		t.Fatal("an ordinary directory was reported as a link")
 	}
 }
+
+// A path that does not exist yet resolves like the folder it goes in: the
+// part that exists takes the true names EvalSymlinks gives it, as a resolved
+// root does. On Windows that means long rather than 8.3 short names and the
+// true case, which this checks through the case.
+func TestAPathNotYetWrittenResolvesLikeItsFolder(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("names are case-sensitive here")
+	}
+	dir := t.TempDir()
+	root, err := Resolve(dir)
+	if err != nil {
+		t.Fatalf("Resolve(dir): %v", err)
+	}
+	got, err := Resolve(filepath.Join(strings.ToUpper(dir), "new.txt"))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if want := filepath.Join(root, "new.txt"); got != want {
+		t.Fatalf("Resolve = %q, want %q", got, want)
+	}
+}
+
+// The same holds through a junction or link to a folder.
+func TestAPathNotYetWrittenThroughALinkResolvesLikeItsFolder(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real")
+	if err := os.Mkdir(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linkDir(t, filepath.Join(dir, "alias"), real)
+	root, err := Resolve(real)
+	if err != nil {
+		t.Fatalf("Resolve(real): %v", err)
+	}
+	got, err := Resolve(filepath.Join(dir, "alias", "new.txt"))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if want := filepath.Join(root, "new.txt"); got != want {
+		t.Fatalf("Resolve = %q, want %q", got, want)
+	}
+}

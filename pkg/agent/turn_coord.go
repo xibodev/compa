@@ -3,22 +3,19 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/xibodev/compa/pkg/config"
 	runtimeevents "github.com/xibodev/compa/pkg/events"
 	"github.com/xibodev/compa/pkg/logger"
 	"github.com/xibodev/compa/pkg/providers"
 )
 
 func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipeline) (_ turnResult, turnErr error) {
-	if ts != nil && ts.agent != nil {
-		modelMu := ts.agent.modelStateMutex()
-		modelMu.RLock()
-		defer modelMu.RUnlock()
-	}
 	turnCtx, turnCancel := context.WithCancel(ctx)
 	defer turnCancel()
 	ts.setTurnCancel(turnCancel)
@@ -29,6 +26,10 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 
 	al.registerActiveTurn(ts)
 	defer al.clearActiveTurn(ts)
+
+	if ts.origin == "" {
+		ts.origin = turnOrigin(isScheduledTurn(ctx), ts.channel)
+	}
 
 	if al.takePendingStop(ts.sessionKey) {
 		_ = ts.requestHardAbort()
@@ -68,6 +69,7 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 				ToolKinds:             ts.toolKindsSnapshot(),
 				ToolExecutions:        ts.toolExecutionsSnapshot(),
 				Error:                 failure,
+				FromOwner:             inboundFromOwner(ts.opts.Dispatch.InboundContext),
 			},
 		)
 	}()
@@ -106,7 +108,7 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 	maxMediaSize := pipeline.Cfg.Agents.Defaults.GetMaxMediaSize()
 	finalContent := exec.finalContent
 
-	for ts.currentIteration() < ts.agent.MaxIterations || len(exec.pendingMessages) > 0 {
+	for ts.currentIteration() < ts.agent.MaxIterations || len(pendingMessages) > 0 || len(exec.pendingMessages) > 0 {
 		if ts.hardAbortRequested() {
 			turnStatus = TurnEndStatusAborted
 			return al.abortTurn(ts)
@@ -131,7 +133,7 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 			}
 		}
 
-		// Check if parent turn has ended (SubTurn support from HEAD)
+		// A non-critical sub-turn stops once its parent turn has ended.
 		if ts.parentTurnState != nil && ts.IsParentEnded() {
 			if !ts.critical {
 				logger.InfoCF("agent", "Parent turn ended, non-critical SubTurn exiting gracefully", map[string]any{
@@ -148,23 +150,14 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 			})
 		}
 
-		// Poll for pending SubTurn results (from HEAD)
-		if ts.pendingResults != nil {
-			select {
-			case result, ok := <-ts.pendingResults:
-				if ok && result != nil && result.ForLLM != "" {
-					content := al.cfg.FilterSensitiveData(result.ForLLM)
-					msg := subTurnResultPromptMessage(content)
-					pendingMessages = append(pendingMessages, msg)
-				}
-			default:
-				// No results available
-			}
+		// Poll for pending SubTurn results
+		if msg, ok := pipeline.takeSubTurnResult(ts); ok {
+			pendingMessages = append(pendingMessages, msg)
 		}
 
 		// Inject pending steering messages
 		if len(pendingMessages) > 0 {
-			resolvedPending := resolveMediaRefs(pendingMessages, al.mediaStore, maxMediaSize, 0)
+			resolvedPending := resolveMediaRefs(pendingMessages, pipeline.MediaStore, maxMediaSize, 0)
 			totalContentLen := 0
 			for i, pm := range pendingMessages {
 				messages = append(messages, resolvedPending[i])
@@ -212,7 +205,10 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 			return turnResult{}, callErr
 		}
 		messages = exec.messages
+		// Take the steering CallLLM queued: it is injected once, at the top
+		// of the next iteration, from pendingMessages alone.
 		pendingMessages = exec.pendingMessages
+		exec.pendingMessages = nil
 		finalContent = exec.finalContent
 
 		switch ctrl {
@@ -348,7 +344,7 @@ func (al *AgentLoop) selectCandidates(
 }
 
 func (al *AgentLoop) resolveContextManager() ContextManager {
-	name := al.cfg.Agents.Defaults.ContextManager
+	name := al.GetConfig().Agents.Defaults.ContextManager
 	if name == "" || name == defaultContextManagerName {
 		return &defaultContextManager{al: al}
 	}
@@ -359,7 +355,7 @@ func (al *AgentLoop) resolveContextManager() ContextManager {
 		})
 		return &defaultContextManager{al: al}
 	}
-	cm, err := factory(al.cfg.Agents.Defaults.ContextManagerConfig, al)
+	cm, err := factory(al.GetConfig().Agents.Defaults.ContextManagerConfig, al)
 	if err != nil {
 		logger.WarnCF("agent", "Failed to create context manager, falling back to default", map[string]any{
 			"name":  name,
@@ -368,6 +364,44 @@ func (al *AgentLoop) resolveContextManager() ContextManager {
 		return &defaultContextManager{al: al}
 	}
 	return cm
+}
+
+// contextManagerToolRegistrar is a context manager that contributes tools to
+// the agents.
+type contextManagerToolRegistrar interface {
+	registerTools(al *AgentLoop)
+}
+
+// reloadContextManager gives a reload's new agents a context manager: the
+// current one when previous and cfg configure it alike, with its tools
+// registered on the new agents, and otherwise one built from cfg. It returns
+// the manager it replaced, for the caller to close once turns drain, or nil.
+func (al *AgentLoop) reloadContextManager(previous, cfg *config.Config) ContextManager {
+	current := al.currentContextManager()
+	if current != nil && previous != nil && cfg != nil &&
+		previous.Agents.Defaults.ContextManager == cfg.Agents.Defaults.ContextManager &&
+		bytes.Equal(previous.Agents.Defaults.ContextManagerConfig, cfg.Agents.Defaults.ContextManagerConfig) {
+		if registrar, ok := current.(contextManagerToolRegistrar); ok {
+			registrar.registerTools(al)
+		}
+		return nil
+	}
+	next := al.resolveContextManager()
+	al.mu.Lock()
+	al.contextManager = next
+	al.mu.Unlock()
+	return current
+}
+
+// closeContextManager closes cm when it holds resources.
+func closeContextManager(cm ContextManager) {
+	closer, ok := cm.(interface{ Close() error })
+	if !ok || closer == nil {
+		return
+	}
+	if err := closer.Close(); err != nil {
+		logger.ErrorCF("agent", "Failed to close context manager", map[string]any{"error": err.Error()})
+	}
 }
 
 func (al *AgentLoop) askSideQuestion(
@@ -379,9 +413,8 @@ func (al *AgentLoop) askSideQuestion(
 	if agent == nil {
 		return "", fmt.Errorf("askSideQuestion: no agent available for /btw")
 	}
-	modelMu := agent.modelStateMutex()
-	modelMu.RLock()
-	defer modelMu.RUnlock()
+	agent, releaseModel, _ := agent.turnSnapshot()
+	defer releaseModel()
 
 	question = strings.TrimSpace(question)
 	if question == "" {
@@ -410,10 +443,11 @@ func (al *AgentLoop) askSideQuestion(
 	var history []providers.Message
 	var summary string
 	if opts != nil && !opts.NoHistory {
-		if resp, err := al.contextManager.Assemble(ctx, &AssembleRequest{
+		if resp, err := al.currentContextManager().Assemble(ctx, &AssembleRequest{
 			SessionKey: opts.Dispatch.SessionKey,
 			Budget:     agent.ContextWindow,
 			MaxTokens:  agent.MaxTokens,
+			AgentID:    agent.ID,
 		}); err == nil && resp != nil {
 			history = resp.History
 			summary = resp.Summary
@@ -451,7 +485,7 @@ func (al *AgentLoop) askSideQuestion(
 	if strings.TrimSpace(question) != "" || len(media) > 0 {
 		currentTurnStart = len(messages) - 1
 	}
-	messages = resolveMediaRefs(messages, al.mediaStore, maxMediaSize, currentTurnStart)
+	messages = resolveMediaRefs(messages, al.currentMediaStore(), maxMediaSize, currentTurnStart)
 
 	// The question runs on the message's own selection when it has one, as a
 	// turn would, and on the agent's model otherwise.
@@ -555,7 +589,7 @@ func (al *AgentLoop) askSideQuestion(
 	}
 
 	callSideLLM := func(callMessages []providers.Message) (*providers.LLMResponse, error) {
-		result, err := al.failover.Execute(
+		result, err := al.currentFailover().Execute(
 			ctx,
 			models.candidates,
 			func(ctx context.Context, candidate providers.FallbackCandidate) (*providers.LLMResponse, error) {

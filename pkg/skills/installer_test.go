@@ -3,6 +3,7 @@ package skills
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -345,23 +346,32 @@ func TestSkillInstallerResolveGitHubRefUsesDefaultBranch(t *testing.T) {
 
 func TestSkillInstallerInstallFromGitHubToDirSupportsBlobSkillURL(t *testing.T) {
 	tmpDir := t.TempDir()
+	const commit = "0123456789abcdef0123456789abcdef01234567"
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/api/v3/repos/org/repo/commits/main":
+			if r.Header.Get("Accept") != "application/vnd.github.sha" {
+				t.Errorf("commit lookup Accept = %q", r.Header.Get("Accept"))
+			}
+			_, _ = w.Write([]byte(commit))
 		case "/api/v3/repos/org/repo/contents/.agents/skills/pr-review":
+			if got := r.URL.Query().Get("ref"); got != commit {
+				t.Errorf("listing ref = %q, want the pinned commit", got)
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`[
-				{"type":"file","name":"SKILL.md","download_url":"` + server.URL + `/raw/org/repo/main/.agents/skills/pr-review/SKILL.md"},
-				{"type":"dir","name":"scripts","url":"` + server.URL + `/api/v3/repos/org/repo/contents/.agents/skills/pr-review/scripts?ref=main"}
+				{"type":"file","name":"SKILL.md","download_url":"` + server.URL + `/raw/org/repo/` + commit + `/.agents/skills/pr-review/SKILL.md"},
+				{"type":"dir","name":"scripts","url":"` + server.URL + `/api/v3/repos/org/repo/contents/.agents/skills/pr-review/scripts?ref=` + commit + `"}
 			]`))
 		case "/api/v3/repos/org/repo/contents/.agents/skills/pr-review/scripts":
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`[
-				{"type":"file","name":"check.sh","download_url":"` + server.URL + `/raw/org/repo/main/.agents/skills/pr-review/scripts/check.sh"}
+				{"type":"file","name":"check.sh","download_url":"` + server.URL + `/raw/org/repo/` + commit + `/.agents/skills/pr-review/scripts/check.sh"}
 			]`))
-		case "/raw/org/repo/main/.agents/skills/pr-review/SKILL.md":
+		case "/raw/org/repo/" + commit + "/.agents/skills/pr-review/SKILL.md":
 			_, _ = w.Write([]byte("---\nname: pr-review\ndescription: PR review skill\n---\n# PR Review\n"))
-		case "/raw/org/repo/main/.agents/skills/pr-review/scripts/check.sh":
+		case "/raw/org/repo/" + commit + "/.agents/skills/pr-review/scripts/check.sh":
 			_, _ = w.Write([]byte("#!/bin/sh\nexit 0\n"))
 		default:
 			t.Fatalf("unexpected path: %s", r.URL.Path)
@@ -386,6 +396,9 @@ func TestSkillInstallerInstallFromGitHubToDirSupportsBlobSkillURL(t *testing.T) 
 	}
 	if result.Version != "main" {
 		t.Fatalf("version = %q, want main", result.Version)
+	}
+	if result.Commit != commit {
+		t.Fatalf("commit = %q, want the pinned %q", result.Commit, commit)
 	}
 
 	content, err := os.ReadFile(filepath.Join(targetDir, "SKILL.md"))
@@ -968,5 +981,196 @@ func TestSkillInstaller_ContextCancellation(t *testing.T) {
 
 	if err == nil {
 		t.Error("downloadFile() expected error for canceled context, got nil")
+	}
+}
+
+func TestValidateGitHubItemName(t *testing.T) {
+	for _, bad := range []string{"", ".", "..", `..\..\evil`, `a\b`, "a/b", "c:evil", "x..y"} {
+		if err := validateGitHubItemName(bad); err == nil {
+			t.Errorf("validateGitHubItemName(%q) = nil, want an error", bad)
+		}
+	}
+	for _, ok := range []string{"SKILL.md", "check.sh", ".hidden", "a-b_c.txt"} {
+		if err := validateGitHubItemName(ok); err != nil {
+			t.Errorf("validateGitHubItemName(%q) = %v", ok, err)
+		}
+	}
+}
+
+func TestGetGithubDirAllFilesRejectsUnsafeListings(t *testing.T) {
+	tokenLeaked := false
+	other := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "" {
+			tokenLeaked = true
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer other.Close()
+
+	listings := map[string]string{
+		"backslash name": `[{"type":"file","name":"..\\..\\evil.sh","download_url":"{{server}}/download/x"}]`,
+		"foreign subdir": `[{"type":"dir","name":"scripts","url":"` + other.URL + `/api/scripts"}]`,
+		"foreign file":   `[{"type":"file","name":"SKILL.md","download_url":"` + other.URL + `/download/SKILL.md"}]`,
+	}
+	for name, listing := range listings {
+		t.Run(name, func(t *testing.T) {
+			var server *httptest.Server
+			server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if strings.HasPrefix(r.URL.Path, "/download/") {
+					_, _ = w.Write([]byte("content"))
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, strings.ReplaceAll(listing, "{{server}}", server.URL))
+			}))
+			defer server.Close()
+
+			tmpDir := t.TempDir()
+			installer, err := NewSkillInstaller(tmpDir, "secret-token", "")
+			if err != nil {
+				t.Fatalf("NewSkillInstaller() error = %v", err)
+			}
+			localDir := filepath.Join(tmpDir, "skills", "x")
+			if err := installer.getGithubDirAllFiles(context.Background(), server.URL+"/contents", localDir, true); err == nil {
+				t.Fatal("getGithubDirAllFiles() accepted an unsafe listing")
+			}
+			if tokenLeaked {
+				t.Fatal("the GitHub token was sent to another host")
+			}
+			if _, err := os.Stat(filepath.Join(tmpDir, "evil.sh")); err == nil {
+				t.Fatal("a file was written outside the skill folder")
+			}
+		})
+	}
+}
+
+func TestInstallFromGitHubToDirSurfacesListingFailure(t *testing.T) {
+	const commit = "0123456789abcdef0123456789abcdef01234567"
+	rawRequested := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/commits/main"):
+			_, _ = w.Write([]byte(commit))
+		case strings.Contains(r.URL.Path, "/contents"):
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"message":"API rate limit exceeded"}`))
+		default:
+			rawRequested = true
+			_, _ = w.Write([]byte("---\nname: repo\ndescription: d\n---\n"))
+		}
+	}))
+	defer server.Close()
+
+	tmpDir := t.TempDir()
+	installer, err := NewSkillInstallerWithBaseURL(tmpDir, server.URL, "", "")
+	if err != nil {
+		t.Fatalf("NewSkillInstallerWithBaseURL() error = %v", err)
+	}
+	targetDir := filepath.Join(tmpDir, "skills", "repo")
+	_, err = installer.InstallFromGitHubToDir(context.Background(), "org/repo", "main", targetDir)
+	if err == nil || !strings.Contains(err.Error(), "403") {
+		t.Fatalf("InstallFromGitHubToDir() error = %v, want the listing failure", err)
+	}
+	if rawRequested {
+		t.Fatal("installer fell back to downloading SKILL.md alone")
+	}
+	if _, statErr := os.Stat(filepath.Join(targetDir, "SKILL.md")); statErr == nil {
+		t.Fatal("a partial skill was installed")
+	}
+}
+
+func TestInstallFromGitHubToDirFallsBackToRefWhenCommitUnresolved(t *testing.T) {
+	var server *httptest.Server
+	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v3/repos/org/repo/contents/skills/demo":
+			if got := r.URL.Query().Get("ref"); got != "main" {
+				t.Errorf("listing ref = %q, want the unresolved ref", got)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`[{"type":"file","name":"SKILL.md","download_url":"` +
+				server.URL + `/raw/org/repo/main/skills/demo/SKILL.md"}]`))
+		case "/raw/org/repo/main/skills/demo/SKILL.md":
+			_, _ = w.Write([]byte("---\nname: demo\ndescription: d\n---\n# Demo\n"))
+		default:
+			// Includes the commits endpoint, as on a host that doesn't serve it.
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	tmpDir := t.TempDir()
+	installer, err := NewSkillInstallerWithBaseURL(tmpDir, server.URL, "", "")
+	if err != nil {
+		t.Fatalf("NewSkillInstallerWithBaseURL() error = %v", err)
+	}
+	targetDir := filepath.Join(tmpDir, "skills", "demo")
+	result, err := installer.InstallFromGitHubToDir(context.Background(), "org/repo/skills/demo", "main", targetDir)
+	if err != nil {
+		t.Fatalf("InstallFromGitHubToDir() error = %v", err)
+	}
+	if result.Commit != "" || !result.Unpinned || result.Version != "main" {
+		t.Fatalf("result = %+v, want an unpinned install of main", result)
+	}
+	if _, err := os.Stat(filepath.Join(targetDir, "SKILL.md")); err != nil {
+		t.Fatalf("SKILL.md not installed: %v", err)
+	}
+}
+
+func TestDownloadFileLimitedCapsSize(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write(make([]byte, 2048))
+	}))
+	defer server.Close()
+
+	tmpDir := t.TempDir()
+	installer, err := NewSkillInstaller(tmpDir, "", "")
+	if err != nil {
+		t.Fatalf("NewSkillInstaller() error = %v", err)
+	}
+	localPath := filepath.Join(tmpDir, "big", "file.bin")
+	if _, err := installer.downloadFileLimited(context.Background(), server.URL, localPath, 1024); err == nil {
+		t.Fatal("downloadFileLimited() accepted a file over the limit")
+	}
+	if _, err := os.Stat(localPath); err == nil {
+		t.Fatal("an oversized file was written")
+	}
+}
+
+func TestSkillInstaller_UninstallRejectsTraversal(t *testing.T) {
+	tmpDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(tmpDir, "skills"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(tmpDir, "keep")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	installer, err := NewSkillInstaller(tmpDir, "", "")
+	if err != nil {
+		t.Fatalf("NewSkillInstaller() error = %v", err)
+	}
+	for _, name := range []string{`..\keep`, `..\..\keep`, "..", ".", `skills\..\..\keep`, "c:keep"} {
+		if err := installer.Uninstall(name); err == nil {
+			t.Errorf("Uninstall(%q) = nil, want an error", name)
+		}
+	}
+	if _, err := os.Stat(outside); err != nil {
+		t.Fatalf("a folder outside skills/ was removed: %v", err)
+	}
+}
+
+func TestSkillDir(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "skills")
+	dir, err := SkillDir(root, "weather")
+	if err != nil || dir != filepath.Join(root, "weather") {
+		t.Fatalf("SkillDir() = %q, %v", dir, err)
+	}
+	for _, bad := range []string{"", "..", `..\x`, "a/b", "/abs"} {
+		if _, err := SkillDir(root, bad); err == nil {
+			t.Errorf("SkillDir(%q) = nil error", bad)
+		}
 	}
 }

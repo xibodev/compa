@@ -28,6 +28,7 @@ Use when short_grep returns messages and you need complete content (not just sni
 
 Parameters:
 - message_ids (required): Array of message ID strings (from short_grep results)
+- all_conversations: Allow messages from other conversations (default: current only)
 
 Returns message with:
 - content: Full text content
@@ -40,6 +41,7 @@ Returns message with:
 Notes:
 - tool_result content is not returned (can be large). Re-run the tool if you need the result.
 - Media files are stored on disk at mediaUri path, use bash to access.
+- IDs that don't exist, or belong to another conversation without all_conversations, are listed in "skipped".
 
 Example:
   {"message_ids": ["10", "25"]}`
@@ -53,6 +55,10 @@ func (t *ExpandTool) Parameters() map[string]any {
 				"type":        "array",
 				"items":       map[string]any{"type": "string"},
 				"description": "Message IDs to expand (from short_grep results, e.g., [\"10\", \"25\"])",
+			},
+			"all_conversations": map[string]any{
+				"type":        "boolean",
+				"description": "Allow messages from other conversations (default: current conversation only)",
 			},
 		},
 		"required": []string{"message_ids"},
@@ -82,7 +88,21 @@ func (t *ExpandTool) Execute(ctx context.Context, args map[string]any) *tools.To
 		}
 	}
 
-	result, err := t.engine.ExpandMessages(ctx, messageIDs)
+	// Only the current conversation's messages unless asked otherwise; with no
+	// stored conversation, -1 matches nothing.
+	var convID int64
+	if allConv, _ := args["all_conversations"].(bool); !allConv {
+		id, err := t.engine.CurrentConversationID(ctx, tools.ToolSessionKey(ctx))
+		if err != nil {
+			return tools.ErrorResult("Expand failed: " + err.Error())
+		}
+		convID = id
+		if convID == 0 {
+			convID = -1
+		}
+	}
+
+	result, err := t.engine.ExpandMessagesIn(ctx, messageIDs, convID)
 	if err != nil {
 		return tools.ErrorResult("Expand failed: " + err.Error())
 	}
@@ -123,6 +143,13 @@ func (t *ExpandTool) Execute(ctx context.Context, args map[string]any) *tools.To
 		"success":    true,
 		"tokenCount": result.TokenCount,
 		"messages":   messages,
+	}
+	if len(result.Skipped) > 0 {
+		skipped := make([]string, len(result.Skipped))
+		for i, id := range result.Skipped {
+			skipped[i] = fmt.Sprintf("%d", id)
+		}
+		output["skipped"] = skipped
 	}
 	data, err := json.Marshal(output)
 	if err != nil {

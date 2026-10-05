@@ -128,6 +128,22 @@ func (b *JSONLBackend) TruncateHistory(key string, keepLast int) {
 	}
 }
 
+// CommitSummary replaces summarized, the oldest messages of the session,
+// with summary (see session.CommitSummary): in one step when the underlying
+// store can, otherwise by checking, then writing the summary and truncating.
+func (b *JSONLBackend) CommitSummary(key string, summarized []providers.Message, summary string) bool {
+	committer, ok := b.store.(memory.SummaryCommitter)
+	if !ok {
+		return commitSummaryInSteps(b, key, summarized, summary)
+	}
+	committed, err := committer.CommitSummary(context.Background(), key, summarized, summary)
+	if err != nil {
+		log.Printf("session: commit summary: %v", err)
+		return false
+	}
+	return committed
+}
+
 // Save persists session state. Since the JSONL store fsyncs every write
 // immediately, the data is already durable. Save runs compaction to reclaim
 // space from logically truncated messages (no-op when there are none).

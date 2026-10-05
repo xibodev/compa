@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/xibodev/compa/pkg/approval"
 	"github.com/xibodev/compa/pkg/bus"
 	"github.com/xibodev/compa/pkg/config"
 	runtimeevents "github.com/xibodev/compa/pkg/events"
@@ -876,6 +877,7 @@ func TestAgentLoop_Hooks_ToolApproverCanDeny(t *testing.T) {
 	defer cleanup()
 
 	al.RegisterTool(&echoTextTool{})
+	al.cfg.Tools.Approval = approval.Policy{Rules: []approval.Rule{{Tool: "echo_text", Action: approval.Ask}}}
 	if err := al.MountHook(NamedHook("deny-approval", &denyApprovalHook{})); err != nil {
 		t.Fatalf("MountHook failed: %v", err)
 	}
@@ -1011,6 +1013,63 @@ func TestAgentLoop_Hooks_ToolRespondAction(t *testing.T) {
 	}
 	if payload.ForLLMLen != len(expected) {
 		t.Fatalf("expected ForLLMLen %d, got %d", len(expected), payload.ForLLMLen)
+	}
+}
+
+// forUserRespondHook answers every tool call with output for the user.
+type forUserRespondHook struct{}
+
+func (forUserRespondHook) BeforeTool(
+	ctx context.Context,
+	call *ToolCallHookRequest,
+) (*ToolCallHookRequest, HookDecision, error) {
+	next := call.Clone()
+	next.HookResult = &tools.ToolResult{ForLLM: "done", ForUser: "hook output", ResponseHandled: true}
+	return next, HookDecision{Action: HookActionRespond}, nil
+}
+
+func (forUserRespondHook) AfterTool(
+	ctx context.Context,
+	result *ToolResultHookResponse,
+) (*ToolResultHookResponse, HookDecision, error) {
+	return result, HookDecision{Action: HookActionContinue}, nil
+}
+
+func TestAgentLoop_HookRespondOutputKeepsTheChatContext(t *testing.T) {
+	al, agent, cleanup := newHookTestLoop(t, &toolHookProvider{})
+	defer cleanup()
+	al.RegisterTool(&echoTextTool{})
+	if err := al.MountHook(NamedHook("for-user", forUserRespondHook{})); err != nil {
+		t.Fatalf("MountHook failed: %v", err)
+	}
+
+	inbound := &bus.InboundContext{
+		Channel: "telegram", Account: "work", ChatID: "chat-1", TopicID: "topic-9",
+		SenderID: "telegram:1", MessageID: "m-1", ReplyToMessageID: "m-0",
+	}
+	if _, err := al.runAgentLoop(context.Background(), agent, processOptions{
+		Dispatch:        DispatchRequest{SessionKey: "session-1", UserMessage: "run tool", InboundContext: inbound},
+		DefaultResponse: defaultResponse,
+	}); err != nil {
+		t.Fatalf("runAgentLoop failed: %v", err)
+	}
+
+	msgBus := al.bus.(*bus.MessageBus)
+	for {
+		select {
+		case out := <-msgBus.OutboundChan():
+			if out.Content != "hook output" {
+				continue
+			}
+			got := out.Context
+			if got.Channel != "telegram" || got.ChatID != "chat-1" || got.Account != "work" ||
+				got.TopicID != "topic-9" || got.ReplyToMessageID != "m-0" {
+				t.Fatalf("hook output context = %+v, want the turn's chat, account, topic and reply-to", got)
+			}
+			return
+		case <-time.After(5 * time.Second):
+			t.Fatal("the hook's output for the user was not published")
+		}
 	}
 }
 
@@ -1328,10 +1387,10 @@ func TestAgentLoop_HookRespond_ResponseHandledMediaPreservesOutboundContext(t *t
 		t.Fatalf("runAgentLoop failed: %v", err)
 	}
 
-	if len(telegramChannel.sentMedia) != 1 {
-		t.Fatalf("expected exactly 1 sent media message, got %d", len(telegramChannel.sentMedia))
+	if len(telegramChannel.media()) != 1 {
+		t.Fatalf("expected exactly 1 sent media message, got %d", len(telegramChannel.media()))
 	}
-	sent := telegramChannel.sentMedia[0]
+	sent := telegramChannel.media()[0]
 	if sent.Context.Channel != "telegram" || sent.Context.ChatID != "-100123" || sent.Context.TopicID != "42" {
 		t.Fatalf("unexpected media context: %+v", sent.Context)
 	}

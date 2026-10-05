@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -335,4 +336,78 @@ func createTestZip(t *testing.T, files map[string]string) []byte {
 
 	require.NoError(t, zw.Close())
 	return buf.Bytes()
+}
+
+func TestClawHubRegistryChecksModerationBeforeDownload(t *testing.T) {
+	cases := map[string]http.HandlerFunc{
+		"metadata unavailable": func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		},
+		"blocked": func(w http.ResponseWriter, r *http.Request) {
+			json.NewEncoder(w).Encode(clawhubSkillResponse{
+				Slug:          "bad-skill",
+				LatestVersion: &clawhubVersionInfo{Version: "1.0.0"},
+				Moderation:    &clawhubModerationInfo{IsMalwareBlocked: true},
+			})
+		},
+	}
+	for name, metadata := range cases {
+		t.Run(name, func(t *testing.T) {
+			downloaded := false
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/api/v1/skills/bad-skill":
+					metadata(w, r)
+				case "/api/v1/download":
+					downloaded = true
+					w.Write(createTestZip(t, map[string]string{"SKILL.md": "x"}))
+				default:
+					w.WriteHeader(http.StatusNotFound)
+				}
+			}))
+			defer srv.Close()
+
+			targetDir := filepath.Join(t.TempDir(), "bad-skill")
+			result, err := newTestRegistry(srv.URL, "").DownloadAndInstall(context.Background(), "bad-skill", "", targetDir)
+			if name == "metadata unavailable" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "couldn't verify")
+			} else {
+				require.NoError(t, err)
+				assert.True(t, result.IsMalwareBlocked)
+			}
+			assert.False(t, downloaded, "the archive was downloaded before moderation was known")
+			_, statErr := os.Stat(targetDir)
+			assert.True(t, os.IsNotExist(statErr), "nothing may be extracted")
+		})
+	}
+}
+
+func TestCheckSkillArchiveLimits(t *testing.T) {
+	files := map[string]string{}
+	for i := 0; i <= maxSkillFiles; i++ {
+		files[fmt.Sprintf("f%03d.txt", i)] = "x"
+	}
+	tooMany := filepath.Join(t.TempDir(), "many.zip")
+	require.NoError(t, os.WriteFile(tooMany, createTestZip(t, files), 0o644))
+	assert.ErrorContains(t, checkSkillArchive(tooMany), "entries")
+
+	// Highly compressible content that unpacks past the total limit.
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	chunk := bytes.Repeat([]byte{'a'}, 1<<20)
+	for i := 0; i < (maxSkillTotalBytes>>20)+1; i++ {
+		w, err := zw.Create(fmt.Sprintf("part%02d.txt", i))
+		require.NoError(t, err)
+		_, err = w.Write(chunk)
+		require.NoError(t, err)
+	}
+	require.NoError(t, zw.Close())
+	tooBig := filepath.Join(t.TempDir(), "big.zip")
+	require.NoError(t, os.WriteFile(tooBig, buf.Bytes(), 0o644))
+	assert.ErrorContains(t, checkSkillArchive(tooBig), "MB")
+
+	ok := filepath.Join(t.TempDir(), "ok.zip")
+	require.NoError(t, os.WriteFile(ok, createTestZip(t, map[string]string{"SKILL.md": "x"}), 0o644))
+	assert.NoError(t, checkSkillArchive(ok))
 }

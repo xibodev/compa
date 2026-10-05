@@ -37,6 +37,9 @@ type sentTarget struct {
 }
 
 type MessageTool struct {
+	// chatTargets gives SetTargets: tools.message.targets.
+	chatTargets
+
 	sendCallback      SendCallbackWithContext
 	workspace         string
 	restrict          bool
@@ -73,11 +76,11 @@ func (t *MessageTool) Parameters() map[string]any {
 		},
 		"channel": map[string]any{
 			"type":        "string",
-			"description": "Optional: target channel (telegram, whatsapp, etc.)",
+			"description": "Optional: target channel (telegram, whatsapp, etc.); defaults to the current chat's",
 		},
 		"chat_id": map[string]any{
 			"type":        "string",
-			"description": "Optional: target chat/user ID",
+			"description": "Optional: target chat/user ID; defaults to the current chat",
 		},
 		"reply_to_message_id": map[string]any{
 			"type":        "string",
@@ -198,11 +201,9 @@ func (t *MessageTool) Execute(ctx context.Context, args map[string]any) *ToolRes
 	chatID, _ := args["chat_id"].(string)
 	replyToMessageID, _ := args["reply_to_message_id"].(string)
 
-	if channel == "" {
-		channel = ToolChannel(ctx)
-	}
-	if chatID == "" {
-		chatID = ToolChatID(ctx)
+	channel, chatID, err = t.resolve(ctx, "message", channel, chatID)
+	if err != nil {
+		return &ToolResult{ForLLM: err.Error(), IsError: true, Err: err}
 	}
 
 	if channel == "" || chatID == "" {

@@ -48,8 +48,8 @@ func (h HostConformance) Refusal() string {
 // THE HOST MUST FAIL MECHANICALLY IF THE PROJECTION WEAKENS AN ACCEPTED
 // SEMANTIC. This is the one rule whose violation is invisible at the layer
 // being reviewed: the Operation reads correct while the gate, which reads
-// capability effects, fires on nothing. So the check runs here, before any
-// capability of this module reaches NeedsApprovalV2.
+// capability effects, fires on nothing. So the check runs here, and discovery
+// refuses a module that fails it before registering any of its capabilities.
 //
 // It takes an Accepted rather than a *Descriptor, which is not a stylistic
 // choice: an Accepted can only be produced by modprotov2.Evaluate, so the

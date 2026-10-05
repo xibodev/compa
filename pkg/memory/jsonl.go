@@ -5,12 +5,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -29,10 +30,33 @@ const (
 
 	// maxLineSize is the maximum size of a single JSON line in a .jsonl
 	// file. Tool results (read_file, web search, etc.) can be large, so
-	// we set a generous limit. The scanner starts at 64 KB and grows
-	// only as needed up to this cap.
+	// we set a generous limit. A longer line is skipped when reading, not
+	// loaded: one oversized message must not hide the rest of a session.
 	maxLineSize = 10 * 1024 * 1024 // 10 MB
 )
+
+var (
+	dirLocksMu sync.Mutex
+	dirLocks   = make(map[string]*[numLockShards]sync.Mutex)
+)
+
+// locksForDir returns the session locks of dir, shared by every store opened
+// on it: a config reload opens new stores on the same directories while
+// running turns and background summaries still write through the old ones.
+func locksForDir(dir string) *[numLockShards]sync.Mutex {
+	key := filepath.Clean(dir)
+	if abs, err := filepath.Abs(key); err == nil {
+		key = abs
+	}
+	dirLocksMu.Lock()
+	defer dirLocksMu.Unlock()
+	if locks, ok := dirLocks[key]; ok {
+		return locks
+	}
+	locks := new([numLockShards]sync.Mutex)
+	dirLocks[key] = locks
+	return locks
+}
 
 // SessionMeta holds per-session metadata stored in a .meta.json file.
 //
@@ -61,7 +85,7 @@ type SessionMeta struct {
 // append-only, which is both fast and crash-safe.
 type JSONLStore struct {
 	dir   string
-	locks [numLockShards]sync.Mutex
+	locks *[numLockShards]sync.Mutex
 }
 
 // NewJSONLStore creates a new JSONL-backed store rooted at dir, creating the
@@ -69,7 +93,7 @@ type JSONLStore struct {
 // returned together with a store that is still safe to use: it reports no
 // sessions and its writes fail until the directory becomes available.
 func NewJSONLStore(dir string) (*JSONLStore, error) {
-	store := &JSONLStore{dir: dir}
+	store := &JSONLStore{dir: dir, locks: locksForDir(dir)}
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return store, fmt.Errorf("memory: create directory: %w", err)
 	}
@@ -185,98 +209,124 @@ func (s *JSONLStore) UpsertSessionMeta(
 	return s.writeMeta(sessionKey, meta)
 }
 
-// readMessages reads valid JSON lines from a .jsonl file, skipping
-// the first `skip` lines without unmarshaling them. This avoids the
-// cost of json.Unmarshal on logically truncated messages.
-// Malformed trailing lines (e.g. from a crash) are silently skipped.
-func readMessages(path string, skip int) ([]providers.Message, error) {
+// eachLine calls fn with every non-empty line of r, numbered from 1, without
+// its line ending. A line longer than maxLineSize is passed as nil: it still
+// counts, so the numbers stay those of the file, but it is not read into
+// memory.
+func eachLine(r io.Reader, fn func(lineNum int, line []byte)) error {
+	reader := bufio.NewReaderSize(r, 64*1024)
+	var line []byte
+	oversize := false
+	lineNum := 0
+	for {
+		chunk, err := reader.ReadSlice('\n')
+		if !oversize {
+			// +2 leaves room for the line ending beyond the content limit.
+			if len(line)+len(chunk) > maxLineSize+2 {
+				oversize = true
+				line = line[:0]
+			} else {
+				line = append(line, chunk...)
+			}
+		}
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue // the same line goes on
+		}
+		if err != nil && !errors.Is(err, io.EOF) {
+			return err
+		}
+		content := bytes.TrimSuffix(bytes.TrimSuffix(line, []byte("\n")), []byte("\r"))
+		if oversize || len(content) > 0 {
+			lineNum++
+			if oversize {
+				fn(lineNum, nil)
+			} else {
+				fn(lineNum, content)
+			}
+		}
+		line = line[:0]
+		oversize = false
+		if err != nil {
+			return nil // io.EOF
+		}
+	}
+}
+
+// storedMessage is a message read from a .jsonl file with its line number.
+type storedMessage struct {
+	line int
+	msg  providers.Message
+}
+
+// readStoredMessages reads the messages of a .jsonl file after its first
+// skip lines, which it does not decode, and returns them with the file's
+// line count. A corrupt line (a write cut short by a crash) or an oversized
+// one is skipped and logged rather than failing the whole history.
+func readStoredMessages(path string, skip int) ([]storedMessage, int, error) {
 	f, err := os.Open(path)
 	if os.IsNotExist(err) {
-		return []providers.Message{}, nil
+		return nil, 0, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("memory: open jsonl: %w", err)
+		return nil, 0, fmt.Errorf("memory: open jsonl: %w", err)
 	}
 	defer f.Close()
 
-	var msgs []providers.Message
-	scanner := bufio.NewScanner(f)
-	// Allow large lines for tool results (read_file, web search, etc.).
-	scanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)
-
-	lineNum := 0
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(line) == 0 {
-			continue
-		}
-		lineNum++
+	var stored []storedMessage
+	total := 0
+	err = eachLine(f, func(lineNum int, line []byte) {
+		total = lineNum
 		if lineNum <= skip {
-			continue
+			return
+		}
+		if line == nil {
+			log.Printf("memory: skipping line %d in %s: longer than %d bytes",
+				lineNum, filepath.Base(path), maxLineSize)
+			return
 		}
 		var msg providers.Message
 		if err := json.Unmarshal(line, &msg); err != nil {
-			// Corrupt line — likely a partial write from a crash.
-			// Log so operators know data was skipped, but don't
-			// fail the entire read; this is the standard JSONL
-			// recovery pattern.
 			log.Printf("memory: skipping corrupt line %d in %s: %v",
 				lineNum, filepath.Base(path), err)
-			continue
+			return
 		}
 		if messageutil.IsTransientAssistantThoughtMessage(msg) {
-			continue
+			return
 		}
-		msgs = append(msgs, msg)
+		stored = append(stored, storedMessage{line: lineNum, msg: msg})
+	})
+	if err != nil {
+		return nil, 0, fmt.Errorf("memory: read jsonl: %w", err)
 	}
-	if scanner.Err() != nil {
-		return nil, fmt.Errorf("memory: scan jsonl: %w", scanner.Err())
-	}
+	return stored, total, nil
+}
 
-	if msgs == nil {
-		msgs = []providers.Message{}
+// readMessages reads the messages of a .jsonl file after its first skip
+// lines (see readStoredMessages).
+func readMessages(path string, skip int) ([]providers.Message, error) {
+	stored, _, err := readStoredMessages(path, skip)
+	if err != nil {
+		return nil, err
+	}
+	msgs := make([]providers.Message, len(stored))
+	for i := range stored {
+		msgs[i] = stored[i].msg
 	}
 	return msgs, nil
 }
 
-// scanRetainedMessageLines returns the total number of non-empty raw JSONL
-// lines plus the raw line numbers that survive readMessages filtering.
-// TruncateHistory uses this to compute keepLast against retained messages
-// while preserving the raw-line skip offset stored in metadata.
-func scanRetainedMessageLines(path string) (int, []int, error) {
-	f, err := os.Open(path)
-	if os.IsNotExist(err) {
-		return 0, []int{}, nil
+// endsWithoutNewline reports whether f has content whose last byte is not a
+// newline: a line a crash cut short.
+func endsWithoutNewline(f *os.File) (bool, error) {
+	info, err := f.Stat()
+	if err != nil || info.Size() == 0 {
+		return false, err
 	}
-	if err != nil {
-		return 0, nil, fmt.Errorf("memory: open jsonl: %w", err)
+	last := make([]byte, 1)
+	if _, err := f.ReadAt(last, info.Size()-1); err != nil {
+		return false, err
 	}
-	defer f.Close()
-
-	rawCount := 0
-	retained := make([]int, 0)
-	scanner := bufio.NewScanner(f)
-	scanner.Buffer(make([]byte, 0, 64*1024), maxLineSize)
-	for scanner.Scan() {
-		line := scanner.Bytes()
-		if len(line) == 0 {
-			continue
-		}
-		rawCount++
-
-		var msg providers.Message
-		if err := json.Unmarshal(line, &msg); err != nil {
-			continue
-		}
-		if messageutil.IsTransientAssistantThoughtMessage(msg) {
-			continue
-		}
-		retained = append(retained, rawCount)
-	}
-	if err := scanner.Err(); err != nil {
-		return 0, nil, err
-	}
-	return rawCount, retained, nil
+	return last[0] != '\n', nil
 }
 
 func (s *JSONLStore) AddMessage(
@@ -319,11 +369,19 @@ func (s *JSONLStore) addMsg(sessionKey string, msg providers.Message) error {
 
 	f, err := os.OpenFile(
 		s.jsonlPath(sessionKey),
-		os.O_CREATE|os.O_WRONLY|os.O_APPEND,
+		os.O_CREATE|os.O_RDWR|os.O_APPEND,
 		0o644,
 	)
 	if err != nil {
 		return fmt.Errorf("memory: open jsonl for append: %w", err)
+	}
+	// A write a crash cut short leaves a line without its newline; this
+	// message must start a line of its own rather than be glued onto it.
+	if torn, tornErr := endsWithoutNewline(f); tornErr != nil {
+		f.Close()
+		return fmt.Errorf("memory: check jsonl end: %w", tornErr)
+	} else if torn {
+		line = append([]byte{'\n'}, line...)
 	}
 	_, writeErr := f.Write(line)
 	if writeErr != nil {
@@ -425,30 +483,77 @@ func (s *JSONLStore) TruncateHistory(
 		return err
 	}
 
-	rawCount, retainedRawLines, scanErr := scanRetainedMessageLines(s.jsonlPath(sessionKey))
-	if scanErr != nil {
-		return scanErr
+	active, rawCount, readErr := readStoredMessages(s.jsonlPath(sessionKey), meta.Skip)
+	if readErr != nil {
+		return readErr
 	}
 	meta.Count = rawCount
 	if meta.Skip > meta.Count {
 		meta.Skip = meta.Count
 	}
 
-	activeStart := sort.Search(len(retainedRawLines), func(i int) bool {
-		return retainedRawLines[i] > meta.Skip
-	})
-	activeRetainedCount := len(retainedRawLines) - activeStart
-
 	switch {
-	case keepLast <= 0 || activeRetainedCount == 0:
+	case keepLast <= 0 || len(active) == 0:
 		meta.Skip = meta.Count
-	case keepLast < activeRetainedCount:
-		activeRawLines := retainedRawLines[activeStart:]
-		meta.Skip = activeRawLines[activeRetainedCount-keepLast-1]
+	case keepLast < len(active):
+		meta.Skip = active[len(active)-keepLast-1].line
 	}
 	meta.UpdatedAt = time.Now()
 
 	return s.writeMeta(sessionKey, meta)
+}
+
+// CommitSummary stores summary as the session's summary and drops
+// summarized from the start of its history, in one metadata write, provided
+// summarized are still the session's oldest messages. When they are not —
+// the history was cleared, replaced or compacted after they were read — it
+// changes nothing and reports false. Messages appended meanwhile are kept.
+func (s *JSONLStore) CommitSummary(
+	_ context.Context,
+	sessionKey string,
+	summarized []providers.Message,
+	summary string,
+) (bool, error) {
+	l := s.sessionLock(sessionKey)
+	l.Lock()
+	defer l.Unlock()
+
+	meta, err := s.readMeta(sessionKey)
+	if err != nil {
+		return false, err
+	}
+	active, rawCount, err := readStoredMessages(s.jsonlPath(sessionKey), meta.Skip)
+	if err != nil {
+		return false, err
+	}
+	if len(active) < len(summarized) {
+		return false, nil
+	}
+	for i := range summarized {
+		if !sameStoredMessage(active[i].msg, summarized[i]) {
+			return false, nil
+		}
+	}
+
+	now := time.Now()
+	if meta.CreatedAt.IsZero() {
+		meta.CreatedAt = now
+	}
+	meta.Count = rawCount
+	if len(summarized) > 0 {
+		meta.Skip = active[len(summarized)-1].line
+	}
+	meta.Summary = summary
+	meta.UpdatedAt = now
+	return true, s.writeMeta(sessionKey, meta)
+}
+
+// sameStoredMessage reports whether two messages read from a session file
+// are the same message: they encode alike.
+func sameStoredMessage(a, b providers.Message) bool {
+	encodedA, errA := json.Marshal(a)
+	encodedB, errB := json.Marshal(b)
+	return errA == nil && errB == nil && bytes.Equal(encodedA, encodedB)
 }
 
 func (s *JSONLStore) SetHistory(

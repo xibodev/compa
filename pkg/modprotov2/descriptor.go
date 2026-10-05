@@ -7,17 +7,14 @@
 // the "smuggling successor semantics into a v1 exchange" that final ruling 5
 // forbids -- tolerant decoding is not permission.
 //
-// WHAT THIS PACKAGE IS AND IS NOT. It carries the frozen shape
-// (docs/architecture/WIRE_V2_PROPOSAL.md, wire shape 031a89d07f6dfd12) and the mechanical
-// checks the contract requires. It does NOT decide policy: whether a host gates
-// on a given effect, how it renders an artifact, or what it does with a
-// refusal, all live above this package. The contract says what may be said;
-// the host says what to do about it.
+// WHAT THIS PACKAGE IS AND IS NOT. It carries the frozen shape and the
+// mechanical checks the contract requires. It does NOT decide policy: whether
+// a host gates on a given effect, how it renders an artifact, or what it does
+// with a refusal, all live above this package. The contract says what may be
+// said; the host says what to do about it.
 //
-// EVERY FIELD TRACES TO A FROZEN CLAUSE. The proposal's own rule is that
-// anything not traceable to a specific v1 gap should be cut, and it was applied
-// against this author: `long_running` was in the draft, appeared zero times in
-// the frozen RFC, and is cut (§1b). It remains in v1 on
+// EVERY FIELD TRACES TO A FROZEN CLAUSE. `long_running` was in the draft, is
+// not in the frozen contract, and is cut. It remains in v1 on
 // modproto.Capability.LongRunning, which is untouched.
 package modprotov2
 

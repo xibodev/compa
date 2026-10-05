@@ -231,3 +231,50 @@ func TestPutLauncherConfigRejectsInvalidTrustedProxyCIDR(t *testing.T) {
 		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
 	}
 }
+
+func TestLauncherConfigCarriesHostsLANAndRemoteImages(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	h := NewHandler(configPath)
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+
+	put := func(body string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPut, "/api/system/launcher-config", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		mux.ServeHTTP(rec, req)
+		return rec
+	}
+	get := func() launcherConfigPayload {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/system/launcher-config", nil))
+		var got launcherConfigPayload
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("unmarshal %s: %v", rec.Body.String(), err)
+		}
+		return got
+	}
+
+	if got := get(); got.RemoteImages != launcherconfig.RemoteImagesClick || got.AllowLANWithoutPassword || len(got.AllowedHosts) != 0 {
+		t.Fatalf("defaults = %+v, want remote_images click, no LAN without password, no hosts", got)
+	}
+	if rec := put(`{"port":18800,"allowed_hosts":["Compa.Example.TEST:443"," "],"allow_lan_without_password":true,"remote_images":"always"}`); rec.Code != http.StatusOK {
+		t.Fatalf("PUT = %d %s", rec.Code, rec.Body.String())
+	}
+	got := get()
+	if len(got.AllowedHosts) != 1 || got.AllowedHosts[0] != "compa.example.test" || !got.AllowLANWithoutPassword || got.RemoteImages != launcherconfig.RemoteImagesAlways {
+		t.Fatalf("after PUT = %+v", got)
+	}
+
+	// A client that does not know the fields keeps them.
+	if rec := put(`{"port":18801}`); rec.Code != http.StatusOK {
+		t.Fatalf("PUT without the fields = %d %s", rec.Code, rec.Body.String())
+	}
+	if got := get(); len(got.AllowedHosts) != 1 || !got.AllowLANWithoutPassword || got.RemoteImages != launcherconfig.RemoteImagesAlways {
+		t.Fatalf("a PUT without the fields changed them: %+v", got)
+	}
+
+	if rec := put(`{"port":18801,"remote_images":"sometimes"}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("PUT with an unknown remote_images = %d %s, want 400", rec.Code, rec.Body.String())
+	}
+}

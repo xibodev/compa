@@ -162,6 +162,10 @@ func loadVerified(root, moduleID, version, id, title, rel, digest string, tokens
 		return Document{}, fmt.Errorf("module %s declares %q outside its own directory", moduleID, id)
 	}
 
+	if info, err := os.Stat(full); err == nil && info.Size() > maxDocumentBytes {
+		return Document{}, fmt.Errorf("module %s declares %q at %s, which is larger than %d KiB and is not loaded",
+			moduleID, id, rel, maxDocumentBytes>>10)
+	}
 	blob, err := os.ReadFile(full)
 	if err != nil {
 		return Document{}, fmt.Errorf("module %s declares %q at %s, which is not readable", moduleID, id, rel)
@@ -171,6 +175,12 @@ func loadVerified(root, moduleID, version, id, title, rel, digest string, tokens
 		return Document{}, fmt.Errorf(
 			"module %s declares %q with digest %s but the file hashes to %s; refusing to load unverified content into agent context",
 			moduleID, id, digest, got)
+	}
+	// The declared token count is the context cost the module promised, and
+	// what selection budgets with; content well beyond it is not loaded.
+	if limit := declaredBytes(tokens); limit > 0 && len(blob) > limit {
+		return Document{}, fmt.Errorf("module %s declares %q at %s as %d tokens, but it holds %d bytes,"+
+			" more than that allows; it is not loaded", moduleID, id, rel, tokens, len(blob))
 	}
 
 	return Document{
@@ -228,11 +238,15 @@ func KnowledgeLoader(installed []Installed) func(string) (string, string, []stri
 	}
 	known := make(map[string]bool, len(installed))
 	disabled := make(map[string]bool, len(installed))
+	dirs := make(map[string]string, len(installed))
 	for _, in := range installed {
 		if in.Descriptor != nil {
 			id := strings.ToLower(in.Descriptor.Module)
 			known[id] = true
 			disabled[id] = in.Disabled
+			if in.Runner != nil {
+				dirs[id] = filepath.Dir(in.Runner.Binary)
+			}
 		}
 	}
 
@@ -256,7 +270,11 @@ func KnowledgeLoader(installed []Installed) func(string) (string, string, []stri
 			return "", "", []string{fmt.Sprintf(
 				"module %q was selected but is not installed; no module knowledge was loaded", id)}
 		}
-		if disabled[strings.ToLower(id)] {
+		// The marker is read again at selection time: the module may have been
+		// disabled after the gateway started, and the startup snapshot alone
+		// kept loading its guidance until a restart.
+		dir := dirs[strings.ToLower(id)]
+		if disabled[strings.ToLower(id)] || dir != "" && Disabled(dir) {
 			// Installed but turned off. Distinct from "not installed", because
 			// the user can act on it -- and the agent must say WHICH, or the
 			// user is told to install something they already have.
@@ -267,8 +285,39 @@ func KnowledgeLoader(installed []Installed) func(string) (string, string, []stri
 		}
 		k := LoadKnowledge(installed, []string{id}, nil)
 		overlays, skills := k.Compose()
-		return overlays, skills, k.Warnings
+		warnings := k.Warnings
+		// What enters the prompt is bounded whatever the module declared: the
+		// declared token counts are the module's own claim. Skills go first,
+		// since module_knowledge can still load them one at a time.
+		if len(overlays)+len(skills) > maxPromptKnowledge {
+			skills = ""
+			warnings = append(warnings, fmt.Sprintf("module %q skills were left out of the prompt because"+
+				" its guidance exceeds %d KiB; load one with module_knowledge", id, maxPromptKnowledge>>10))
+		}
+		if len(overlays) > maxPromptKnowledge {
+			overlays = ""
+			warnings = append(warnings, fmt.Sprintf("module %q overlay was left out of the prompt because"+
+				" it exceeds %d KiB", id, maxPromptKnowledge>>10))
+		}
+		return overlays, skills, warnings
 	}
+}
+
+// maxPromptKnowledge bounds the module guidance one selection adds to the
+// prompt, and maxDocumentBytes the size of one overlay or skill.
+const (
+	maxPromptKnowledge = 64 << 10
+	maxDocumentBytes   = 64 << 10
+)
+
+// declaredBytes is the most content a declared token count allows: about 4
+// bytes a token, doubled because the count is an estimate. It is 0, meaning
+// only maxDocumentBytes applies, when the module declared no count.
+func declaredBytes(tokens int) int {
+	if tokens <= 0 {
+		return 0
+	}
+	return tokens * 4 * 2
 }
 
 // KnownModules reports which module ids are installed, lowercased.

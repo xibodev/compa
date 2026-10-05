@@ -7,20 +7,19 @@ import {
   IconFileText,
   IconTool,
 } from "@tabler/icons-react"
-import { useState } from "react"
+import { memo, useState } from "react"
 import { useTranslation } from "react-i18next"
 import ReactMarkdown from "react-markdown"
-import rehypeHighlight from "rehype-highlight"
-import rehypeRaw from "rehype-raw"
-import rehypeSanitize from "rehype-sanitize"
-import remarkGfm from "remark-gfm"
 
-import { ArtifactCard, extractArtifacts } from "@/components/chat/artifact-card"
-import {
-  MarkdownCodeBlock,
-  MessageCodeBlock,
-} from "@/components/chat/message-code-block"
 import { BRAND_NAME } from "@/components/brand-logo"
+import { ArtifactCard } from "@/components/chat/artifact-card"
+import { extractArtifacts } from "@/components/chat/artifact-lines"
+import {
+  MARKDOWN_COMPONENTS,
+  MARKDOWN_REHYPE_PLUGINS,
+  MARKDOWN_REMARK_PLUGINS,
+} from "@/components/chat/markdown"
+import { MessageCodeBlock } from "@/components/chat/message-code-block"
 import { Button } from "@/components/ui/button"
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard"
 import { formatMessageTime } from "@/hooks/use-web-chat"
@@ -43,18 +42,25 @@ interface AssistantMessageProps {
   timestamp?: string | number
 }
 
+// Stable defaults, so a message without attachments or tool calls does not
+// get new props on every render.
+const EMPTY_ATTACHMENTS: ChatAttachment[] = []
+const EMPTY_TOOL_CALLS: ChatToolCall[] = []
+
 // Markdown prose. The code blocks carry their own chrome (not-prose), and
 // inline code is styled once in index.css.
 const PROSE =
   "prose dark:prose-invert prose-pre:my-2 prose-pre:overflow-x-auto prose-pre:rounded-lg prose-pre:border prose-pre:bg-zinc-100 prose-pre:p-0 prose-pre:text-zinc-900 dark:prose-pre:bg-zinc-950 dark:prose-pre:text-zinc-100 max-w-none [overflow-wrap:anywhere] break-words"
 
-export function AssistantMessage({
+// Memoized: while a reply streams, only the message that changes re-renders
+// and re-parses its markdown.
+export const AssistantMessage = memo(function AssistantMessage({
   content,
-  attachments = [],
+  attachments = EMPTY_ATTACHMENTS,
   kind = "normal",
   modelName,
   modelTarget,
-  toolCalls = [],
+  toolCalls = EMPTY_TOOL_CALLS,
   timestamp = "",
 }: AssistantMessageProps) {
   const { t } = useTranslation()
@@ -210,15 +216,9 @@ export function AssistantMessage({
                         </div>
                         <div className="prose dark:prose-invert prose-p:my-1.5 prose-p:whitespace-pre-wrap max-w-none text-[13px] leading-relaxed [overflow-wrap:anywhere] break-words opacity-80">
                           <ReactMarkdown
-                            remarkPlugins={[remarkGfm]}
-                            rehypePlugins={[
-                              rehypeRaw,
-                              rehypeSanitize,
-                              rehypeHighlight,
-                            ]}
-                            components={{
-                              pre: MarkdownCodeBlock,
-                            }}
+                            remarkPlugins={MARKDOWN_REMARK_PLUGINS}
+                            rehypePlugins={MARKDOWN_REHYPE_PLUGINS}
+                            components={MARKDOWN_COMPONENTS}
                           >
                             {explanation}
                           </ReactMarkdown>
@@ -271,11 +271,9 @@ export function AssistantMessage({
               )}
             >
               <ReactMarkdown
-                remarkPlugins={[remarkGfm]}
-                rehypePlugins={[rehypeRaw, rehypeSanitize, rehypeHighlight]}
-                components={{
-                  pre: MarkdownCodeBlock,
-                }}
+                remarkPlugins={MARKDOWN_REMARK_PLUGINS}
+                rehypePlugins={MARKDOWN_REHYPE_PLUGINS}
+                components={MARKDOWN_COMPONENTS}
               >
                 {displayContent}
               </ReactMarkdown>
@@ -299,12 +297,12 @@ export function AssistantMessage({
               key={`${attachment.url}-${index}`}
               href={attachment.url}
               target="_blank"
-              rel="noreferrer"
+              rel="noopener noreferrer"
               className="group/img border-border/50 bg-muted/30 hover:border-border/80 relative overflow-hidden rounded-xl border shadow-sm transition-colors"
             >
               <img
                 src={attachment.url}
-                alt={attachment.filename || "Attached image"}
+                alt={attachment.filename || t("chat.uploadedImage")}
                 className="max-h-80 max-w-[280px] object-contain transition-transform duration-300 group-hover/img:scale-[1.02]"
               />
               <div className="absolute inset-0 bg-black/0 transition-colors group-hover/img:bg-black/10 dark:group-hover/img:bg-black/20" />
@@ -327,11 +325,11 @@ export function AssistantMessage({
               </div>
               <div className="flex min-w-0 flex-1 flex-col pr-1">
                 <span className="text-foreground/90 truncate text-[14px] leading-tight font-medium transition-colors group-hover/file:text-violet-600 dark:group-hover/file:text-violet-400">
-                  {attachment.filename || "Download file"}
+                  {attachment.filename || t("chat.downloadFile")}
                 </span>
                 <span className="text-muted-foreground/70 mt-1 text-[12px] font-medium">
                   {attachment.filename?.split(".").pop()?.toUpperCase() ||
-                    "FILE"}
+                    t("chat.fileLabel")}
                 </span>
               </div>
               <div className="bg-muted/60 text-muted-foreground/50 dark:bg-muted/20 flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-all duration-300 group-hover/file:bg-violet-400 group-hover/file:text-white group-hover/file:shadow-sm dark:group-hover/file:bg-violet-400">
@@ -343,4 +341,4 @@ export function AssistantMessage({
       )}
     </div>
   )
-}
+})

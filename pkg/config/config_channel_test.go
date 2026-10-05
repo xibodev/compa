@@ -4,13 +4,12 @@ import (
 	"encoding/json"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
-
-	"github.com/xibodev/compa/pkg/credential"
 )
 
 // ─── Test extend structs (simplified, settings + secure in one struct) ───
@@ -933,169 +932,21 @@ func TestChannel_SecureStrings_ApiKeys_NoMerge(t *testing.T) {
 	assert.Nil(t, cfg.ApiKeys)
 }
 
-// ═══════════════════════════════════════════════════
-//  enc:// token: encrypt → store → merge → decrypt
-// ═══════════════════════════════════════════════════
-
-func TestChannel_EncryptedToken(t *testing.T) {
-	mustSetupSSHKey(t)
-
-	const testPassphrase = "test-passphrase-123"
-	const plainToken = "123456:MY-SECRET-TOKEN"
-
-	// Encrypt the token to get an enc:// string
-	encrypted, err := credential.Encrypt(testPassphrase, "", plainToken)
-	require.NoError(t, err)
-	require.True(t, strings.HasPrefix(encrypted, "enc://"), "expected enc:// prefix, got: %s", encrypted)
-	t.Logf("encrypted token: %s", encrypted)
-
-	// Replace PassphraseProvider so SecureString.fromRaw can decrypt
-	orig := credential.PassphraseProvider
-	credential.PassphraseProvider = func() string { return testPassphrase }
-	t.Cleanup(func() { credential.PassphraseProvider = orig })
-
-	// Step 1: Load from extend.json (token is [NOT_HERE])
-	jsonData := `{
-		"enabled": true,
-		"type": "telegram",
-		"settings": {
-			"base_url": "https://api.telegram.org",
-			"use_markdown_v2": true,
-			"token": "[NOT_HERE]"
-		}
-	}`
-	var ch Channel
-	require.NoError(t, json.Unmarshal([]byte(jsonData), &ch))
-
-	// ── Scenario: security.yml stores enc:// token ──
-	yamlData := `
-settings:
-  token: ` + encrypted + `
-`
-	// Step 2: Merge enc:// token from security.yml
-	require.NoError(t, yaml.Unmarshal([]byte(yamlData), &ch))
-
-	// Step 3: Decode — SecureString.fromRaw resolves enc:// → plaintext
-	var cfg testTelegramConfig
-	require.NoError(t, ch.Decode(&cfg))
-	assert.Equal(t, "https://api.telegram.org", cfg.BaseURL)
-	assert.True(t, cfg.UseMarkdownV2)
-	// The key assertion: enc:// is decrypted to the original plaintext
-	assert.Equal(t, plainToken, cfg.Token.String(),
-		"SecureString should resolve enc:// to the original plaintext token")
-
-	// Step 4: Save extend.json → token masked as [NOT_HERE]
-	outJSON, err := json.MarshalIndent(ch, "", "  ")
-	require.NoError(t, err)
-	assert.NotContains(t, string(outJSON), "token")
-	assert.NotContains(t, string(outJSON), plainToken)
-	assert.NotContains(t, string(outJSON), "enc://")
-
-	// Step 5: Save security.yml → token preserved as enc://
-	outYAML, err := yaml.Marshal(ch)
-	require.NoError(t, err)
-	t.Logf("Saved security.yml:\n%s", string(outYAML))
-	assert.Contains(t, string(outYAML), encrypted)
-	assert.NotContains(t, string(outYAML), plainToken)
-	assert.NotContains(t, string(outYAML), "NOT_HERE")
-	assert.NotContains(t, string(outYAML), "base_url")
-}
-
-// ═══════════════════════════════════════════════════
-//  enc:// token directly in extend.json (edge case)
-// ═══════════════════════════════════════════════════
-
-func TestChannel_EncryptedTokenInJSON(t *testing.T) {
-	mustSetupSSHKey(t)
-
-	const testPassphrase = "json-enc-passphrase"
-	const plainToken = "BOT-TOKEN-FROM-JSON"
-	const plainToken2 = "new token2"
-
-	encrypted, err := credential.Encrypt(testPassphrase, "", plainToken)
-	require.NoError(t, err)
-
-	orig := credential.PassphraseProvider
-	credential.PassphraseProvider = func() string { return testPassphrase }
-	t.Cleanup(func() { credential.PassphraseProvider = orig })
-
-	// extend.json with enc:// token directly (no merge needed)
-	jsonData := `{
-		"enabled": true,
-		"type": "telegram",
-		"settings": {
-			"base_url": "https://api.telegram.org",
-			"token": ` + `"` + encrypted + `"` + `
-		}
-	}`
-	t.Logf("JSON data:\n%s", jsonData)
-	var ch Channel
-	require.NoError(t, json.Unmarshal([]byte(jsonData), &ch))
-
-	var cfg testTelegramConfig
-	require.NoError(t, ch.Decode(&cfg))
-	assert.Equal(t, plainToken, cfg.Token.String(),
-		"enc:// token in JSON should be decrypted correctly")
-
-	cfg.Token.Set(plainToken2)
-	// No explicit Encode needed — Decode stored &cfg, so modifications are
-	// automatically reflected in MarshalJSON/MarshalYAML.
-
-	// Save JSON → masked as [NOT_HERE]
-	outJSON, err := json.MarshalIndent(ch, "", "  ")
-	require.NoError(t, err)
-	t.Logf("Saved extend.json:\n%s", string(outJSON))
-	assert.NotContains(t, string(outJSON), "token")
-	assert.NotContains(t, string(outJSON), plainToken2)
-	assert.NotContains(t, string(outJSON), "enc://")
-
-	// Save YAML → only token, re-encrypted
-	outYAML, err := yaml.Marshal(ch)
-	require.NoError(t, err)
-	t.Logf("Saved security.yml:\n%s", string(outYAML))
-	// MarshalYAML re-encrypts with a new random salt/nonce, so verify via round-trip
-	assert.Contains(t, string(outYAML), "enc://")
-
-	// Round-trip: unmarshal YAML output through Channel and verify decryption
-	var ch2 Channel
-	require.NoError(t, yaml.Unmarshal(outYAML, &ch2))
-	var cfg2 testTelegramConfig
-	require.NoError(t, ch2.Decode(&cfg2))
-	assert.Equal(t, plainToken2, cfg2.Token.String())
-}
-
-// ═══════════════════════════════════════════════════
-//  enc:// token with missing passphrase → error
-// ═══════════════════════════════════════════════════
-
-func TestChannel_EncryptedToken_NoPassphrase(t *testing.T) {
-	mustSetupSSHKey(t)
-
-	const testPassphrase = "will-be-removed"
-	encrypted, err := credential.Encrypt(testPassphrase, "", "secret-token")
-	require.NoError(t, err)
-
-	// Ensure no passphrase is available
-	orig := credential.PassphraseProvider
-	credential.PassphraseProvider = func() string { return "" }
-	t.Cleanup(func() { credential.PassphraseProvider = orig })
-
-	jsonData := `{
-		"enabled": true,
-		"type": "telegram",
-		"settings": {
-			"base_url": "https://api.telegram.org",
-			"token": ` + `"` + encrypted + `"` + `
-		}
-	}`
-	var ch Channel
-	require.NoError(t, json.Unmarshal([]byte(jsonData), &ch))
-
-	var cfg testTelegramConfig
-	// Decode should fail because enc:// cannot be decrypted without passphrase
-	err = ch.Decode(&cfg)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "passphrase required")
+// Turns running at the same time read the same channel's settings; decoding
+// them on first use doesn't race (go test -race).
+func TestGetDecodedOnFirstUseFromSeveralGoroutines(t *testing.T) {
+	ch := DefaultConfig().Channels["web"]
+	var wg sync.WaitGroup
+	for range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if decoded, err := ch.GetDecoded(); err != nil || decoded == nil {
+				t.Errorf("GetDecoded() = %v, %v", decoded, err)
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 // ─── helper ───

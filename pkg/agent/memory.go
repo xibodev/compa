@@ -12,8 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	"github.com/xibodev/compa/pkg/fileutil"
+	"unicode/utf8"
 )
 
 // MemoryStore manages persistent memory for the agent.
@@ -41,14 +40,6 @@ func NewMemoryStore(workspace string) *MemoryStore {
 	}
 }
 
-// getTodayFile returns the path to today's daily note file (memory/YYYYMM/YYYYMMDD.md).
-func (ms *MemoryStore) getTodayFile() string {
-	today := time.Now().Format("20060102") // YYYYMMDD
-	monthDir := today[:6]                  // YYYYMM
-	filePath := filepath.Join(ms.memoryDir, monthDir, today+".md")
-	return filePath
-}
-
 // ReadLongTerm reads the long-term memory (MEMORY.md).
 // Returns empty string if the file doesn't exist.
 func (ms *MemoryStore) ReadLongTerm() string {
@@ -58,51 +49,23 @@ func (ms *MemoryStore) ReadLongTerm() string {
 	return ""
 }
 
-// WriteLongTerm writes content to the long-term memory file (MEMORY.md).
-func (ms *MemoryStore) WriteLongTerm(content string) error {
-	// Use unified atomic write utility with explicit sync for flash storage reliability.
-	// Using 0o600 (owner read/write only) for secure default permissions.
-	return fileutil.WriteFileAtomic(ms.memoryFile, []byte(content), 0o600)
-}
+// recentDailyNoteDays is how many days of daily notes the prompt carries.
+const recentDailyNoteDays = 3
 
-// ReadToday reads today's daily note.
-// Returns empty string if the file doesn't exist.
-func (ms *MemoryStore) ReadToday() string {
-	todayFile := ms.getTodayFile()
-	if data, err := os.ReadFile(todayFile); err == nil {
-		return string(data)
+// memoryContextLimit caps the memory injected into every prompt, in bytes:
+// long-term memory first, then the most recent daily notes. Memory files grow
+// without bound and every chat of the agent pays for them on every turn.
+const memoryContextLimit = 24 << 10
+
+// dailyNotePaths returns the daily note files of the days days up to now,
+// newest first (memory/YYYYMM/YYYYMMDD.md).
+func dailyNotePaths(memoryDir string, now time.Time, days int) []string {
+	paths := make([]string, 0, days)
+	for i := range days {
+		dateStr := now.AddDate(0, 0, -i).Format("20060102") // YYYYMMDD
+		paths = append(paths, filepath.Join(memoryDir, dateStr[:6], dateStr+".md"))
 	}
-	return ""
-}
-
-// AppendToday appends content to today's daily note.
-// If the file doesn't exist, it creates a new file with a date header.
-func (ms *MemoryStore) AppendToday(content string) error {
-	todayFile := ms.getTodayFile()
-
-	// Ensure month directory exists
-	monthDir := filepath.Dir(todayFile)
-	if err := os.MkdirAll(monthDir, 0o755); err != nil {
-		return err
-	}
-
-	var existingContent string
-	if data, err := os.ReadFile(todayFile); err == nil {
-		existingContent = string(data)
-	}
-
-	var newContent string
-	if existingContent == "" {
-		// Add header for new day
-		header := fmt.Sprintf("# %s\n\n", time.Now().Format("2006-01-02"))
-		newContent = header + content
-	} else {
-		// Append to existing content
-		newContent = existingContent + "\n" + content
-	}
-
-	// Use unified atomic write utility with explicit sync for flash storage reliability.
-	return fileutil.WriteFileAtomic(todayFile, []byte(newContent), 0o600)
+	return paths
 }
 
 // GetRecentDailyNotes returns daily notes from the last N days.
@@ -111,12 +74,7 @@ func (ms *MemoryStore) GetRecentDailyNotes(days int) string {
 	var sb strings.Builder
 	first := true
 
-	for i := range days {
-		date := time.Now().AddDate(0, 0, -i)
-		dateStr := date.Format("20060102") // YYYYMMDD
-		monthDir := dateStr[:6]            // YYYYMM
-		filePath := filepath.Join(ms.memoryDir, monthDir, dateStr+".md")
-
+	for _, filePath := range dailyNotePaths(ms.memoryDir, time.Now(), days) {
 		if data, err := os.ReadFile(filePath); err == nil {
 			if !first {
 				sb.WriteString("\n\n---\n\n")
@@ -129,11 +87,28 @@ func (ms *MemoryStore) GetRecentDailyNotes(days int) string {
 	return sb.String()
 }
 
+// truncateForPrompt cuts text to at most limit bytes, on a rune boundary,
+// and says how much of source was left out.
+func truncateForPrompt(text string, limit int, source string) string {
+	if len(text) <= limit {
+		return text
+	}
+	cut := max(limit, 0)
+	for cut > 0 && !utf8.RuneStart(text[cut]) {
+		cut--
+	}
+	return text[:cut] + fmt.Sprintf("\n\n[... %d more bytes of %s not shown]", len(text)-cut, source)
+}
+
 // GetMemoryContext returns formatted memory context for the agent prompt.
-// Includes long-term memory and recent daily notes.
+// Includes long-term memory and recent daily notes, together at most
+// memoryContextLimit bytes.
 func (ms *MemoryStore) GetMemoryContext() string {
-	longTerm := ms.ReadLongTerm()
-	recentNotes := ms.GetRecentDailyNotes(3)
+	longTerm := truncateForPrompt(ms.ReadLongTerm(), memoryContextLimit, "memory/MEMORY.md")
+	recentNotes := ms.GetRecentDailyNotes(recentDailyNoteDays)
+	if recentNotes != "" {
+		recentNotes = truncateForPrompt(recentNotes, memoryContextLimit-len(longTerm), "the daily notes")
+	}
 
 	if longTerm == "" && recentNotes == "" {
 		return ""

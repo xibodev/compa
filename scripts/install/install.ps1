@@ -3,14 +3,16 @@
 #   irm https://github.com/xibodev/compa/releases/latest/download/install.ps1 | iex
 #
 # Installs compa, the launcher, and compa-kernel, the harness it runs, for the
-# current user in %LOCALAPPDATA%\Programs\Compa. No administrator rights are
-# needed. It adds that folder to your user PATH, adds a "Compa" Start Menu
-# shortcut, and starts Compa, which opens your browser to finish setting up.
-# Your settings and data live in %USERPROFILE%\.compa; this script never
-# touches them.
+# current user in %LOCALAPPDATA%\Programs\Compa. It needs no administrator
+# rights; run it as yourself, not from an elevated PowerShell. It adds that
+# folder to your user PATH and a "Compa" Start Menu shortcut, then starts
+# Compa, which opens your browser to finish setting up; under CI or in a remote
+# session it prints how to start Compa instead. Your settings and data live in
+# %USERPROFILE%\.compa; this script never touches them.
 #
-# Options: environment variables for "irm | iex", or the same options as
-# parameters when you run a downloaded copy, e.g. .\install.ps1 -NoStart
+# Options are environment variables, or parameters: give them to a downloaded
+# copy (.\install.ps1 -NoStart) or to the downloaded script as a script block:
+#   & ([scriptblock]::Create((irm https://github.com/xibodev/compa/releases/latest/download/install.ps1))) -NoStart
 #
 #   COMPA_VERSION=v1.2.3      -Version v1.2.3     install that release
 #   COMPA_INSTALL_DIR=<dir>   -InstallDir <dir>   install somewhere else
@@ -18,23 +20,27 @@
 #   COMPA_NO_SHORTCUT=1       -NoShortcut         leave the Start Menu alone
 #   COMPA_NO_START=1          -NoStart            do not start Compa
 #   COMPA_UNINSTALL=1         -Uninstall          remove Compa, keep your data
+#   COMPA_ALLOW_ROOT=1                            install from an elevated session anyway
 #
-# For tests only: COMPA_RELEASE_BASE_URL replaces
-# https://github.com/xibodev/compa/releases/download, so the installer can run
-# against a locally served fake release.
+# COMPA_RELEASE_BASE_URL replaces https://github.com/xibodev/compa/releases/download,
+# for example with a mirror. It must be an https:// address unless
+# COMPA_INSTALL_TEST=1, which the installer tests set to serve a fake release.
+#
+# Everything runs in the script block below and the TLS setting is restored at
+# the end, so "irm | iex" leaves no variables, functions or settings behind in
+# your session; only its PATH gains the install folder.
 
-param(
-    [string]$Version = $env:COMPA_VERSION,
-    [string]$InstallDir = $env:COMPA_INSTALL_DIR,
-    [switch]$NoPath,
-    [switch]$NoShortcut,
-    [switch]$NoStart,
-    [switch]$Uninstall
-)
-
-# Everything runs in this script block, so "irm | iex" leaves no functions or
-# preference changes behind in your session.
 & {
+    [CmdletBinding(PositionalBinding = $false)]
+    param(
+        [string]$Version = $env:COMPA_VERSION,
+        [string]$InstallDir = $env:COMPA_INSTALL_DIR,
+        [switch]$NoPath,
+        [switch]$NoShortcut,
+        [switch]$NoStart,
+        [switch]$Uninstall
+    )
+
     $ErrorActionPreference = 'Stop'
     # Windows PowerShell's progress bar slows downloads to a crawl.
     $ProgressPreference = 'SilentlyContinue'
@@ -42,6 +48,7 @@ param(
     # The release workflow replaces this placeholder with the release tag.
     $stampedTag = '__COMPA_VERSION__'
     $repo = 'xibodev/compa'
+    $defaultPort = 18800
     $programs = @('compa-kernel.exe', 'compa.exe')
     $installedFiles = @('compa-kernel.exe', 'compa.exe', 'LICENSE', 'NOTICE', 'compa.ico')
 
@@ -53,14 +60,13 @@ param(
         Write-Host "  $Message"
     }
 
-    function Get-InstallDir {
-        $dir = $InstallDir
-        if (-not $dir) {
+    function Get-InstallDir([string]$Dir) {
+        if (-not $Dir) {
             if (-not $env:LOCALAPPDATA) { throw 'LOCALAPPDATA is not set; set COMPA_INSTALL_DIR to choose where to install Compa.' }
-            $dir = Join-Path (Join-Path $env:LOCALAPPDATA 'Programs') 'Compa'
+            $Dir = Join-Path (Join-Path $env:LOCALAPPDATA 'Programs') 'Compa'
         }
         # Resolved against the current PowerShell location, like any path you type.
-        $full = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath([Environment]::ExpandEnvironmentVariables($dir))
+        $full = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath([Environment]::ExpandEnvironmentVariables($Dir))
         return $full.TrimEnd('\')
     }
 
@@ -69,8 +75,23 @@ param(
         return Join-Path $HOME '.compa'
     }
 
-    function Resolve-Tag {
-        $tag = "$Version".Trim()
+    function Test-Elevated {
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $principal = New-Object Security.Principal.WindowsPrincipal $identity
+        return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    }
+
+    function Get-ReleaseBase {
+        if (-not $env:COMPA_RELEASE_BASE_URL) { return 'https://github.com/' + $repo + '/releases/download' }
+        $base = $env:COMPA_RELEASE_BASE_URL.TrimEnd('/')
+        if ($base -notmatch '^https://' -and -not (Test-Flag $env:COMPA_INSTALL_TEST)) {
+            throw "COMPA_RELEASE_BASE_URL must be an https:// address, not '$base'."
+        }
+        return $base
+    }
+
+    function Resolve-Tag([string]$Requested) {
+        $tag = "$Requested".Trim()
         if (-not $tag -and $stampedTag -match '^v\d+\.\d+\.\d+') { $tag = $stampedTag }
         if (-not $tag) {
             if ($env:COMPA_RELEASE_BASE_URL) { throw 'Set COMPA_VERSION to the release to install from COMPA_RELEASE_BASE_URL.' }
@@ -135,12 +156,11 @@ param(
 
     function Stop-Compa([string]$Dir) {
         # Only programs running from this folder; another copy of Compa
-        # elsewhere is left alone.
-        $prefix = $Dir + '\'
+        # elsewhere, a folder inside this one included, is left alone.
         $running = @(Get-Process -Name 'compa', 'compa-kernel' -ErrorAction SilentlyContinue | Where-Object {
                 $path = $null
                 try { $path = $_.Path } catch { }
-                $path -and $path.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)
+                $path -and ([IO.Path]::GetDirectoryName($path).TrimEnd('\') -ieq $Dir)
             })
         if ($running.Count -eq 0) { return }
         Write-Step 'Stopping the running Compa...'
@@ -152,12 +172,17 @@ param(
         }
     }
 
-    function Remove-UpdateLeftovers([string]$Dir) {
-        # Files the in-app updater leaves while an old program still runs.
+    function Remove-Leftover([string]$Dir, [string]$Pattern) {
         Get-ChildItem -LiteralPath $Dir -Force -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -match '^\.?compa(-kernel)?\.exe(\.[0-9]+)?\.(old|new)$' } |
+            Where-Object { $_.Name -match $Pattern } |
             ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
     }
+
+    # Files the in-app updater leaves while an old program still runs, and
+    # those of an installer run that was cut short.
+    $updaterLeftovers = '^\.?compa(-kernel)?\.exe(\.[0-9]+)?\.(old|new)$'
+    $stagedFiles = '^\..+\.install-new$'
+    $replacedFiles = '^\..+\.install-old$'
 
     function Copy-File([string]$From, [string]$To) {
         for ($attempt = 1; ; $attempt++) {
@@ -166,10 +191,57 @@ param(
                 return
             } catch {
                 # A scanner may briefly lock a freshly written program.
-                if ($attempt -ge 5) { throw "Could not write ${To}: $($_.Exception.Message) Close Compa and run the installer again." }
+                if ($attempt -ge 5) { throw "Could not write ${To}: $($_.Exception.Message)" }
                 Start-Sleep -Seconds 1
             }
         }
+    }
+
+    function Install-File([string]$Stage, [string]$Dir) {
+        $names = @($installedFiles | Where-Object { Test-Path -LiteralPath (Join-Path $Stage $_) -PathType Leaf })
+        New-Item -ItemType Directory -Force -Path $Dir | Out-Null
+        Remove-Leftover $Dir $updaterLeftovers
+        Remove-Leftover $Dir $stagedFiles
+        Remove-Leftover $Dir $replacedFiles
+
+        # Every file is copied in beside its final name first, so a folder
+        # that can't be written fails before the running Compa is stopped.
+        try {
+            foreach ($name in $names) { Copy-File (Join-Path $Stage $name) (Join-Path $Dir ".$name.install-new") }
+        } catch {
+            Remove-Leftover $Dir $stagedFiles
+            throw "$($_.Exception.Message) Nothing was changed."
+        }
+
+        Stop-Compa $Dir
+        # Renaming works even on a program that is still running. If one
+        # fails, the files already replaced are put back.
+        $replaced = New-Object System.Collections.Generic.List[string]
+        try {
+            foreach ($name in $names) {
+                $target = Join-Path $Dir $name
+                if (Test-Path -LiteralPath $target) { [IO.File]::Move($target, (Join-Path $Dir ".$name.install-old")) }
+                $replaced.Add($name)
+                [IO.File]::Move((Join-Path $Dir ".$name.install-new"), $target)
+            }
+        } catch {
+            $failure = $_.Exception.Message
+            foreach ($name in $replaced) {
+                $target = Join-Path $Dir $name
+                $old = Join-Path $Dir ".$name.install-old"
+                if (Test-Path -LiteralPath $old) {
+                    Remove-Item -LiteralPath $target -Force -ErrorAction SilentlyContinue
+                    try { [IO.File]::Move($old, $target) } catch { }
+                } elseif (-not (Test-Path -LiteralPath (Join-Path $Dir ".$name.install-new"))) {
+                    # New in this install.
+                    Remove-Item -LiteralPath $target -Force -ErrorAction SilentlyContinue
+                }
+            }
+            Remove-Leftover $Dir $stagedFiles
+            throw "Could not replace the programs in ${Dir}: $failure The previous version was kept; close Compa and run the installer again."
+        }
+        # One still in use is removed by the next install.
+        Remove-Leftover $Dir $replacedFiles
     }
 
     function Test-SameDir([string]$Entry, [string]$Dir) {
@@ -218,16 +290,12 @@ param(
     }
 
     function New-Shortcut([string]$LinkPath, [string]$Dir) {
-        # compa.exe is a console program that lives in the tray, so the
-        # shortcut starts it hidden instead of leaving a console window open.
-        $exe = (Join-Path $Dir 'compa.exe').Replace("'", "''")
-        $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        # compa.exe is a GUI program that lives in the tray, so the shortcut
+        # starts it directly; no console window opens.
         $shell = New-Object -ComObject WScript.Shell
         $link = $shell.CreateShortcut($LinkPath)
-        $link.TargetPath = $powershell
-        $link.Arguments = "-NoProfile -NonInteractive -WindowStyle Hidden -Command ""Start-Process -FilePath '$exe' -WindowStyle Hidden"""
+        $link.TargetPath = Join-Path $Dir 'compa.exe'
         $link.WorkingDirectory = $Dir
-        $link.WindowStyle = 7
         $link.Description = 'Compa'
         $icon = Join-Path $Dir 'compa.ico'
         if (Test-Path -LiteralPath $icon) { $link.IconLocation = "$icon,0" }
@@ -247,17 +315,66 @@ param(
         }
     }
 
-    function Install-Compa([string]$Dir) {
-        $tag = Resolve-Tag
+    function Test-CanStart {
+        # Someone at this desktop finishes setting up in the browser Compa
+        # opens; nobody does under CI, in a remote session or a script whose
+        # output is redirected.
+        if ((Test-Flag $env:CI) -or $env:SSH_CONNECTION -or -not [Environment]::UserInteractive) { return $false }
+        try { return -not [Console]::IsOutputRedirected } catch { return $true }
+    }
+
+    function Get-LauncherPort {
+        # The Service Port setting, kept in launcher-config.json beside config.json.
+        try {
+            $config = $env:COMPA_CONFIG
+            if (-not $config) { $config = Join-Path (Get-DataDir) 'config.json' }
+            $settings = Join-Path (Split-Path -Parent $config) 'launcher-config.json'
+            $port = [int](Get-Content -LiteralPath $settings -Raw | ConvertFrom-Json).port
+            if ($port -ge 1 -and $port -le 65535) { return $port }
+        } catch { }
+        return $defaultPort
+    }
+
+    # Get-NewLine FILE SIZE: the last lines FILE gained after it was SIZE bytes.
+    function Get-NewLine([string]$File, [long]$Size) {
+        if (-not (Test-Path -LiteralPath $File -PathType Leaf)) { return @() }
+        $stream = [IO.File]::Open($File, 'Open', 'Read', 'ReadWrite')
+        try {
+            if ($stream.Length -le $Size) { return @() }
+            [void]$stream.Seek($Size, 'Begin')
+            $text = (New-Object IO.StreamReader $stream).ReadToEnd()
+        } finally { $stream.Dispose() }
+        return @($text -split "`r?`n" | Where-Object { $_ } | Select-Object -Last 8)
+    }
+
+    function Start-Compa([string]$Dir) {
+        $exe = Join-Path $Dir 'compa.exe'
+        $log = Join-Path (Join-Path (Get-DataDir) 'logs') 'launcher.log'
+        # launcher.log keeps earlier runs, so only what this start adds is shown.
+        $logSize = 0
+        if (Test-Path -LiteralPath $log -PathType Leaf) { $logSize = (Get-Item -LiteralPath $log).Length }
+        $process = Start-Process -FilePath $exe -WorkingDirectory $Dir -WindowStyle Hidden -PassThru
+        Start-Sleep -Seconds 2
+        if (-not $process.HasExited) {
+            Write-Host 'Compa is running and opens your browser to finish setting up.'
+            Write-Host "If it doesn't, open http://localhost:$(Get-LauncherPort)"
+            return
+        }
+        Write-Host "Compa stopped right after starting. The end of $log says:" -ForegroundColor Yellow
+        foreach ($line in Get-NewLine $log $logSize) { Write-Host "    $line" }
+        Write-Host "Start it again from the Start Menu, or with: & '$exe'"
+    }
+
+    function Install-Compa([string]$Dir, [string]$RequestedVersion) {
+        if ((Test-Elevated) -and -not (Test-Flag $env:COMPA_ALLOW_ROOT)) {
+            throw 'Run the installer as yourself, not from a PowerShell running as administrator: Compa would run elevated. To do that anyway, set COMPA_ALLOW_ROOT=1.'
+        }
+        $base = Get-ReleaseBase
+        $tag = Resolve-Tag $RequestedVersion
         $arch = Get-Arch
         $archive = "compa_$($tag.Substring(1))_windows_$arch.zip"
-        $base = 'https://github.com/' + $repo + '/releases/download'
-        if ($env:COMPA_RELEASE_BASE_URL) { $base = $env:COMPA_RELEASE_BASE_URL.TrimEnd('/') }
 
         Write-Host "Installing Compa $tag (windows/$arch) into $Dir"
-        # TLS 1.2 is off by default in older Windows PowerShell; GitHub requires it.
-        [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-
         $tmp = Join-Path ([IO.Path]::GetTempPath()) ('compa-install-' + [guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Path $tmp | Out-Null
         try {
@@ -274,14 +391,7 @@ param(
             foreach ($name in $programs) {
                 if (-not (Test-Path -LiteralPath (Join-Path $stage $name) -PathType Leaf)) { throw "$archive does not contain $name." }
             }
-
-            Stop-Compa $Dir
-            New-Item -ItemType Directory -Force -Path $Dir | Out-Null
-            Remove-UpdateLeftovers $Dir
-            foreach ($name in $installedFiles) {
-                $from = Join-Path $stage $name
-                if (Test-Path -LiteralPath $from -PathType Leaf) { Copy-File $from (Join-Path $Dir $name) }
-            }
+            Install-File $stage $Dir
         } finally {
             Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
         }
@@ -308,11 +418,17 @@ param(
 
         Write-Host ''
         Write-Host "Compa $tag is installed." -ForegroundColor Green
+        $exe = Join-Path $Dir 'compa.exe'
         if ($skipStart) {
-            Write-Host "Start it with: & '$(Join-Path $Dir 'compa.exe')'"
+            Write-Host "Start it with: & '$exe'"
+        } elseif (Test-CanStart) {
+            Start-Compa $Dir
         } else {
-            Start-Process -FilePath (Join-Path $Dir 'compa.exe') -WorkingDirectory $Dir -WindowStyle Hidden
-            Write-Host 'Compa is starting and opens your browser at http://127.0.0.1:18800 to finish setting up.'
+            Write-Host 'Compa was not started: this looks like CI, a script or a remote session.'
+            Write-Host "  On this computer's desktop, start Compa from the Start Menu or run: & '$exe'"
+            Write-Host '  Without a desktop, set the password, then run Compa in the terminal:'
+            Write-Host "    & '$exe' -password 'your-password'"
+            Write-Host "    & '$exe' -console -no-browser"
         }
         Write-Host "Your settings and data live in $(Get-DataDir)."
     }
@@ -321,7 +437,9 @@ param(
         Write-Host "Removing Compa from $Dir"
         if (Test-Path -LiteralPath $Dir -PathType Container) {
             Stop-Compa $Dir
-            Remove-UpdateLeftovers $Dir
+            Remove-Leftover $Dir $updaterLeftovers
+            Remove-Leftover $Dir $stagedFiles
+            Remove-Leftover $Dir $replacedFiles
             foreach ($name in $installedFiles) {
                 $file = Join-Path $Dir $name
                 if (Test-Path -LiteralPath $file) {
@@ -365,14 +483,31 @@ param(
     $skipStart = [bool]$NoStart -or (Test-Flag $env:COMPA_NO_START)
     $removing = [bool]$Uninstall -or (Test-Flag $env:COMPA_UNINSTALL)
 
+    $savedProtocol = [Net.ServicePointManager]::SecurityProtocol
     try {
-        $dir = Get-InstallDir
-        if ($removing) { Uninstall-Compa $dir } else { Install-Compa $dir }
+        if ($PSVersionTable.PSEdition -eq 'Core' -and -not $IsWindows) { throw 'This installer is for Windows; on macOS and Linux use install.sh.' }
+        # Windows PowerShell on an older .NET offers only SSL 3 and TLS 1.0,
+        # and GitHub needs TLS 1.2. SystemDefault (0) already lets Windows
+        # choose, TLS 1.3 included, so it is left alone.
+        if ([int]$savedProtocol -ne 0 -and -not ($savedProtocol -band [Net.SecurityProtocolType]::Tls12)) {
+            [Net.ServicePointManager]::SecurityProtocol = $savedProtocol -bor [Net.SecurityProtocolType]::Tls12
+        }
+        $dir = Get-InstallDir $InstallDir
+        if ($removing) { Uninstall-Compa $dir } else { Install-Compa $dir $Version }
     } catch {
+        $message = "Compa installer failed: $($_.Exception.Message)"
         Write-Host ''
-        Write-Host "Compa installer failed: $($_.Exception.Message)" -ForegroundColor Red
-        # A script file fails its caller; piped into iex, stop without closing
-        # the window.
-        if ($PSCommandPath) { exit 1 }
+        if ($PSCommandPath) {
+            # A script file fails its caller with exit code 1.
+            Write-Host $message -ForegroundColor Red
+            exit 1
+        }
+        # Piped into iex, a terminating error stops a calling script too, but
+        # leaves the window open.
+        $PSCmdlet.ThrowTerminatingError((New-Object Management.Automation.ErrorRecord (
+                    (New-Object Exception $message), 'CompaInstallFailed',
+                    [Management.Automation.ErrorCategory]::NotSpecified, $null)))
+    } finally {
+        [Net.ServicePointManager]::SecurityProtocol = $savedProtocol
     }
-}
+} @args

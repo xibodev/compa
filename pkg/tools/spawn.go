@@ -2,14 +2,14 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 )
 
 type SpawnTool struct {
 	spawner        SubTurnSpawner
-	maxTokens      int
-	temperature    float64
+	manager        *SubagentManager
 	allowlistCheck func(targetAgentID string) bool
 }
 
@@ -17,13 +17,7 @@ type SpawnTool struct {
 var _ AsyncExecutor = (*SpawnTool)(nil)
 
 func NewSpawnTool(manager *SubagentManager) *SpawnTool {
-	if manager == nil {
-		return &SpawnTool{}
-	}
-	return &SpawnTool{
-		maxTokens:   manager.maxTokens,
-		temperature: manager.temperature,
-	}
+	return &SpawnTool{manager: manager}
 }
 
 // SetSpawner sets the SubTurnSpawner for direct sub-turn execution.
@@ -125,19 +119,37 @@ Task: %s`,
 
 	// Use spawner if available (direct SpawnSubTurn call)
 	if t.spawner != nil {
+		// spawn_status reports the task, scoped to the chat that started it.
+		taskID := ""
+		if t.manager != nil {
+			taskID = t.manager.startTask(task, label, targetAgentID, ToolChannel(ctx), ToolChatID(ctx))
+		}
+
 		// Launch async sub-turn in goroutine
 		go func() {
 			result, err := t.spawner.SpawnSubTurn(ctx, SubTurnConfig{
-				Tools:         nil, // Will inherit from parent via context
 				SystemPrompt:  systemPrompt,
-				MaxTokens:     t.maxTokens,
-				Temperature:   t.temperature,
 				Async:         true, // Async execution
 				Critical:      true, // Background spawn should survive parent turn completion
 				TargetAgentID: targetAgentID,
 			})
 			if err != nil {
 				result = ErrorResult(fmt.Sprintf("Spawn failed: %v", err)).WithError(err)
+			}
+
+			if taskID != "" {
+				status := "completed"
+				switch {
+				case errors.Is(err, context.Canceled):
+					status = "canceled"
+				case err != nil || result == nil || result.IsError:
+					status = "failed"
+				}
+				summary := ""
+				if result != nil {
+					summary = result.ForLLM
+				}
+				t.manager.finishTask(taskID, status, summary)
 			}
 
 			// Call callback if provided
@@ -147,10 +159,14 @@ Task: %s`,
 		}()
 
 		// Return immediate acknowledgment
-		if label != "" {
-			return AsyncResult(fmt.Sprintf("Spawned subagent '%s' for task: %s", label, task))
+		ref := ""
+		if taskID != "" {
+			ref = fmt.Sprintf(" (task %s)", taskID)
 		}
-		return AsyncResult(fmt.Sprintf("Spawned subagent for task: %s", task))
+		if label != "" {
+			return AsyncResult(fmt.Sprintf("Spawned subagent '%s'%s for task: %s", label, ref, task))
+		}
+		return AsyncResult(fmt.Sprintf("Spawned subagent%s for task: %s", ref, task))
 	}
 
 	// Fallback: spawner not configured

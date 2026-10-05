@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"strings"
-	"sync"
 
 	"golang.org/x/crypto/bcrypt"
 )
 
 const passwordBcryptCost = 12
+
+// errPasswordAlreadySet stops InitializePassword's update without saving.
+var errPasswordAlreadySet = errors.New("dashboard password already set")
 
 // PasswordStore keeps the dashboard bcrypt hash in launcher-config.json.
 // It is used on platforms where the SQLite-backed dashboard auth store is not
@@ -17,7 +19,6 @@ const passwordBcryptCost = 12
 type PasswordStore struct {
 	path     string
 	fallback Config
-	mu       sync.Mutex
 }
 
 // NewPasswordStore returns a config-backed password store.
@@ -33,7 +34,7 @@ func (s *PasswordStore) IsInitialized(ctx context.Context) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
-	cfg, err := s.load()
+	cfg, err := Read(s.path, s.fallback)
 	if err != nil {
 		return false, err
 	}
@@ -45,23 +46,39 @@ func (s *PasswordStore) SetPassword(ctx context.Context, plain string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if len([]rune(plain)) == 0 {
-		return errors.New("password must not be empty")
-	}
-	hash, err := bcrypt.GenerateFromPassword([]byte(plain), passwordBcryptCost)
+	hash, err := hashPassword(plain)
 	if err != nil {
 		return err
 	}
+	_, err = Update(s.path, s.fallback, func(cfg *Config) error {
+		cfg.DashboardPasswordHash = hash
+		return nil
+	})
+	return err
+}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	cfg, err := Load(s.path, s.fallback)
-	if err != nil {
-		return err
+// InitializePassword stores plain as the first password. It reports false,
+// changing nothing, when a password is stored already, so of two first-run
+// setups racing each other exactly one succeeds.
+func (s *PasswordStore) InitializePassword(ctx context.Context, plain string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
 	}
-	cfg.DashboardPasswordHash = string(hash)
-	return Save(s.path, cfg)
+	hash, err := hashPassword(plain)
+	if err != nil {
+		return false, err
+	}
+	_, err = Update(s.path, s.fallback, func(cfg *Config) error {
+		if strings.TrimSpace(cfg.DashboardPasswordHash) != "" {
+			return errPasswordAlreadySet
+		}
+		cfg.DashboardPasswordHash = hash
+		return nil
+	})
+	if errors.Is(err, errPasswordAlreadySet) {
+		return false, nil
+	}
+	return err == nil, err
 }
 
 // VerifyPassword returns true iff plain matches the stored bcrypt hash.
@@ -69,7 +86,7 @@ func (s *PasswordStore) VerifyPassword(ctx context.Context, plain string) (bool,
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
-	cfg, err := s.load()
+	cfg, err := Read(s.path, s.fallback)
 	if err != nil {
 		return false, err
 	}
@@ -84,8 +101,13 @@ func (s *PasswordStore) VerifyPassword(ctx context.Context, plain string) (bool,
 	return err == nil, err
 }
 
-func (s *PasswordStore) load() (Config, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return Load(s.path, s.fallback)
+func hashPassword(plain string) (string, error) {
+	if len([]rune(plain)) == 0 {
+		return "", errors.New("password must not be empty")
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(plain), passwordBcryptCost)
+	if err != nil {
+		return "", err
+	}
+	return string(hash), nil
 }

@@ -2,16 +2,25 @@ package integrationtools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"hash/fnv"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/xibodev/compa/pkg/approval"
+	"github.com/xibodev/compa/pkg/config"
 	runtimeevents "github.com/xibodev/compa/pkg/events"
+	mcpclient "github.com/xibodev/compa/pkg/mcp"
 	"github.com/xibodev/compa/pkg/media"
 	toolshared "github.com/xibodev/compa/pkg/tools/shared"
 )
@@ -67,10 +76,16 @@ func TestNewMCPTool(t *testing.T) {
 
 // TestMCPTool_Name verifies tool name with server prefix
 func TestMCPTool_Name(t *testing.T) {
+	hash := func(server, tool string) string {
+		h := fnv.New32a()
+		_, _ = h.Write([]byte(server + "\x00" + tool))
+		return fmt.Sprintf("%08x", h.Sum32())
+	}
 	tests := []struct {
 		name       string
 		serverName string
 		toolName   string
+		hashed     bool
 		expected   string
 	}{
 		{
@@ -91,6 +106,31 @@ func TestMCPTool_Name(t *testing.T) {
 			toolName:   "fetch_data",
 			expected:   "mcp_remote-api_fetch_data",
 		},
+		{
+			name:       "case is kept",
+			serverName: "GitHub",
+			toolName:   "createIssue",
+			expected:   "mcp_GitHub_createIssue",
+		},
+		{
+			name:       "sanitized server",
+			serverName: "my server",
+			toolName:   "search",
+			expected:   "mcp_my_server_search_" + hash("my server", "search"),
+		},
+		{
+			name:       "sanitized tool",
+			serverName: "docs",
+			toolName:   "search.pages",
+			expected:   "mcp_docs_search_pages_" + hash("docs", "search.pages"),
+		},
+		{
+			name:       "name another tool holds",
+			serverName: "a_b",
+			toolName:   "c",
+			hashed:     true,
+			expected:   "mcp_a_b_c_" + hash("a_b", "c"),
+		},
 	}
 
 	for _, tt := range tests {
@@ -98,12 +138,28 @@ func TestMCPTool_Name(t *testing.T) {
 			manager := &MockMCPManager{}
 			tool := &mcp.Tool{Name: tt.toolName}
 			mcpTool := NewMCPTool(manager, tt.serverName, tool)
+			if tt.hashed {
+				mcpTool.UseHashedName()
+			}
 
 			result := mcpTool.Name()
 			if result != tt.expected {
 				t.Errorf("Expected name '%s', got '%s'", tt.expected, result)
 			}
 		})
+	}
+
+	// Server and tool splits that join to the same plain name stay apart
+	// once the second is hashed, and a long name stays within 64 characters.
+	first := NewMCPTool(&MockMCPManager{}, "a", &mcp.Tool{Name: "b_c"})
+	second := NewMCPTool(&MockMCPManager{}, "a_b", &mcp.Tool{Name: "c"})
+	second.UseHashedName()
+	if first.Name() == second.Name() {
+		t.Fatalf("colliding names were not told apart: %q", first.Name())
+	}
+	long := NewMCPTool(&MockMCPManager{}, strings.Repeat("s", 40), &mcp.Tool{Name: strings.Repeat("t", 40)})
+	if got := long.Name(); len(got) > 64 || !strings.HasSuffix(got, hash(strings.Repeat("s", 40), strings.Repeat("t", 40))) {
+		t.Fatalf("long name = %q", got)
 	}
 }
 
@@ -369,6 +425,76 @@ func receiveMCPToolRuntimeEvent(t *testing.T, ch <-chan runtimeevents.Event) run
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for runtime event")
 		return runtimeevents.Event{}
+	}
+}
+
+// The progress a server reports for a call becomes progress events, at most
+// one per second per call.
+func TestMCPTool_Execute_PublishesProgress(t *testing.T) {
+	release := make(chan struct{})
+	server := mcp.NewServer(&mcp.Implementation{Name: "slow", Version: "1"}, nil)
+	mcp.AddTool(server, &mcp.Tool{Name: "build", Description: "reports progress"},
+		func(ctx context.Context, req *mcp.CallToolRequest, _ map[string]any) (*mcp.CallToolResult, any, error) {
+			for i := 1; i <= 5; i++ {
+				if err := req.Session.NotifyProgress(ctx, &mcp.ProgressNotificationParams{
+					ProgressToken: req.Params.GetProgressToken(),
+					Progress:      float64(i),
+					Total:         5,
+					Message:       fmt.Sprintf("step %d", i),
+				}); err != nil {
+					return nil, nil, err
+				}
+			}
+			select {
+			case <-release:
+			case <-time.After(10 * time.Second):
+			}
+			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: "built"}}}, nil, nil
+		})
+	ts := httptest.NewServer(mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, nil))
+	defer ts.Close()
+
+	manager := mcpclient.NewManager()
+	defer manager.Close()
+	if err := manager.ConnectServer(context.Background(), "ci",
+		config.MCPServerConfig{Enabled: true, Type: "http", URL: ts.URL}); err != nil {
+		t.Fatalf("ConnectServer() error = %v", err)
+	}
+
+	eventBus := runtimeevents.NewBus()
+	defer eventBus.Close()
+	_, eventsCh, err := eventBus.Channel().OfKind(runtimeevents.KindMCPToolCallProgress).
+		SubscribeChan(t.Context(), runtimeevents.SubscribeOptions{Name: "mcp-progress", Buffer: 16})
+	if err != nil {
+		t.Fatalf("SubscribeChan failed: %v", err)
+	}
+
+	mcpTool := NewMCPTool(manager, "ci", &mcp.Tool{Name: "build"})
+	mcpTool.SetEventPublisher(eventBus)
+	done := make(chan *ToolResult, 1)
+	go func() {
+		done <- mcpTool.Execute(toolshared.WithToolContext(context.Background(), "telegram", "chat-1"), nil)
+	}()
+
+	progress := receiveMCPToolRuntimeEvent(t, eventsCh)
+	close(release)
+	payload, ok := progress.Payload.(MCPToolCallProgressPayload)
+	if !ok {
+		t.Fatalf("progress payload = %T, want MCPToolCallProgressPayload", progress.Payload)
+	}
+	if payload != (MCPToolCallProgressPayload{Server: "ci", Tool: "build", Progress: 1, Total: 5, Message: "step 1"}) {
+		t.Fatalf("progress payload = %+v", payload)
+	}
+	if progress.Scope.ChatID != "chat-1" || progress.Attrs["message"] != "step 1" {
+		t.Fatalf("progress event = %+v", progress)
+	}
+	if result := <-done; result.IsError || result.ForLLM != "built" {
+		t.Fatalf("Execute result = %+v", result)
+	}
+	select {
+	case evt := <-eventsCh:
+		t.Fatalf("a second progress event within a second: %+v", evt.Payload)
+	case <-time.After(200 * time.Millisecond):
 	}
 }
 
@@ -896,5 +1022,114 @@ func TestMCPTool_Execute_WhitespaceWorkspaceDisablesArtifactPersistence(t *testi
 	}
 	if !strings.Contains(result.ForLLM, "This is a large MCP text payload") {
 		t.Fatalf("expected large text to remain inline when workspace is blank, got %q", result.ForLLM)
+	}
+}
+
+func TestMCPTool_CapsServerDescriptionAndSchema(t *testing.T) {
+	props := map[string]any{}
+	for i := range 100 {
+		props[fmt.Sprintf("arg%03d", i)] = map[string]any{
+			"type":        "object",
+			"description": strings.Repeat("d", 500),
+			"properties":  map[string]any{"nested": map[string]any{"type": "string", "enum": []any{strings.Repeat("e", 200)}}},
+		}
+	}
+	tool := NewMCPTool(&MockMCPManager{}, "srv", &mcp.Tool{
+		Name:        "big",
+		Description: strings.Repeat("界", 5000),
+		InputSchema: map[string]any{"type": "object", "properties": props, "required": []any{"arg000"}},
+	})
+
+	desc := tool.Description()
+	if got := utf8.RuneCountInString(desc); got > maxMCPDescriptionRunes+20 {
+		t.Fatalf("description has %d characters, want at most about %d", got, maxMCPDescriptionRunes)
+	}
+	if !strings.HasSuffix(desc, "…") || !utf8.ValidString(desc) {
+		t.Fatalf("description should be cut on a character boundary with an ellipsis")
+	}
+
+	params := tool.Parameters()
+	encoded, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("json.Marshal() error: %v", err)
+	}
+	if len(encoded) > maxMCPSchemaBytes {
+		t.Fatalf("schema is %d bytes, want at most %d", len(encoded), maxMCPSchemaBytes)
+	}
+	shallow, _ := params["properties"].(map[string]any)
+	arg, _ := shallow["arg000"].(map[string]any)
+	if len(shallow) != 100 || arg["type"] != "object" || arg["properties"] != nil {
+		t.Fatalf("expected top-level arguments without nested definitions, got %v", arg)
+	}
+	if required, _ := params["required"].([]any); len(required) != 1 || required[0] != "arg000" {
+		t.Fatalf("required list lost: %v", params["required"])
+	}
+
+	small := NewMCPTool(&MockMCPManager{}, "srv", &mcp.Tool{
+		Name:        "small",
+		InputSchema: map[string]any{"type": "object", "properties": map[string]any{"q": map[string]any{"type": "string", "enum": []any{"a"}}}},
+	})
+	q, _ := small.Parameters()["properties"].(map[string]any)["q"].(map[string]any)
+	if q["enum"] == nil {
+		t.Fatal("a schema within the cap must be passed through unchanged")
+	}
+}
+
+func TestMCPToolApprovalInfo(t *testing.T) {
+	no := false
+	annotations := &mcp.ToolAnnotations{ReadOnlyHint: true, OpenWorldHint: &no}
+	tool := NewMCPTool(&MockMCPManager{}, "GitHub Server", &mcp.Tool{
+		Name:        "list_issues",
+		Annotations: annotations,
+		Meta:        mcp.Meta{"vendor/x": "y"},
+	})
+
+	// Not trusted: the declarations are kept for the approvers but are no
+	// hints; the MCP defaults are.
+	info := tool.ApprovalInfo()
+	if info.Source != "mcp:GitHub Server" || info.Name != "list_issues" || info.Trusted ||
+		info.Annotations != annotations || info.Meta["vendor/x"] != "y" {
+		t.Fatalf("untrusted ApprovalInfo() = %+v", info)
+	}
+	if want := []string{approval.HintDestructive, approval.HintOpenWorld}; !slices.Equal(info.Hints, want) {
+		t.Fatalf("untrusted hints = %v, want %v", info.Hints, want)
+	}
+
+	tool.SetTrusted(true)
+	info = tool.ApprovalInfo()
+	if want := []string{approval.HintReadOnly}; !info.Trusted || !slices.Equal(info.Hints, want) {
+		t.Fatalf("trusted ApprovalInfo() = %+v, want hints %v", info, want)
+	}
+
+	// The trust decides which rule matches.
+	policy := approval.Policy{Rules: []approval.Rule{
+		{Source: "mcp:GitHub*", Hints: []string{approval.HintReadOnly}, Action: approval.Allow},
+		{Source: "mcp:*", Action: approval.Ask},
+	}}
+	for _, tt := range []struct {
+		trusted bool
+		want    approval.Action
+		index   int
+	}{
+		{true, approval.Allow, 0},
+		{false, approval.Ask, 1},
+	} {
+		tool.SetTrusted(tt.trusted)
+		policyTool, _ := approval.Describe(tool.Name(), tool)
+		if d := policy.Decide(policyTool, approval.OriginChat); d.Action != tt.want || d.Index != tt.index {
+			t.Fatalf("trusted=%v: decision = %+v, want %s by rule %d", tt.trusted, d, tt.want, tt.index)
+		}
+	}
+}
+
+func TestMCPToolApprovalInfoWithoutAnnotations(t *testing.T) {
+	tool := NewMCPTool(&MockMCPManager{}, "srv", &mcp.Tool{Name: "do"})
+	tool.SetTrusted(true)
+	info := tool.ApprovalInfo()
+	if info.Annotations != nil {
+		t.Fatalf("Annotations = %v, want none declared", info.Annotations)
+	}
+	if want := []string{approval.HintDestructive, approval.HintOpenWorld}; !slices.Equal(info.Hints, want) {
+		t.Fatalf("hints = %v, want the MCP defaults %v", info.Hints, want)
 	}
 }

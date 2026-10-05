@@ -22,6 +22,7 @@ import (
 	"github.com/xibodev/compa/cmd/compa-kernel/internal/cliui"
 	configcmd "github.com/xibodev/compa/cmd/compa-kernel/internal/config"
 	"github.com/xibodev/compa/cmd/compa-kernel/internal/cron"
+	evolutioncmd "github.com/xibodev/compa/cmd/compa-kernel/internal/evolution"
 	"github.com/xibodev/compa/cmd/compa-kernel/internal/gateway"
 	"github.com/xibodev/compa/cmd/compa-kernel/internal/mcp"
 	"github.com/xibodev/compa/cmd/compa-kernel/internal/model"
@@ -37,7 +38,6 @@ var rootNoColor bool
 
 // initTermuxSSL detects Termux environment and sets SSL_CERT_FILE if not already set.
 // This fixes X509 certificate errors when running Compa inside Termux or termux-chroot.
-// See: https://github.com/xibodev/compa/issues/2944
 func initTermuxSSL() {
 	// Only applicable on Linux/Android
 	if runtime.GOOS != "linux" && runtime.GOOS != "android" {
@@ -138,6 +138,7 @@ compa-kernel gateway`,
 		gateway.NewGatewayCommand(),
 		status.NewStatusCommand(),
 		cron.NewCronCommand(),
+		evolutioncmd.NewEvolutionCommand(),
 		mcp.NewMCPCommand(),
 		skills.NewSkillsCommand(),
 		model.NewModelCommand(),
@@ -189,16 +190,14 @@ func main() {
 
 	fmt.Print(startupBanner(term.IsTerminal(int(os.Stdout.Fd())), earlyColorDisabled()))
 
-	tzEnv := os.Getenv("TZ")
-	if tzEnv != "" {
-		fmt.Println("TZ environment:", tzEnv)
-		zoneinfoEnv := os.Getenv("ZONEINFO")
-		fmt.Println("ZONEINFO environment:", zoneinfoEnv)
+	// TZ selects the local time zone. Nothing is printed on success, so
+	// commands whose stdout is parsed stay clean; a bad value is reported on
+	// stderr and the system zone stays in use.
+	if tzEnv := os.Getenv("TZ"); tzEnv != "" {
 		loc, err := time.LoadLocation(tzEnv)
 		if err != nil {
-			fmt.Println("Error loading time zone:", err)
+			fmt.Fprintf(os.Stderr, "Ignoring TZ=%q: %v\n", tzEnv, err)
 		} else {
-			fmt.Println("Time zone loaded successfully:", loc)
 			time.Local = loc //nolint:gosmopolitan // We intentionally set local timezone from TZ env
 		}
 	}

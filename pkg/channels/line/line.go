@@ -176,7 +176,11 @@ func (c *LINEChannel) webhookHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// fetchContent downloads a message's media; tests replace it.
+var fetchContent = (*LINEChannel).downloadContent
+
 func (c *LINEChannel) processEvent(event webhook.EventInterface) {
+	defer channels.RecoverPanic(c.Name(), "event")
 	msgEvent, ok := event.(webhook.MessageEvent)
 	if !ok {
 		logger.DebugCF("line", "Ignoring non-message event", map[string]any{
@@ -184,9 +188,41 @@ func (c *LINEChannel) processEvent(event webhook.EventInterface) {
 		})
 		return
 	}
+	if msgEvent.Message == nil {
+		return
+	}
 
 	senderID, chatID, sourceType := c.resolveSource(msgEvent.Source)
 	isGroup := sourceType == "group" || sourceType == "room"
+	chatType := "direct"
+	if isGroup {
+		chatType = "group"
+	}
+	sender := bus.SenderInfo{
+		Platform:    "line",
+		PlatformID:  senderID,
+		CanonicalID: identity.BuildCanonicalID("line", senderID),
+	}
+	inboundCtx := bus.InboundContext{
+		Channel:  c.Name(),
+		ChatID:   chatID,
+		ChatType: chatType,
+		SenderID: senderID,
+		Raw: map[string]string{
+			"platform":    "line",
+			"source_type": sourceType,
+		},
+	}
+
+	// Decide on the message before keeping its reply token or fetching its
+	// content. A direct message from an unpaired sender still goes to the
+	// access policy, without its content, so that the sender is recorded.
+	if !c.Admits(chatType, sender, chatID) {
+		if !isGroup {
+			c.HandleInboundContext(c.ctx, chatID, "["+msgEvent.Message.GetType()+"]", nil, inboundCtx, sender)
+		}
+		return
+	}
 
 	// Store reply token for later use
 	if msgEvent.ReplyToken != "" {
@@ -201,20 +237,8 @@ func (c *LINEChannel) processEvent(event webhook.EventInterface) {
 	var messageID string
 	var quoteToken string
 	var isMentioned bool
-
-	// Helper to register a local file with the media store
-	storeMedia := func(localPath, filename, scope string) string {
-		if store := c.GetMediaStore(); store != nil {
-			ref, err := store.Store(localPath, media.MediaMeta{
-				Filename: filename,
-				Source:   "line",
-			}, scope)
-			if err == nil {
-				return ref
-			}
-		}
-		return localPath // fallback
-	}
+	// The media to download once the group trigger has passed the message.
+	var downloadName string
 
 	switch msg := msgEvent.Message.(type) {
 	case webhook.TextMessageContent:
@@ -236,29 +260,17 @@ func (c *LINEChannel) processEvent(event webhook.EventInterface) {
 			quoteToken = msg.QuoteToken
 			c.quoteTokens.Store(chatID, msg.QuoteToken)
 		}
-		if localPath := c.downloadContent(msg.Id, "image.jpg"); localPath != "" {
-			scope := channels.BuildMediaScope("line", chatID, msg.Id)
-			mediaPaths = append(mediaPaths, storeMedia(localPath, "image.jpg", scope))
-			content = "[image]"
-		}
+		content, downloadName = "[image]", "image.jpg"
 	case webhook.AudioMessageContent:
 		messageID = msg.Id
-		if localPath := c.downloadContent(msg.Id, "audio.m4a"); localPath != "" {
-			scope := channels.BuildMediaScope("line", chatID, msg.Id)
-			mediaPaths = append(mediaPaths, storeMedia(localPath, "audio.m4a", scope))
-			content = "[audio]"
-		}
+		content, downloadName = "[audio]", "audio.m4a"
 	case webhook.VideoMessageContent:
 		messageID = msg.Id
 		if msg.QuoteToken != "" {
 			quoteToken = msg.QuoteToken
 			c.quoteTokens.Store(chatID, msg.QuoteToken)
 		}
-		if localPath := c.downloadContent(msg.Id, "video.mp4"); localPath != "" {
-			scope := channels.BuildMediaScope("line", chatID, msg.Id)
-			mediaPaths = append(mediaPaths, storeMedia(localPath, "video.mp4", scope))
-			content = "[video]"
-		}
+		content, downloadName = "[video]", "video.mp4"
 	case webhook.FileMessageContent:
 		messageID = msg.Id
 		content = "[file]"
@@ -298,9 +310,22 @@ func (c *LINEChannel) processEvent(event webhook.EventInterface) {
 		content = cleaned
 	}
 
-	metadata := map[string]string{
-		"platform":    "line",
-		"source_type": sourceType,
+	if downloadName != "" {
+		localPath := fetchContent(c, messageID, downloadName)
+		if localPath == "" {
+			return
+		}
+		ref := localPath
+		if store := c.GetMediaStore(); store != nil {
+			scope := channels.BuildMediaScope("line", chatID, messageID)
+			if stored, err := store.Store(localPath, media.MediaMeta{
+				Filename: downloadName,
+				Source:   "line",
+			}, scope); err == nil {
+				ref = stored
+			}
+		}
+		mediaPaths = append(mediaPaths, ref)
 	}
 
 	logger.DebugCF("line", "Received message", map[string]any{
@@ -311,25 +336,8 @@ func (c *LINEChannel) processEvent(event webhook.EventInterface) {
 		"preview":      utils.Truncate(content, 50),
 	})
 
-	sender := bus.SenderInfo{
-		Platform:    "line",
-		PlatformID:  senderID,
-		CanonicalID: identity.BuildCanonicalID("line", senderID),
-	}
-
-	if !c.IsAllowedSender(sender) {
-		return
-	}
-
-	inboundCtx := bus.InboundContext{
-		Channel:   c.Name(),
-		ChatID:    chatID,
-		ChatType:  map[bool]string{true: "group", false: "direct"}[isGroup],
-		SenderID:  senderID,
-		MessageID: messageID,
-		Mentioned: isMentioned,
-		Raw:       metadata,
-	}
+	inboundCtx.MessageID = messageID
+	inboundCtx.Mentioned = isMentioned
 	if msgEvent.ReplyToken != "" {
 		inboundCtx.ReplyHandles = map[string]string{
 			"reply_token": msgEvent.ReplyToken,
@@ -621,7 +629,9 @@ func (c *LINEChannel) downloadContent(messageID, filename string) string {
 	})
 }
 
-// VoiceCapabilities returns the voice capabilities of the channel.
+// VoiceCapabilities returns the voice capabilities of the channel. Speech
+// replies are not offered: SendMedia can only send a caption, because LINE
+// needs media at a public URL.
 func (c *LINEChannel) VoiceCapabilities() channels.VoiceCapabilities {
-	return channels.VoiceCapabilities{ASR: true, TTS: true}
+	return channels.VoiceCapabilities{ASR: true}
 }

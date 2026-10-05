@@ -13,7 +13,6 @@ import (
 
 	"github.com/xibodev/compa/pkg/bus"
 	"github.com/xibodev/compa/pkg/config"
-	"github.com/xibodev/compa/pkg/identity"
 	"github.com/xibodev/compa/pkg/logger"
 	"github.com/xibodev/compa/pkg/media"
 )
@@ -103,6 +102,10 @@ type BaseChannel struct {
 	owner               Channel // the concrete channel that embeds this BaseChannel
 	reasoningChannelID  string
 	authenticatedAccess bool
+	policy              atomic.Pointer[accessPolicy] // see SetAccessPolicy
+	pairingThrottle     pairingThrottle
+	senderLimits        senderLimits
+	queuedInbound       atomic.Int64 // messages being handed to the bus
 }
 
 func NewBaseChannel(
@@ -131,27 +134,33 @@ func NewBaseChannel(
 	for _, opt := range opts {
 		opt(bc)
 	}
-
-	// Security Audit: Check for open-by-default (unsecured) channels.
-	// Compa aims to be secure-by-default. If allow_from is empty, the bot
-	// currently defaults to accepting messages from ANYONE. To explicitly
-	// acknowledge and permit this (e.g. for a public bot), use ["*"]. A
-	// channel only authenticated users reach is not open to anyone.
-	if bc.OpenToEveryone() {
-		logger.WarnCF("channels", "SECURITY: Channel allows EVERYONE (allow_from is empty)", map[string]any{
-			"channel": bc.name,
-			"hint":    "Set allow_from to your ID, or use '*' to explicitly acknowledge open access.",
-		})
-	}
-
 	return bc
 }
 
 // OpenToEveryone reports whether anyone who reaches the channel may talk to
-// the agent without having acknowledged it: its allow_from is empty and
-// nothing authenticates who reaches it (see WithAuthenticatedAccess).
+// the agent without having acknowledged it with "*" in allow_from: a policy
+// admits everyone, and nothing authenticates who reaches the channel (see
+// WithAuthenticatedAccess).
 func (c *BaseChannel) OpenToEveryone() bool {
-	return len(c.allowList) == 0 && !c.authenticatedAccess
+	if c.authenticatedAccess || c.allowsEveryone() {
+		return false
+	}
+	dm, group := c.policies()
+	return dm == config.DMPolicyOpen || group == config.GroupPolicyOpen
+}
+
+// warnIfOpenToEveryone logs the security warning for a channel open to
+// everyone. Compa aims to be secure by default; "*" in allow_from
+// acknowledges open access, for example for a public bot.
+func warnIfOpenToEveryone(name string, ch Channel) {
+	open, ok := ch.(interface{ OpenToEveryone() bool })
+	if !ok || !open.OpenToEveryone() {
+		return
+	}
+	logger.WarnCF("channels", "SECURITY: Channel allows EVERYONE", map[string]any{
+		"channel": name,
+		"hint":    "Set allow_from to your ID, or use '*' to explicitly acknowledge open access.",
+	})
 }
 
 // MaxMessageLength returns the maximum message length (in runes) for this channel.
@@ -218,38 +227,24 @@ func (c *BaseChannel) IsRunning() bool {
 	return c.running.Load()
 }
 
+// IsAllowed reports whether the sender with this raw ID may be admitted in
+// some chat: it matches allow_from, or a policy admits (or, for pairing,
+// records) senders it does not list. HandleMessageWithContext makes the
+// final decision for each message.
 func (c *BaseChannel) IsAllowed(senderID string) bool {
-	if len(c.allowList) == 0 {
-		return true
-	}
-
-	for _, allowed := range c.allowList {
-		// An "@username" entry also matches a sender ID equal to the username.
-		if allowed == "*" || senderID == allowed || senderID == strings.TrimPrefix(allowed, "@") {
-			return true
-		}
-	}
-
-	return false
+	return c.mayAdmit(c.senderListed(bus.SenderInfo{}, senderID))
 }
 
-// IsAllowedSender checks whether a structured SenderInfo is permitted by the allow-list.
-// It delegates to identity.MatchAllowed for each entry, which accepts platform IDs,
+// IsAllowedSender is IsAllowed for a structured SenderInfo. Entries are
+// matched with identity.MatchAllowed, which accepts platform IDs,
 // "@username" entries and the canonical "platform:id" format.
 func (c *BaseChannel) IsAllowedSender(sender bus.SenderInfo) bool {
-	if len(c.allowList) == 0 {
-		return true
-	}
-
-	for _, allowed := range c.allowList {
-		if allowed == "*" || identity.MatchAllowed(sender, allowed) {
-			return true
-		}
-	}
-
-	return false
+	return c.mayAdmit(c.senderListed(sender, ""))
 }
 
+// HandleMessageWithContext applies the channel's access policy to an inbound
+// message and publishes the admitted ones. Every platform's inbound messages
+// pass through it.
 func (c *BaseChannel) HandleMessageWithContext(
 	ctx context.Context,
 	deliveryChatID, content string,
@@ -257,21 +252,48 @@ func (c *BaseChannel) HandleMessageWithContext(
 	inboundCtx bus.InboundContext,
 	senderOpts ...bus.SenderInfo,
 ) error {
-	// Use SenderInfo-based allow check when available, else fall back to string
 	var sender bus.SenderInfo
 	if len(senderOpts) > 0 {
 		sender = senderOpts[0]
 	}
 	senderID := strings.TrimSpace(inboundCtx.SenderID)
-	if sender.CanonicalID != "" || sender.PlatformID != "" {
-		if !c.IsAllowedSender(sender) {
+
+	// A platform that established the sender is the owner by its own means
+	// (the owner's "message yourself" chat on WhatsApp) has decided already.
+	if !inboundCtx.SenderIsOwner {
+		chatID := inboundCtx.ChatID
+		if chatID == "" {
+			chatID = deliveryChatID
+		}
+		decision, owner := c.admission(inboundCtx.ChatType, sender, senderID, chatID)
+		switch decision {
+		case admitPair:
+			c.recordPairingRequest(sender, senderID)
+			return nil
+		case admitDrop:
 			return nil
 		}
-	} else {
-		if !c.IsAllowed(senderID) {
+		inboundCtx.SenderIsOwner = owner
+	}
+
+	if !inboundCtx.SenderIsOwner && !c.bypassesAccessPolicy() {
+		if key := pairingSenderID(sender, senderID); key != "" && !c.senderLimits.allow(key, time.Now()) {
+			logger.WarnCF("channels", "Sender exceeded the inbound rate limit, dropping message", map[string]any{
+				"channel":   c.name,
+				"sender_id": key,
+			})
 			return nil
 		}
 	}
+	if c.queuedInbound.Add(1) > maxQueuedInbound {
+		c.queuedInbound.Add(-1)
+		logger.WarnCF("channels", "Too many inbound messages waiting for the agent, dropping message", map[string]any{
+			"channel": c.name,
+			"chat_id": deliveryChatID,
+		})
+		return nil
+	}
+	defer c.queuedInbound.Add(-1)
 
 	// Set SenderID to canonical if available, otherwise keep the raw senderID
 	resolvedSenderID := senderID

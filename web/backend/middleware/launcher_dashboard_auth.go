@@ -22,17 +22,84 @@ const launcherDashboardSessionMaxAgeSec = 31 * 24 * 3600
 const (
 	launcherSessionCookieBytes = 32
 	launcherGrantNonceBytes    = 32
+	launcherSetupTokenBytes    = 32
 	// LauncherDashboardLocalAutoLoginPath is the one-shot local browser
 	// bootstrap endpoint used by the launcher-managed auto-open flow.
 	LauncherDashboardLocalAutoLoginPath = "/launcher-auto-login"
 	// LauncherDashboardSetupPath is the setup page used before the dashboard
 	// password is initialized.
 	LauncherDashboardSetupPath = "/launcher-setup"
+	// LauncherDashboardSetupTokenParam is the query parameter of the setup
+	// page that carries the one-time setup token.
+	LauncherDashboardSetupTokenParam = "token"
 )
 
 // NewLauncherDashboardSessionCookie creates the per-process session cookie value.
 func NewLauncherDashboardSessionCookie() (string, error) {
 	return randomURLToken(launcherSessionCookieBytes)
+}
+
+// NewLauncherDashboardSetupToken creates the one-time token that lets the
+// person who started Compa set the first dashboard password. Only the
+// launcher's own browser launch and console show it.
+func NewLauncherDashboardSetupToken() (string, error) {
+	return randomURLToken(launcherSetupTokenBytes)
+}
+
+// LauncherDashboardSetupURLPath returns the setup page path carrying token.
+func LauncherDashboardSetupURLPath(token string) string {
+	if token == "" {
+		return LauncherDashboardSetupPath
+	}
+	return LauncherDashboardSetupPath + "?" + LauncherDashboardSetupTokenParam + "=" + url.QueryEscape(token)
+}
+
+// LauncherDashboardSession holds the session token every signed-in browser
+// carries in its cookie. Rotating it signs every browser out at once.
+type LauncherDashboardSession struct {
+	mu    sync.RWMutex
+	token string
+}
+
+// NewLauncherDashboardSession creates a session with a fresh random token.
+func NewLauncherDashboardSession() (*LauncherDashboardSession, error) {
+	token, err := NewLauncherDashboardSessionCookie()
+	if err != nil {
+		return nil, err
+	}
+	return &LauncherDashboardSession{token: token}, nil
+}
+
+// FixedLauncherDashboardSession returns a session holding token, for callers
+// that pass a fixed cookie value.
+func FixedLauncherDashboardSession(token string) *LauncherDashboardSession {
+	return &LauncherDashboardSession{token: token}
+}
+
+// Token returns the current session token.
+func (s *LauncherDashboardSession) Token() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.token
+}
+
+// Valid reports whether value is the current session token.
+func (s *LauncherDashboardSession) Valid(value string) bool {
+	token := s.Token()
+	return token != "" && subtle.ConstantTimeCompare([]byte(value), []byte(token)) == 1
+}
+
+// Rotate replaces the session token, so every cookie issued before stops
+// working, and returns the new one.
+func (s *LauncherDashboardSession) Rotate() (string, error) {
+	token, err := NewLauncherDashboardSessionCookie()
+	if err != nil {
+		return "", err
+	}
+	s.mu.Lock()
+	s.token = token
+	s.mu.Unlock()
+	return token, nil
 }
 
 func randomURLToken(n int) (string, error) {
@@ -45,6 +112,9 @@ func randomURLToken(n int) (string, error) {
 
 // LauncherDashboardAuthConfig holds runtime material for dashboard access checks.
 type LauncherDashboardAuthConfig struct {
+	// Session is the session browsers must hold. When nil, ExpectedCookie is
+	// the fixed session token.
+	Session        *LauncherDashboardSession
 	ExpectedCookie string
 	// LocalAutoLogin enables one-shot startup auto-login.
 	LocalAutoLogin *LauncherDashboardLocalAutoLogin
@@ -52,10 +122,18 @@ type LauncherDashboardAuthConfig struct {
 	SecureCookie func(*http.Request) bool
 }
 
+func (cfg LauncherDashboardAuthConfig) session() *LauncherDashboardSession {
+	if cfg.Session != nil {
+		return cfg.Session
+	}
+	return FixedLauncherDashboardSession(cfg.ExpectedCookie)
+}
+
 // LauncherDashboardLocalAutoLogin is an in-memory, one-shot startup grant.
 // It is not a reusable credential; it only lets the launcher-opened browser
 // receive the current process session cookie.
 type LauncherDashboardLocalAutoLogin struct {
+	mu    sync.Mutex
 	grant *launcherDashboardOneTimeGrant
 }
 
@@ -80,7 +158,23 @@ func NewLauncherDashboardLocalAutoLogin(ttl time.Duration) (*LauncherDashboardLo
 
 // URLPath returns the one-shot local auto-login URL path including its nonce.
 func (a *LauncherDashboardLocalAutoLogin) URLPath() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	return launcherGrantQueryPath(LauncherDashboardLocalAutoLoginPath, a.grant)
+}
+
+// Renew replaces the grant with a fresh one-shot nonce valid for ttl and
+// returns its URL path, so each browser the launcher opens gets its own link
+// and an earlier, used one never comes back.
+func (a *LauncherDashboardLocalAutoLogin) Renew(ttl time.Duration) (string, error) {
+	grant, err := newLauncherDashboardOneTimeGrant(ttl)
+	if err != nil {
+		return "", err
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.grant = grant
+	return launcherGrantQueryPath(LauncherDashboardLocalAutoLoginPath, grant), nil
 }
 
 // DefaultLauncherDashboardSecureCookie mirrors typical production HTTPS detection (TLS or X-Forwarded-Proto).
@@ -168,7 +262,7 @@ func handleLauncherLocalAutoLogin(w http.ResponseWriter, r *http.Request, cfg La
 		return
 	}
 	if cfg.LocalAutoLogin != nil && cfg.LocalAutoLogin.consume(r.URL.Query().Get("nonce")) {
-		SetLauncherDashboardSessionCookie(w, r, cfg.ExpectedCookie, cfg.SecureCookie)
+		SetLauncherDashboardSessionCookie(w, r, cfg.session().Token(), cfg.SecureCookie)
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
@@ -176,10 +270,16 @@ func handleLauncherLocalAutoLogin(w http.ResponseWriter, r *http.Request, cfg La
 }
 
 func (a *LauncherDashboardLocalAutoLogin) consume(nonce string) bool {
-	if a == nil || a.grant == nil {
+	if a == nil {
 		return false
 	}
-	return a.grant.use(nonce, nil) == nil
+	a.mu.Lock()
+	grant := a.grant
+	a.mu.Unlock()
+	if grant == nil {
+		return false
+	}
+	return grant.use(nonce, nil) == nil
 }
 
 func newLauncherDashboardOneTimeGrant(ttl time.Duration) (*launcherDashboardOneTimeGrant, error) {
@@ -301,9 +401,7 @@ func isPublicLauncherDashboardStatic(method, p string) bool {
 
 func validLauncherDashboardAuth(r *http.Request, cfg LauncherDashboardAuthConfig) bool {
 	if c, err := r.Cookie(LauncherDashboardCookieName); err == nil {
-		if subtle.ConstantTimeCompare([]byte(c.Value), []byte(cfg.ExpectedCookie)) == 1 {
-			return true
-		}
+		return cfg.session().Valid(c.Value)
 	}
 	return false
 }

@@ -11,6 +11,55 @@ import (
 	"github.com/xibodev/compa/pkg/evolution"
 )
 
+// markEvolved records that evolution created skillName, which replace and
+// merge drafts require.
+func markEvolved(t *testing.T, paths evolution.Paths, workspace, skillName string) {
+	t.Helper()
+	if err := evolution.NewStore(paths).SaveProfile(evolution.SkillProfile{
+		SkillName:   skillName,
+		WorkspaceID: workspace,
+		Status:      evolution.SkillStatusActive,
+		Origin:      "evolved",
+	}); err != nil {
+		t.Fatalf("SaveProfile: %v", err)
+	}
+}
+
+// Evolution never replaces or merges a skill it did not create (EV-06).
+func TestApplier_RefusesToReplaceOrMergeSkillsEvolutionDidNotCreate(t *testing.T) {
+	for _, kind := range []evolution.ChangeKind{evolution.ChangeKindReplace, evolution.ChangeKindMerge} {
+		t.Run(string(kind), func(t *testing.T) {
+			workspace := t.TempDir()
+			skillPath := filepath.Join(workspace, "skills", "github", "SKILL.md")
+			original := "---\nname: github\ndescription: user skill\n---\n# GitHub\nmine\n"
+			if err := os.MkdirAll(filepath.Dir(skillPath), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(skillPath, []byte(original), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			paths := evolution.NewPaths(workspace, "")
+			// A usage profile alone (origin manual) doesn't make it evolved.
+			if err := evolution.NewStore(paths).SaveProfile(evolution.SkillProfile{
+				SkillName: "github", WorkspaceID: workspace, Origin: "manual",
+			}); err != nil {
+				t.Fatal(err)
+			}
+			err := evolution.NewApplier(paths, nil).ApplyDraft(context.Background(), workspace, evolution.SkillDraft{
+				ID: "d", WorkspaceID: workspace, TargetSkillName: "github", ChangeKind: kind,
+				BodyOrPatch: "---\nname: github\ndescription: changed\n---\n# GitHub\nchanged\n",
+			})
+			if err == nil || !strings.Contains(err.Error(), "not created by evolution") {
+				t.Fatalf("err = %v, want refusal", err)
+			}
+			got, _ := os.ReadFile(skillPath)
+			if string(got) != original {
+				t.Fatalf("user skill changed:\n%s", got)
+			}
+		})
+	}
+}
+
 func TestApplier_CreateDraftWritesSkillFile(t *testing.T) {
 	workspace := t.TempDir()
 	applier := evolution.NewApplier(evolution.NewPaths(workspace, ""), func() time.Time {
@@ -667,6 +716,7 @@ func TestApplier_BackupsAreScopedByWorkspace(t *testing.T) {
 	}
 
 	for _, workspace := range []string{workspaceA, workspaceB} {
+		markEvolved(t, evolution.NewPaths(workspace, sharedState), workspace, "weather")
 		applier := evolution.NewApplier(evolution.NewPaths(workspace, sharedState), func() time.Time {
 			return now
 		})
@@ -726,6 +776,7 @@ func TestApplier_MergeDraftAddsMergedKnowledgeSection(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 
+	markEvolved(t, evolution.NewPaths(workspace, ""), workspace, "weather")
 	applier := evolution.NewApplier(evolution.NewPaths(workspace, ""), func() time.Time {
 		return time.Unix(1700000000, 0).UTC()
 	})

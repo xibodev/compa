@@ -789,3 +789,29 @@ func BenchmarkBuildMessagesWithCache(b *testing.B) {
 		})
 	}
 }
+
+// The default, cached system prompt is the agent's; the installed modules
+// catalog follows it, as the turn's own block without a cache breakpoint, so
+// the model learns of its modules in every turn, not only under a turn
+// profile.
+func TestTheDefaultPromptIncludesTheModuleCatalog(t *testing.T) {
+	cb := NewContextBuilder(t.TempDir())
+	summary := "Render (module render):\n  - render__image (image): makes images [cost unknown]"
+
+	prompt, blocks := cb.buildSystemPromptForRequest(PromptBuildRequest{ModuleSummaries: []string{summary}})
+	if !strings.Contains(prompt, "# Installed modules") || !strings.Contains(prompt, "render__image (image)") {
+		t.Fatalf("the system prompt does not list the module:\n%s", prompt)
+	}
+	if strings.Index(prompt, "# Installed modules") < len(cb.BuildSystemPromptWithCache()) {
+		t.Fatal("the module catalog is not after the cached prompt")
+	}
+	if len(blocks) != 2 || blocks[0].CacheControl == nil || blocks[1].CacheControl != nil ||
+		!strings.Contains(blocks[1].Text, "render__image") {
+		t.Fatalf("blocks = %+v, want the cached prompt and then the catalog without a cache breakpoint", blocks)
+	}
+
+	prompt, blocks = cb.buildSystemPromptForRequest(PromptBuildRequest{})
+	if strings.Contains(prompt, "# Installed modules") || len(blocks) != 1 {
+		t.Fatalf("a turn without modules got a catalog: %d blocks\n%s", len(blocks), prompt)
+	}
+}

@@ -40,8 +40,12 @@ func TestProviderInstanceConfigStableIDRoundTrip(t *testing.T) {
 	if got.ProviderKind != want.ProviderKind || got.Adapter != want.Adapter || got.Protocol != want.Protocol {
 		t.Fatalf("adapter identity changed after round trip: got %#v, want %#v", got, *want)
 	}
-	if got.AuthConnectionRef != want.AuthConnectionRef || got.Headers["X-Test"] != "fixture" {
+	if got.AuthConnectionRef != want.AuthConnectionRef || got.Headers["X-Test"] != SecretPlaceholder {
 		t.Fatalf("connection ownership changed after round trip: got %#v", got)
+	}
+	// Header values are secrets, kept in .security.yml: JSON names them only.
+	if strings.Contains(string(data), "fixture") {
+		t.Fatalf("JSON shows a header value: %s", data)
 	}
 	if err := got.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)

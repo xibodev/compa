@@ -4,7 +4,9 @@ import (
 	"crypto/md5"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log"
+	"reflect"
 
 	"github.com/xibodev/compa/pkg/config"
 )
@@ -27,7 +29,7 @@ func toChannelHashes(cfg *config.Config) map[string]string {
 		if enabled, ok := value["enabled"].(bool); !ok || !enabled {
 			continue
 		}
-		hiddenValues(key, value, ch.Get(key))
+		hiddenValues(value, ch.Get(key))
 		valueBytes, err := json.Marshal(value)
 		if err != nil {
 			log.Printf("[manager_channel] failed to marshal channel %s config: %v", key, err)
@@ -40,104 +42,48 @@ func toChannelHashes(cfg *config.Config) map[string]string {
 	return result
 }
 
-func hiddenValues(key string, value map[string]any, ch *config.Channel) {
-	v, err := ch.GetDecoded()
-	if err != nil {
+// hiddenValues adds to value the channel's secrets, which its JSON leaves
+// out, so that a change to a secret alone also changes the channel's hash
+// and a reload restarts the channel with it.
+func hiddenValues(value map[string]any, ch *config.Channel) {
+	decoded, err := ch.GetDecoded()
+	if err != nil || decoded == nil {
 		return
 	}
-	switch key {
-	case "web":
-		if settings, ok := v.(*config.WebChatSettings); ok {
-			value["token"] = settings.Token.String()
+	secrets := map[string]string{}
+	collectSecrets(reflect.ValueOf(decoded), "", secrets)
+	if len(secrets) > 0 {
+		value["secrets"] = secrets
+	}
+}
+
+// collectSecrets adds the value of every secret setting in v to out, keyed
+// by its path in v.
+func collectSecrets(v reflect.Value, path string, out map[string]string) {
+	switch v.Kind() {
+	case reflect.Pointer, reflect.Interface:
+		if !v.IsNil() {
+			collectSecrets(v.Elem(), path, out)
 		}
-	case "telegram":
-		if settings, ok := v.(*config.TelegramSettings); ok {
-			value["token"] = settings.Token.String()
+	case reflect.Struct:
+		if v.Type() == reflect.TypeFor[config.SecureString]() {
+			s := v.Interface().(config.SecureString)
+			out[path] = s.String()
+			return
 		}
-	case "discord":
-		if settings, ok := v.(*config.DiscordSettings); ok {
-			value["token"] = settings.Token.String()
-		}
-	case "slack":
-		if settings, ok := v.(*config.SlackSettings); ok {
-			value["bot_token"] = settings.BotToken.String()
-			value["app_token"] = settings.AppToken.String()
-		}
-	case "matrix":
-		if settings, ok := v.(*config.MatrixSettings); ok {
-			value["token"] = settings.AccessToken.String()
-		}
-	case "onebot":
-		if settings, ok := v.(*config.OneBotSettings); ok {
-			value["token"] = settings.AccessToken.String()
-		}
-	case "line":
-		if settings, ok := v.(*config.LINESettings); ok {
-			value["token"] = settings.ChannelAccessToken.String()
-			value["secret"] = settings.ChannelSecret.String()
-		}
-	case "wecom":
-		if settings, ok := v.(*config.WeComSettings); ok {
-			value["secret"] = settings.Secret.String()
-		}
-	case "dingtalk":
-		if settings, ok := v.(*config.DingTalkSettings); ok {
-			value["secret"] = settings.ClientSecret.String()
-		}
-	case "qq":
-		if settings, ok := v.(*config.QQSettings); ok {
-			value["secret"] = settings.AppSecret.String()
-		}
-	case "irc":
-		if settings, ok := v.(*config.IRCSettings); ok {
-			value["password"] = settings.Password.String()
-			value["serv_password"] = settings.NickServPassword.String()
-			value["sasl_password"] = settings.SASLPassword.String()
-		}
-	case "feishu":
-		if settings, ok := v.(*config.FeishuSettings); ok {
-			value["app_secret"] = settings.AppSecret.String()
-			value["encrypt_key"] = settings.EncryptKey.String()
-			value["verification_token"] = settings.VerificationToken.String()
-		}
-	case "teams_webhook":
-		// Expose webhook URLs for hash computation (they contain secrets)
-		vv := value["webhooks"]
-		webhooks := make(map[string]string)
-		if vv != nil {
-			if m, ok := vv.(map[string]string); ok {
-				webhooks = m
-			} else if m, ok := vv.(map[string]any); ok {
-				for k, w := range m {
-					if s, ok := w.(string); ok {
-						webhooks[k] = s
-					}
-				}
+		for i := range v.NumField() {
+			if field := v.Type().Field(i); field.IsExported() {
+				collectSecrets(v.Field(i), path+"."+field.Name, out)
 			}
 		}
-		if settings, ok := v.(*config.TeamsWebhookSettings); ok {
-			for name, target := range settings.Webhooks {
-				webhooks[name] = target.WebhookURL.String()
-			}
+	case reflect.Slice, reflect.Array:
+		for i := range v.Len() {
+			collectSecrets(v.Index(i), fmt.Sprintf("%s[%d]", path, i), out)
 		}
-		value["webhooks"] = webhooks
-	case "mqtt":
-		if settings, ok := v.(*config.MQTTSettings); ok {
-			value["username"] = settings.Username.String()
-			value["password"] = settings.Password.String()
-		}
-	case "slack_webhook":
-		// Expose webhook URLs for hash computation (they contain secrets)
-		if settings, ok := v.(*config.SlackWebhookSettings); ok {
-			webhooks := make(map[string]any)
-			for name, target := range settings.Webhooks {
-				webhooks[name] = map[string]any{
-					"webhook_url": target.WebhookURL.String(),
-					"username":    target.Username,
-					"icon_emoji":  target.IconEmoji,
-				}
-			}
-			value["webhooks"] = webhooks
+	case reflect.Map:
+		iter := v.MapRange()
+		for iter.Next() {
+			collectSecrets(iter.Value(), fmt.Sprintf("%s[%v]", path, iter.Key()), out)
 		}
 	}
 }

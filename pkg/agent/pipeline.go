@@ -20,21 +20,24 @@ type Pipeline struct {
 	Failover       *providers.Failover
 	ChannelManager interfaces.ChannelManager
 	MediaStore     media.MediaStore
-	Steering       any // TODO: *Steering
 	al             *AgentLoop
 }
 
-// NewPipeline creates a Pipeline from an AgentLoop instance.
+// NewPipeline creates a Pipeline from an AgentLoop instance: a snapshot of
+// the loop's config, failover, context manager, channel manager and media
+// store, read together under the loop's lock. A turn runs on its snapshot
+// even when a reload replaces them meanwhile.
 func NewPipeline(al *AgentLoop) *Pipeline {
+	al.mu.RLock()
+	defer al.mu.RUnlock()
 	return &Pipeline{
 		Bus:            al.bus,
-		Cfg:            al.GetConfig(),
+		Cfg:            al.cfg,
 		ContextManager: al.contextManager,
 		Hooks:          al.hooks,
 		Failover:       al.failover,
 		ChannelManager: al.channelManager,
 		MediaStore:     al.mediaStore,
-		Steering:       al.steering,
 		al:             al,
 	}
 }

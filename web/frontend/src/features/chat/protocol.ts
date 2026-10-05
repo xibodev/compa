@@ -233,11 +233,11 @@ export function handleWebChatMessage(
     }
 
     case "typing.start":
-      updateChatStore({ isTyping: true })
+      updateChatStore({ isTyping: true, isTurnActive: true })
       break
 
     case "typing.stop":
-      updateChatStore({ isTyping: false })
+      updateChatStore({ isTyping: false, isTurnActive: false })
       break
 
     case "error": {
@@ -250,12 +250,32 @@ export function handleWebChatMessage(
       if (errorMessage) {
         toast.error(errorMessage)
       }
-      updateChatStore((prev) => ({
-        messages: requestId
-          ? prev.messages.filter((msg) => msg.id !== requestId)
-          : prev.messages,
-        isTyping: false,
-      }))
+      updateChatStore((prev) => {
+        // The refused message leaves the transcript, and its text goes back
+        // to the composer: the composer was cleared when it was sent.
+        const refused = requestId
+          ? prev.messages.find(
+              (msg) => msg.id === requestId && msg.role === "user",
+            )
+          : undefined
+        return {
+          messages: requestId
+            ? prev.messages.filter((msg) => msg.id !== requestId)
+            : prev.messages,
+          isTyping: false,
+          isTurnActive: false,
+          ...(refused
+            ? {
+                failedDraft: {
+                  content: refused.content,
+                  ...(refused.attachments?.length
+                    ? { attachments: refused.attachments }
+                    : {}),
+                },
+              }
+            : {}),
+        }
+      })
       break
     }
 

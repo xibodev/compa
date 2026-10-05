@@ -65,7 +65,7 @@ func TestAgentHandleChunkCreatesSession(t *testing.T) {
 		Data:       []byte{0xF8, 0xFF, 0xFE},
 	}
 
-	agent.handleChunk(chunk)
+	agent.handleChunk(context.Background(), chunk)
 
 	key := "sess_speaker"
 	agent.mu.Lock()
@@ -88,7 +88,7 @@ func TestAgentHandleChunkIgnoresUnsupportedFormat(t *testing.T) {
 	agent := NewAgent(mb, &fakeTranscriber{})
 
 	chunk := bus.AudioChunk{Format: "pcm"}
-	agent.handleChunk(chunk)
+	agent.handleChunk(context.Background(), chunk)
 
 	agent.mu.Lock()
 	count := len(agent.sessions)
@@ -193,4 +193,93 @@ func TestAgentCheckSilencePublishesInboundAndCleansUp(t *testing.T) {
 	}
 
 	waitForFileRemoval(t, filePath, 500*time.Millisecond)
+}
+
+func TestAgentEndsAnUtteranceThatReachesItsMaximumLength(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		started time.Duration // before now
+		bytes   int
+	}{
+		{name: "duration", started: maxUtteranceDuration + time.Second},
+		{name: "size", started: time.Second, bytes: maxUtteranceBytes},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			mb := bus.NewMessageBus()
+			defer mb.Close()
+			agent := NewAgent(mb, &fakeTranscriber{text: "still talking"})
+
+			filePath := filepath.Join(t.TempDir(), "voice.ogg")
+			writer, err := oggwriter.New(filePath, 48000, 2)
+			if err != nil {
+				t.Fatalf("create ogg writer: %v", err)
+			}
+			// The speaker never paused.
+			acc := &speechAccumulator{
+				writer:      writer,
+				file:        filePath,
+				startedAt:   time.Now().Add(-tt.started),
+				lastAudioAt: time.Now(),
+				bytes:       tt.bytes,
+				chatID:      "chat",
+				speakerID:   "speaker",
+				sessionID:   "sess",
+				channel:     "discord",
+			}
+			agent.mu.Lock()
+			agent.sessions["sess_speaker"] = acc
+			agent.mu.Unlock()
+
+			agent.handleChunk(context.Background(), bus.AudioChunk{
+				SessionID: "sess", SpeakerID: "speaker", ChatID: "chat", Channel: "discord",
+				Sequence: 1, Timestamp: 1, SampleRate: 48000, Channels: 2, Format: "opus",
+				Data: []byte{0xF8, 0xFF, 0xFE},
+			})
+
+			select {
+			case msg := <-mb.InboundChan():
+				if !strings.Contains(msg.Content, "still talking") {
+					t.Fatalf("unexpected inbound content: %q", msg.Content)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("the full utterance was not transcribed")
+			}
+			waitForFileRemoval(t, filePath, 500*time.Millisecond)
+
+			agent.mu.Lock()
+			next, ok := agent.sessions["sess_speaker"]
+			agent.mu.Unlock()
+			if !ok || next == acc {
+				t.Fatal("the chunk did not start the next utterance")
+			}
+			next.Close()
+			_ = os.Remove(next.file)
+		})
+	}
+}
+
+func TestAgentCheckSilenceEndsAnUtteranceAtItsMaximumDuration(t *testing.T) {
+	t.Parallel()
+
+	mb := bus.NewMessageBus()
+	defer mb.Close()
+	agent := NewAgent(mb, nil)
+	acc := &speechAccumulator{
+		closed:      true,
+		file:        filepath.Join(t.TempDir(), "voice.ogg"),
+		startedAt:   time.Now().Add(-maxUtteranceDuration),
+		lastAudioAt: time.Now(),
+	}
+	agent.sessions["sess_speaker"] = acc
+
+	agent.checkSilence(context.Background())
+
+	if len(agent.sessions) != 0 {
+		t.Fatal("an utterance at its maximum duration was kept open")
+	}
 }

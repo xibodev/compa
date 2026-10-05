@@ -108,7 +108,7 @@ func TestDiscoveryIgnoresUndeclaredDigest(t *testing.T) {
 }
 
 // The bug this exists for: a capability declared cost_known:false -- so the
-// agent was told it "may bill real money; requires human approval" -- while its
+// agent was told it "may bill real money" -- while its
 // own summary said it never bills. It was the ESTIMATE capability, whose entire
 // purpose is checking cost before committing to a paid run.
 //
@@ -161,6 +161,29 @@ func TestKnownCostWithFreeClaimIsSilent(t *testing.T) {
 
 	if w := costClaimWarnings(d); len(w) != 0 {
 		t.Fatalf("consistent capability warned: %v", w)
+	}
+}
+
+// The disagreement is reported as a HOST limitation rather than a module
+// defect: cost_known reports whether an AMOUNT is known, so a capability whose
+// amount is unknowable and which never bills declares both facts correctly. The
+// warning must not send an author to correct something correct.
+func TestTheDisagreementIsReportedAsAHostLimitation(t *testing.T) {
+	d := &modproto.Descriptor{Capabilities: []modproto.Capability{{
+		ID:      "creative.tools.estimate",
+		Summary: "Estimate cost. Never bills.",
+		Effects: modproto.Effects{CostKnown: false, Local: true, Provider: "local"},
+	}}}
+
+	joined := strings.Join(costClaimWarnings(d), " ")
+	if !strings.Contains(joined, "creative.tools.estimate") {
+		t.Errorf("the warning does not name the capability: %s", joined)
+	}
+	if strings.Contains(joined, "one of the two is wrong") {
+		t.Errorf("the warning claims the module contradicts itself: %s", joined)
+	}
+	if !strings.Contains(joined, "Both can be true") {
+		t.Errorf("the warning does not say both declarations can be true: %s", joined)
 	}
 }
 

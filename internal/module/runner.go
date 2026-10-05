@@ -30,7 +30,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/xibodev/compa/pkg/modproto"
 	"github.com/xibodev/compa/pkg/pathlink"
@@ -76,7 +78,7 @@ const (
 	//
 	// One constant, because three callers each had their own: the CLI allowed
 	// 120s while the agent and the cockpit allowed 180s, so a render that
-	// worked through the browser failed through `handoff` with
+	// worked through the browser failed through the CLI with
 	// "command_timeout: node was cancelled or timed out" -- which reads as a
 	// broken module rather than a shorter leash.
 	//
@@ -90,7 +92,32 @@ const (
 	// would kill real work whenever the machine is busy, which is exactly when
 	// a person is most likely to be waiting on it.
 	DefaultInvokeDeadlineMS = 180000
+
+	// killGrace is how long a module has to stop after it is asked to, before
+	// its process tree is ended by force.
+	killGrace = 3 * time.Second
+
+	// pipeGrace bounds how long the host keeps reading output after the module
+	// exited or was stopped. A grandchild holding stdout open used to stretch
+	// a 1.5s deadline to the grandchild's own lifetime.
+	pipeGrace = 2 * time.Second
+
+	// MaxErrorText bounds module-supplied text -- an error message, a warning
+	// -- before it reaches a tool result, the chat or a log. A module's error
+	// message could otherwise be most of its 1 MiB envelope.
+	MaxErrorText = 2 << 10
 )
+
+// Why a run was stopped early. They are context causes, so the error can say
+// which deadline fired instead of blaming the module for the caller's.
+var (
+	errOwnDeadline    = errors.New("the module's own deadline expired")
+	errOutputOverflow = errors.New("the module wrote more output than allowed")
+)
+
+// processStarts counts module processes started, so a test can tell a cached
+// answer from a fresh run.
+var processStarts atomic.Int64
 
 // Runner executes one installed module binary.
 type Runner struct {
@@ -99,6 +126,15 @@ type Runner struct {
 	// ModuleID is the expected module ID; a descriptor claiming a different
 	// one is rejected, so a binary cannot impersonate another module.
 	ModuleID string
+
+	// WorkDir is the working directory the module runs in, created when
+	// needed. Empty means a fresh temporary directory per run. Installed
+	// modules get ScratchDir: never the install directory, never the host's.
+	WorkDir string
+
+	// Digest is the binary's digest recorded at install time. When set, a
+	// binary that no longer matches it is refused before it runs.
+	Digest string
 
 	MaxOutputBytes int
 	MaxStderrBytes int
@@ -125,7 +161,7 @@ type Result struct {
 // Describe runs `<binary> module describe --json` and returns a validated
 // descriptor.
 func (r *Runner) Describe(ctx context.Context) (*modproto.Descriptor, *Result, error) {
-	res, err := r.exec(ctx, describeDeadline, r.maxOut(), "module", modproto.OperationDescribe, "--json")
+	res, err := r.exec(ctx, "describe", describeDeadline, r.maxOut(), "module", modproto.OperationDescribe, "--json")
 	if err != nil {
 		return nil, res, err
 	}
@@ -134,7 +170,8 @@ func (r *Runner) Describe(ctx context.Context) (*modproto.Descriptor, *Result, e
 		return nil, res, fmt.Errorf("%s: describe envelope is invalid: %w", modproto.ErrHostProtocolViolation, err)
 	}
 	if !res.Envelope.OK {
-		return nil, res, fmt.Errorf("module reported describe failure: %s", res.Envelope.Error.Message)
+		return nil, res, fmt.Errorf("module reported describe failure: %s",
+			BoundText(res.Envelope.Error.Message, MaxErrorText))
 	}
 
 	var d modproto.Descriptor
@@ -162,6 +199,16 @@ func (r *Runner) Describe(ctx context.Context) (*modproto.Descriptor, *Result, e
 // keeps an unpriced call from rendering as free and a writing capability from
 // routing around approval.
 func (r *Runner) Invoke(ctx context.Context, d *modproto.Descriptor, req *modproto.Request) (*Result, error) {
+	if d == nil {
+		return nil, fmt.Errorf("%s: no descriptor to check this invocation against", modproto.ErrHostProtocolViolation)
+	}
+	// An undeclared capability is refused BEFORE the module starts. It used to
+	// be checked only against the reply, after the module had already run
+	// with whatever ID the caller chose -- and that ID is argv, so "--help"
+	// or "--input=..." reached the module's flag parser.
+	if err := checkInvocable(d, req.Capability); err != nil {
+		return nil, err
+	}
 	if req.RequestID == "" {
 		id, err := NewRequestID()
 		if err != nil {
@@ -201,7 +248,7 @@ func (r *Runner) Invoke(ctx context.Context, d *modproto.Descriptor, req *modpro
 	}
 	defer cleanup()
 
-	res, err := r.exec(ctx, deadline, req.MaxOutputBytes,
+	res, err := r.exec(ctx, "invocation", deadline, req.MaxOutputBytes,
 		"module", modproto.OperationInvoke, req.Capability, "--input", inputPath)
 	if err != nil {
 		return res, err
@@ -271,9 +318,9 @@ func (r *Runner) Invoke(ctx context.Context, d *modproto.Descriptor, req *modpro
 
 		// The digest is the strongest claim a module makes, and the one the
 		// cockpit presents as PROVENANCE -- the artefact card prints it under a
-		// comment saying it is what the host verified. It was not: verifyDigest
-		// existed but was reached only from the CLI staging path, so every card
-		// served through the cockpit showed an unchecked number.
+		// comment saying it is what the host verified. It was not: the check
+		// existed only on a staging path nothing in the product called, so
+		// every card served through the cockpit showed an unchecked number.
 		//
 		// Reading the file to check it is the real cost here, unlike the size,
 		// so it is bounded: past a limit the digest is left unverified rather
@@ -291,8 +338,9 @@ func (r *Runner) Invoke(ctx context.Context, d *modproto.Descriptor, req *modpro
 // ResolveArtifact turns a module-reported artifact into an absolute host path,
 // refusing anything that escapes its declared root.
 //
-// Resolution is done with EvalSymlinks where possible, so a symlink pointing
-// outside the root cannot smuggle a path past a purely lexical check.
+// Both the root and the path are resolved through every kind of link,
+// junctions included, so a link pointing outside the root cannot smuggle a
+// path past a purely lexical check.
 func ResolveArtifact(req *modproto.Request, a modproto.Artifact) (string, error) {
 	root, ok := req.Roots[a.Root]
 	if !ok {
@@ -317,14 +365,19 @@ func resolveInRoot(rootPath, rel string) (string, error) {
 		return "", fmt.Errorf("path %q escapes root %q", rel, cleanRoot)
 	}
 
-	// Then the physical check, which catches symlinks the lexical one cannot.
-	realRoot, err := filepath.EvalSymlinks(cleanRoot)
+	// Then the physical check, which catches links the lexical one cannot.
+	//
+	// The root goes through pathlink like the path does. It used
+	// filepath.EvalSymlinks, which stopped following junctions in Go 1.23, so
+	// a root that was a junction resolved to itself while every path inside
+	// it resolved through the junction -- and every artifact was refused.
+	realRoot, err := pathlink.Resolve(cleanRoot)
 	if err != nil {
-		// A root that does not exist yet is legitimate; the lexical check stands.
-		if errors.Is(err, os.ErrNotExist) {
-			return joined, nil
-		}
 		return "", err
+	}
+	if _, err := os.Stat(realRoot); errors.Is(err, os.ErrNotExist) {
+		// A root that does not exist yet is legitimate; the lexical check stands.
+		return joined, nil
 	}
 	realPath, err := pathlink.Resolve(joined)
 	if err != nil {
@@ -363,9 +416,31 @@ func withinRoot(root, path string) bool {
 }
 
 // exec runs the module and enforces every host-side bound.
-func (r *Runner) exec(ctx context.Context, deadline time.Duration, maxOut int, args ...string) (*Result, error) {
-	ctx, cancel := context.WithTimeout(ctx, deadline)
-	defer cancel()
+//
+// what names the run ("describe", "invocation") so a deadline error says which
+// budget was spent.
+func (r *Runner) exec(ctx context.Context, what string, deadline time.Duration, maxOut int, args ...string) (*Result, error) {
+	// A binary that changed since it was installed is not run: the host
+	// verified a different program.
+	if err := verifyBinary(r.Binary, r.Digest); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, notInstalledError(r.Binary)
+		}
+		return nil, err
+	}
+
+	dir, cleanupDir, err := r.workDir()
+	if err != nil {
+		return nil, fmt.Errorf("%s: could not prepare the module's working directory: %w",
+			modproto.ErrHostSpawnFailed, err)
+	}
+	defer cleanupDir()
+
+	callerCtx := ctx
+	ctx, cancelDeadline := context.WithTimeoutCause(ctx, deadline, errOwnDeadline)
+	defer cancelDeadline()
+	ctx, stop := context.WithCancelCause(ctx)
+	defer stop(nil)
 
 	started := time.Now()
 
@@ -386,25 +461,37 @@ func (r *Runner) exec(ctx context.Context, deadline time.Duration, maxOut int, a
 	// in the request.
 	cmd.Env = tempOnlyEnv()
 
-	// A module runs in its OWN installed directory, not the host's.
+	// A module runs in a scratch directory of its own, not beside its install.
 	//
-	// Modules resolve their bundled assets relative to the working directory --
-	// a renderer looking for its composition, a pack looking for its templates.
-	// Inheriting the host's cwd meant those lookups searched wherever the host
-	// happened to be launched from, so a module that worked from its source
-	// checkout failed once installed, reporting a missing dependency it had
-	// actually shipped with.
-	//
-	// This is also confinement rather than convenience: a relative path a
-	// module resolves now lands inside its own directory instead of somewhere
-	// in the host's tree.
-	cmd.Dir = filepath.Dir(r.Binary)
-	configureProcessGroup(cmd)
+	// Running in the install directory put the module's verified files -- and
+	// the host's state around them -- one relative path away, and a tool given
+	// a relative output path wrote into its own install root. Content a module
+	// ships is reached through its declared bundle root instead, an absolute
+	// path the host supplies in the request.
+	cmd.Dir = dir
+
+	// The process tree is stopped by the tree, not by CommandContext's default
+	// kill of the root alone: Cancel asks the whole tree to stop and ends it
+	// after killGrace, and WaitDelay stops a grandchild that holds stdout from
+	// holding the invocation with it.
+	tree := newProcessTree()
+	tree.prepare(cmd)
+	cmd.Cancel = func() error {
+		if errors.Is(context.Cause(ctx), errOutputOverflow) {
+			tree.kill()
+			return nil
+		}
+		return tree.interrupt()
+	}
+	cmd.WaitDelay = killGrace + pipeGrace
 
 	var stdout, stderr bytes.Buffer
 	// Separate pipes: merging them is what let donor diagnostics corrupt the
-	// JSON stream.
-	cmd.Stdout = &limitedWriter{w: &stdout, limit: maxOut}
+	// JSON stream. Output past the bound stops the module: what it writes
+	// after that is discarded anyway, and a module flooding stdout would
+	// otherwise run until its deadline.
+	out := &limitedWriter{w: &stdout, limit: maxOut, onOverflow: func() { stop(errOutputOverflow) }}
+	cmd.Stdout = out
 	cmd.Stderr = &limitedWriter{w: &stderr, limit: r.maxErr()}
 
 	if err := cmd.Start(); err != nil {
@@ -417,44 +504,62 @@ func (r *Runner) exec(ctx context.Context, deadline time.Duration, maxOut int, a
 		// working around it; "uninstalled" is a fact to report. Naming the
 		// cause is the same reason failureGuidance exists.
 		if _, statErr := os.Stat(r.Binary); errors.Is(statErr, os.ErrNotExist) {
-			return nil, fmt.Errorf("%s: this module is no longer installed (%s is gone);"+
-				" it cannot be used until it is installed again",
-				modproto.ErrHostSpawnFailed, filepath.Base(r.Binary))
+			return nil, notInstalledError(r.Binary)
 		}
 		return nil, fmt.Errorf("%s: %w", modproto.ErrHostSpawnFailed, err)
 	}
+	processStarts.Add(1)
+	if err := tree.started(cmd.Process); err != nil {
+		_ = cmd.Wait()
+		tree.finish(true)
+		return nil, fmt.Errorf("%s: %w", modproto.ErrHostSpawnFailed, err)
+	}
 
-	waitErr := waitWithTreeKill(ctx, cmd)
+	waitErr := cmd.Wait()
+	stoppedEarly := ctx.Err() != nil
+	tree.finish(stoppedEarly)
+
 	res := &Result{
 		Stderr:   stderr.String(),
 		Duration: time.Since(started),
 		ExitCode: cmd.ProcessState.ExitCode(),
 	}
 
-	if lw, ok := cmd.Stdout.(*limitedWriter); ok && lw.truncated {
+	if out.truncated {
 		res.Truncated = true
-		return res, fmt.Errorf("%s: module wrote more than %d bytes to stdout; large results belong in an artifact pointer, not inline",
+		return res, fmt.Errorf("%s: module wrote more than %d bytes to stdout, so it was stopped;"+
+			" large results belong in an artifact pointer, not inline",
 			modproto.ErrHostOutputTooLarge, maxOut)
 	}
 
-	if ctx.Err() == context.DeadlineExceeded {
-		return res, fmt.Errorf("%s: module exceeded its %s deadline and its process tree was killed",
-			modproto.ErrHostTimeout, deadline)
+	if errors.Is(context.Cause(ctx), errOwnDeadline) {
+		return res, fmt.Errorf("%s: module exceeded its %s %s deadline and its process tree was stopped",
+			modproto.ErrHostTimeout, deadline, what)
+	}
+
+	// The CALLER's deadline is not the module's, and saying so matters: a
+	// request whose HTTP or turn budget ran out first used to report that the
+	// module exceeded its own deadline, which sends an author looking for a
+	// slowness that is not there.
+	if errors.Is(callerCtx.Err(), context.DeadlineExceeded) {
+		return res, fmt.Errorf("%s: the caller's deadline expired after %s, before the module's own"+
+			" %s %s deadline; the module's process tree was stopped",
+			modproto.ErrHostTimeout, res.Duration.Round(time.Millisecond), deadline, what)
 	}
 
 	// A CANCELLED run is the host's doing, not the module's.
 	//
 	// Cancellation arrives when the gateway stops, a turn is abandoned, or the
-	// caller goes away. The process tree is killed correctly either way -- but
-	// without this the killed process leaves truncated stdout, the decoder
-	// reports "stdout is not a single JSON envelope", and a module that
-	// behaved perfectly is recorded as having violated the protocol.
+	// caller goes away. The process tree is stopped correctly either way --
+	// but without this the stopped process leaves truncated stdout, the
+	// decoder reports "stdout is not a single JSON envelope", and a module
+	// that behaved perfectly is recorded as having violated the protocol.
 	//
 	// The distinction matters beyond tidiness: host.protocol_violation is the
 	// code that tells an operator a module is misbehaving, and spending it on
 	// the host's own cancellation would teach them to ignore it.
-	if ctx.Err() == context.Canceled {
-		return res, fmt.Errorf("%s: the host cancelled this invocation and the module's process tree was killed",
+	if callerCtx.Err() != nil {
+		return res, fmt.Errorf("%s: the host cancelled this invocation and the module's process tree was stopped",
 			modproto.ErrCancelled)
 	}
 
@@ -469,10 +574,68 @@ func (r *Runner) exec(ctx context.Context, deadline time.Duration, maxOut int, a
 
 	// A non-zero exit with a well-formed envelope is a legitimate module
 	// failure, so waitErr is not itself an error here: the envelope is the
-	// authority and it already reports ok=false with a structured code.
-	_ = waitErr
+	// authority and it already reports ok=false with a structured code. The
+	// one exception is a helper that kept stdout open past pipeGrace, which
+	// is reported rather than waited for.
+	if errors.Is(waitErr, exec.ErrWaitDelay) {
+		res.Warnings = append(res.Warnings, fmt.Sprintf(
+			"a process the module started kept its output open for more than %s after it exited;"+
+				" the host stopped waiting for it", pipeGrace))
+	}
 
 	return res, nil
+}
+
+// workDir returns the directory the module runs in and how to clean it up.
+func (r *Runner) workDir() (string, func(), error) {
+	if r.WorkDir != "" {
+		if err := os.MkdirAll(r.WorkDir, 0o700); err != nil {
+			return "", nil, err
+		}
+		return r.WorkDir, func() {}, nil
+	}
+	dir, err := os.MkdirTemp("", "compa-module-*")
+	if err != nil {
+		return "", nil, err
+	}
+	return dir, func() { _ = os.RemoveAll(dir) }, nil
+}
+
+func notInstalledError(binary string) error {
+	return fmt.Errorf("%s: this module is no longer installed (%s is gone);"+
+		" it cannot be used until it is installed again",
+		modproto.ErrHostSpawnFailed, filepath.Base(binary))
+}
+
+// checkInvocable refuses a capability before the module is started: one the
+// descriptor does not declare, and one that would read as a flag on the
+// module's command line.
+func checkInvocable(d *modproto.Descriptor, capability string) error {
+	if strings.HasPrefix(capability, "-") {
+		return fmt.Errorf("%s: capability %q starts with '-', so the module would read it as a flag;"+
+			" it was not started", modproto.ErrUnknownCapability, BoundText(capability, 128))
+	}
+	for _, c := range d.Capabilities {
+		if c.ID == capability {
+			return nil
+		}
+	}
+	return fmt.Errorf("%s: module %q declares no capability %q, so it was not started",
+		modproto.ErrUnknownCapability, d.Module, BoundText(capability, 128))
+}
+
+// BoundText cuts s to at most max bytes, at a character boundary, and says how
+// much was left out. Module-supplied text passes through it before it reaches
+// a tool result, the chat or a log.
+func BoundText(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return fmt.Sprintf("%s… (%d more bytes not shown)", s[:cut], len(s)-cut)
 }
 
 func (r *Runner) maxOut() int {
@@ -493,12 +656,14 @@ func (r *Runner) maxErr() int {
 //
 // It keeps accepting writes after the limit and discards them, rather than
 // returning an error: a write error would make the child fail in a confusing
-// way, and the host has already decided the output is unusable.
+// way, and the host has already decided the output is unusable. onOverflow,
+// when set, is told once, so the host can stop the module.
 type limitedWriter struct {
-	w         io.Writer
-	limit     int
-	written   int
-	truncated bool
+	w          io.Writer
+	limit      int
+	written    int
+	truncated  bool
+	onOverflow func()
 }
 
 func (l *limitedWriter) Write(p []byte) (int, error) {
@@ -510,12 +675,12 @@ func (l *limitedWriter) Write(p []byte) (int, error) {
 		return 0, nil
 	}
 	if l.written >= l.limit {
-		l.truncated = true
+		l.overflow()
 		return len(p), nil
 	}
 	remaining := l.limit - l.written
 	if len(p) > remaining {
-		l.truncated = true
+		l.overflow()
 		if _, err := l.w.Write(p[:remaining]); err != nil {
 			return 0, err
 		}
@@ -525,6 +690,13 @@ func (l *limitedWriter) Write(p []byte) (int, error) {
 	n, err := l.w.Write(p)
 	l.written += n
 	return n, err
+}
+
+func (l *limitedWriter) overflow() {
+	if !l.truncated && l.onOverflow != nil {
+		l.onOverflow()
+	}
+	l.truncated = true
 }
 
 // writeRequestFile spills the request to a temp file.
@@ -539,8 +711,10 @@ func writeRequestFile(req *modproto.Request) (string, func(), error) {
 		return "", func() {}, err
 	}
 
+	// A debugging aid, bounded: a request can carry a whole prompt or document,
+	// and the dump goes wherever stderr is logged.
 	if os.Getenv("COMPA_DEBUG_REQUEST") != "" {
-		fmt.Fprintf(os.Stderr, "[debug] request bytes: %s\n", blob)
+		fmt.Fprintf(os.Stderr, "[debug] request bytes: %s\n", BoundText(string(blob), MaxErrorText))
 	}
 
 	f, err := os.CreateTemp("", "compa-request-*.json")

@@ -1,209 +1,238 @@
 package tools
 
 import (
+	"encoding/json"
 	"fmt"
-	"math"
+	"regexp"
+	"strings"
+	"sync"
+
+	"github.com/google/jsonschema-go/jsonschema"
+
+	"github.com/xibodev/compa/pkg/logger"
 )
 
-// validateToolArgs validates args against a JSON Schema-like map.
-// schema is expected to have optional keys: "properties", "required", "additionalProperties".
+// validateToolArgs validates args against a tool's JSON Schema, with the full
+// semantics of JSON Schema: an absent additionalProperties allows other
+// properties, and keywords such as minimum, pattern, anyOf and $ref apply.
+//
+// A schema that cannot be compiled is not enforced. Validation is there to
+// let the model correct a call; an MCP server's unusable schema must not make
+// its tool unusable.
 func validateToolArgs(schema map[string]any, args map[string]any) error {
 	if len(schema) == 0 {
+		return nil
+	}
+
+	resolved, err := resolveToolSchema(schema)
+	if err != nil {
+		logger.DebugCF("tool", "Tool schema cannot be compiled; arguments are not validated",
+			map[string]any{"error": err.Error()})
 		return nil
 	}
 
 	if args == nil {
 		args = map[string]any{}
 	}
-
-	if err := checkRequired(schema, args); err != nil {
-		return err
+	// Validate the arguments as the JSON they came as: Go values such as int
+	// or []string, which callers inside Compa pass, become JSON values first.
+	data, err := json.Marshal(args)
+	if err != nil {
+		logger.DebugCF("tool", "Tool arguments cannot be encoded; arguments are not validated",
+			map[string]any{"error": err.Error()})
+		return nil
 	}
-
-	propsRaw, ok := schema["properties"]
-	if !ok {
-		return nil // no properties defined — accept any args
-	}
-
-	props, ok := propsRaw.(map[string]any)
-	if !ok {
+	var instance any
+	if err := json.Unmarshal(data, &instance); err != nil {
 		return nil
 	}
 
-	additional := allowsAdditional(schema)
-
-	for key, val := range args {
-		propSchemaRaw, known := props[key]
-		if !known {
-			if !additional {
-				return fmt.Errorf("unexpected property %q", key)
-			}
-			continue
-		}
-		propSchema, ok := propSchemaRaw.(map[string]any)
-		if !ok {
-			continue // can't validate without a proper schema map
-		}
-		if err := checkType(key, val, propSchema); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
-// checkRequired verifies that every field listed in schema["required"] is present in args.
-func checkRequired(schema map[string]any, args map[string]any) error {
-	reqRaw, ok := schema["required"]
-	if !ok {
-		return nil
-	}
-
-	var required []string
-
-	switch r := reqRaw.(type) {
-	case []string:
-		required = r
-	case []any:
-		for _, v := range r {
-			s, ok := v.(string)
-			if ok {
-				required = append(required, s)
-			}
-		}
-	default:
-		return nil
-	}
-
-	for _, field := range required {
-		if _, present := args[field]; !present {
-			return fmt.Errorf("missing required property %q", field)
-		}
+	if err := resolved.Validate(instance); err != nil {
+		return describeSchemaError(err)
 	}
 	return nil
 }
 
-// allowsAdditional returns true when the schema explicitly sets
-// "additionalProperties" to true, or when the key is absent (default: reject extras).
-func allowsAdditional(schema map[string]any) bool {
-	v, ok := schema["additionalProperties"]
-	if !ok {
-		return false
+// resolvedSchemas caches compiled schemas by their JSON text. Tools rebuild
+// their parameter maps on every call, but the text rarely changes.
+var (
+	resolvedSchemasMu sync.Mutex
+	resolvedSchemas   = map[string]*jsonschema.Resolved{}
+)
+
+// maxResolvedSchemas bounds the cache; past it, the cache starts over.
+const maxResolvedSchemas = 512
+
+func resolveToolSchema(schemaMap map[string]any) (*jsonschema.Resolved, error) {
+	data, err := json.Marshal(schemaMap)
+	if err != nil {
+		return nil, err
 	}
-	b, ok := v.(bool)
-	return ok && b
+	key := string(data)
+
+	resolvedSchemasMu.Lock()
+	resolved, ok := resolvedSchemas[key]
+	resolvedSchemasMu.Unlock()
+	if ok {
+		return resolved, nil
+	}
+
+	var schema jsonschema.Schema
+	if err := json.Unmarshal(data, &schema); err != nil {
+		return nil, err
+	}
+	// Servers declare all sorts of drafts; validate every schema with the
+	// current rules rather than refuse the drafts the validator does not
+	// name.
+	schema.Schema = ""
+	resolved, err = schema.Resolve(nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resolvedSchemasMu.Lock()
+	if len(resolvedSchemas) >= maxResolvedSchemas {
+		resolvedSchemas = map[string]*jsonschema.Resolved{}
+	}
+	resolvedSchemas[key] = resolved
+	resolvedSchemasMu.Unlock()
+	return resolved, nil
 }
 
-// checkType validates that val matches the JSON Schema type declared in propSchema.
-func checkType(key string, val any, propSchema map[string]any) error {
-	typeRaw, ok := propSchema["type"]
-	if !ok {
-		return nil // no type constraint
+var (
+	reSchemaQuoted   = regexp.MustCompile(`"((?:[^"\\]|\\.)*)"`)
+	reSchemaTypeLeaf = regexp.MustCompile(`has type "([^"]*)", want (?:one of )?"([^"]*)"`)
+)
+
+// maxSchemaReasonLen bounds a validation reason taken over verbatim, which
+// may quote whole subschemas.
+const maxSchemaReasonLen = 300
+
+// describeSchemaError rewrites a jsonschema validation error in the style
+// tool errors use: `missing required property "x"`, `property "x": expected
+// string, got number`, `property "x": value y is not in enum`, `unexpected
+// property "x"`. Other reasons keep the validator's wording, under the same
+// property prefix.
+func describeSchemaError(err error) error {
+	msg := err.Error()
+	path := ""
+	for strings.HasPrefix(msg, "validating ") {
+		rest := strings.TrimPrefix(msg, "validating ")
+		idx := strings.Index(rest, ": ")
+		if idx < 0 {
+			break
+		}
+		if p := schemaPathProperty(rest[:idx]); p != "" {
+			path = p
+		}
+		msg = rest[idx+2:]
 	}
-	typeName, ok := typeRaw.(string)
-	if !ok {
-		return nil
+	if line, _, found := strings.Cut(msg, "\n"); found {
+		msg = strings.TrimSuffix(line, ":")
 	}
 
-	switch typeName {
-	case "string":
-		if _, ok := val.(string); !ok {
-			return fmt.Errorf("property %q: expected string, got %T", key, val)
+	reason := schemaErrorReason(msg)
+	if path == "" {
+		return fmt.Errorf("%s", reason)
+	}
+	return fmt.Errorf("property %q: %s", path, reason)
+}
+
+func schemaErrorReason(msg string) string {
+	switch {
+	case strings.HasPrefix(msg, "required: missing properties: "):
+		names := quotedNames(msg)
+		if len(names) == 1 {
+			return fmt.Sprintf("missing required property %q", names[0])
 		}
-	case "integer":
-		switch v := val.(type) {
-		case float64:
-			if v != math.Trunc(v) {
-				return fmt.Errorf("property %q: expected integer, got float64 with fractional part", key)
+		if len(names) > 1 {
+			return "missing required properties " + quoteJoin(names)
+		}
+	case strings.HasPrefix(msg, "unexpected additional properties "):
+		names := quotedNames(msg)
+		if len(names) == 1 {
+			return fmt.Sprintf("unexpected property %q", names[0])
+		}
+		if len(names) > 1 {
+			return "unexpected properties " + quoteJoin(names)
+		}
+	case strings.HasPrefix(msg, "type: "):
+		if m := reSchemaTypeLeaf.FindStringSubmatch(msg); m != nil {
+			got, want := m[1], strings.ReplaceAll(m[2], ", ", " or ")
+			if got == "number" && want == "integer" {
+				return "expected integer, got number with fractional part"
 			}
-		case int:
-			// ok
-		case int64:
-			// ok
+			return fmt.Sprintf("expected %s, got %s", want, got)
+		}
+	case strings.HasPrefix(msg, "enum: "):
+		value, _, found := strings.Cut(strings.TrimPrefix(msg, "enum: "), " does not equal any of")
+		if found {
+			return fmt.Sprintf("value %s is not in enum", value)
+		}
+	}
+	if len(msg) > maxSchemaReasonLen {
+		cut, _ := runePrefix(msg, maxSchemaReasonLen)
+		msg = cut + "..."
+	}
+	return msg
+}
+
+// schemaPathProperty turns the location of a subschema, such as
+// "/properties/address/properties/city" or "/properties/tags/items", into
+// the argument it describes ("address.city", "tags[]"). Locations that are
+// not under properties give "".
+func schemaPathProperty(location string) string {
+	if !strings.HasPrefix(location, "/") {
+		return ""
+	}
+	tokens := strings.Split(location[1:], "/")
+	var b strings.Builder
+	for i := 0; i < len(tokens); i++ {
+		switch tokens[i] {
+		case "properties":
+			if i+1 >= len(tokens) {
+				return ""
+			}
+			i++
+			name := strings.NewReplacer("~1", "/", "~0", "~").Replace(tokens[i])
+			if b.Len() > 0 {
+				b.WriteByte('.')
+			}
+			b.WriteString(name)
+		case "items", "additionalItems":
+			b.WriteString("[]")
+		case "prefixItems":
+			if i+1 < len(tokens) {
+				i++
+				b.WriteString("[" + tokens[i] + "]")
+			}
+		case "additionalProperties", "patternProperties":
+			if tokens[i] == "patternProperties" && i+1 < len(tokens) {
+				i++
+			}
+			b.WriteString(".*")
 		default:
-			return fmt.Errorf("property %q: expected integer, got %T", key, val)
-		}
-	case "number":
-		switch val.(type) {
-		case float64, int, int64:
-			// ok
-		default:
-			return fmt.Errorf("property %q: expected number, got %T", key, val)
-		}
-	case "boolean":
-		if _, ok := val.(bool); !ok {
-			return fmt.Errorf("property %q: expected boolean, got %T", key, val)
-		}
-	case "array":
-		arr, ok := val.([]any)
-		if !ok {
-			return fmt.Errorf("property %q: expected array, got %T", key, val)
-		}
-		if err := checkArrayItems(key, arr, propSchema); err != nil {
-			return err
-		}
-	case "object":
-		obj, ok := val.(map[string]any)
-		if !ok {
-			return fmt.Errorf("property %q: expected object, got %T", key, val)
-		}
-		if err := validateToolArgs(propSchema, obj); err != nil {
-			return fmt.Errorf("property %q: %w", key, err)
-		}
-	}
-
-	if err := checkEnum(key, val, propSchema); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-// checkArrayItems validates each element of arr against the "items" sub-schema.
-func checkArrayItems(key string, arr []any, propSchema map[string]any) error {
-	itemsRaw, ok := propSchema["items"]
-	if !ok {
-		return nil
-	}
-	itemSchema, ok := itemsRaw.(map[string]any)
-	if !ok {
-		return nil
-	}
-	for i, elem := range arr {
-		elemKey := fmt.Sprintf("%s[%d]", key, i)
-		if err := checkType(elemKey, elem, itemSchema); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// checkEnum validates that val is one of the allowed enum values in propSchema.
-func checkEnum(key string, val any, propSchema map[string]any) error {
-	enumRaw, ok := propSchema["enum"]
-	if !ok {
-		return nil
-	}
-
-	switch ev := enumRaw.(type) {
-	case []any:
-		for _, allowed := range ev {
-			if val == allowed {
-				return nil
+			// anyOf/0, allOf/1, $defs/x...: not an argument name.
+			if b.Len() == 0 {
+				return ""
 			}
 		}
-	case []string:
-		s, ok := val.(string)
-		if ok {
-			for _, allowed := range ev {
-				if s == allowed {
-					return nil
-				}
-			}
-		}
-	default:
-		return nil // unknown enum format, skip
 	}
+	return b.String()
+}
 
-	return fmt.Errorf("property %q: value %v is not in enum", key, val)
+func quotedNames(msg string) []string {
+	var names []string
+	for _, m := range reSchemaQuoted.FindAllStringSubmatch(msg, -1) {
+		names = append(names, strings.ReplaceAll(m[1], `\"`, `"`))
+	}
+	return names
+}
+
+func quoteJoin(names []string) string {
+	quoted := make([]string, len(names))
+	for i, name := range names {
+		quoted[i] = fmt.Sprintf("%q", name)
+	}
+	return strings.Join(quoted, ", ")
 }

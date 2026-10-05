@@ -3,6 +3,7 @@ package evolution
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"time"
@@ -16,23 +17,38 @@ type LifecycleRunSummary struct {
 	DeletedSkills        int
 }
 
+// retentionHalfLife is how long an unused skill takes to lose half its
+// retention score.
+const retentionHalfLife = 30 * 24 * time.Hour
+
+// decayedRetention is the retention score after idle time without use.
+// Scores only grow while a skill is used, so without decay a skill used a
+// few times early would never go cold, however long it then sat unused.
+func decayedRetention(score float64, idle time.Duration) float64 {
+	if idle <= 0 {
+		return score
+	}
+	return score * math.Pow(0.5, float64(idle)/float64(retentionHalfLife))
+}
+
 func NextLifecycleState(profile SkillProfile, now time.Time) SkillStatus {
 	if profile.Origin == "manual" || profile.LastUsedAt.IsZero() {
 		return profile.Status
 	}
 
 	idle := now.Sub(profile.LastUsedAt)
+	retention := decayedRetention(profile.RetentionScore, idle)
 	switch profile.Status {
 	case SkillStatusActive:
-		if idle > 90*24*time.Hour && profile.RetentionScore < 0.3 {
+		if idle > 90*24*time.Hour && retention < 0.3 {
 			return SkillStatusCold
 		}
 	case SkillStatusCold:
-		if idle > 180*24*time.Hour && profile.RetentionScore < 0.2 {
+		if idle > 180*24*time.Hour && retention < 0.2 {
 			return SkillStatusArchived
 		}
 	case SkillStatusArchived:
-		if idle > 365*24*time.Hour && profile.RetentionScore < 0.1 {
+		if idle > 365*24*time.Hour && retention < 0.1 {
 			return SkillStatusDeleted
 		}
 	}

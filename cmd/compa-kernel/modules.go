@@ -7,12 +7,12 @@
 // touching the host.
 //
 //	compa-kernel modules
-//	compa-kernel module-invoke <module> <capability> [json] [--source-root name=path]...
-//	compa-kernel handoff
+//	compa-kernel module-invoke <module> <capability> [json] [--source-root name=path]... [--approve]
 package main
 
 import (
 	"errors"
+	"io/fs"
 	"sort"
 	"sync"
 
@@ -28,32 +28,14 @@ import (
 	"github.com/xibodev/compa/cmd/compa-kernel/internal"
 	"github.com/xibodev/compa/internal/module"
 	"github.com/xibodev/compa/internal/moduletools"
+	"github.com/xibodev/compa/pkg/approval"
 	"github.com/xibodev/compa/pkg/config"
 	"github.com/xibodev/compa/pkg/modproto"
 )
 
-// Home is the host's state root for the CLI.
-//
-// IT DELEGATES. There used to be a second fallback implementation here, and it
-// disagreed with the host's whenever COMPA_HOME was unset: this side
-// resolved to an executable-anchored `.local`, the agent to `~/.compa`.
-// So `modules-add` installed somewhere the browser agent never looked, the CLI
-// listed the module happily, and THE BROWSER SAW NOTHING -- silently, because
-// discovery finding no modules looks exactly like none being installed.
-//
-// Masked throughout development because every launch set the variable.
-//
-// The dev-checkout intent is preserved and is now the host's own explicitly
-// named fallback rather than a private one: a developer build still keeps its
-// state beside the binary instead of writing into a user profile by surprise.
-// What is gone is the SECOND ANSWER to the same question.
-//
-// Which one applies is decided by IsDevBuild, so the CLI and the host agree by
-// construction rather than by both being careful.
+// Home is the host's state root for the CLI: config.GetHome, the one the
+// agent uses too, so a module the CLI installs is the one the agent finds.
 func Home() string {
-	if config.IsDevBuild() {
-		return absOrSelf(config.DevHome())
-	}
 	return absOrSelf(config.GetHome())
 }
 
@@ -67,11 +49,6 @@ func absOrSelf(p string) string {
 
 func modulesDir() string { return filepath.Join(Home(), "modules") }
 
-// discover finds installed module binaries.
-//
-// Installation is just a file on disk: the host asks each binary to describe
-// itself rather than reading a registry, so there is no metadata that can drift
-// out of sync with the executable.
 // discover finds installed modules using the SAME implementation the cockpit
 // uses.
 //
@@ -79,37 +56,33 @@ func modulesDir() string { return filepath.Join(Home(), "modules") }
 // installed into its own directory by `modules add` was invisible to the CLI
 // while the cockpit listed it. Two implementations of "what is installed"
 // disagreeing is the class of bug this project keeps finding; there is now one.
-func discover() ([]*module.Runner, error) {
-	var runners []*module.Runner
-	for _, in := range moduletools.Discover(context.Background(), Home()) {
-		runners = append(runners, in.Runner)
-	}
-	return runners, nil
+// A module discovery refused (a broken describe, a duplicate ID, a refused
+// contract) comes back with Err set and no descriptor, and is never invoked.
+func discover() []moduletools.Installed {
+	return moduletools.Discover(context.Background(), Home())
 }
 
 func cmdModules() error {
-	runners, err := discover()
-	if err != nil {
-		return err
-	}
-	if len(runners) == 0 {
+	installed := discover()
+	if len(installed) == 0 {
 		fmt.Printf("no modules installed in %s\n", modulesDir())
 		return nil
 	}
 
 	// Read at most once, and only if a module declares a source root.
 	configured := sync.OnceValues(configuredSourceRoots)
-	for _, r := range runners {
-		d, res, err := r.Describe(context.Background())
-		if err != nil {
+	for _, in := range installed {
+		if in.Err != nil || in.Descriptor == nil {
 			// A broken module is reported, never fatal: one bad module must not
 			// take down discovery of the others.
-			fmt.Printf("%-24s UNAVAILABLE  %v\n", filepath.Base(r.Binary), err)
+			fmt.Printf("%-24s UNAVAILABLE  %v\n", filepath.Base(in.Runner.Binary),
+				module.BoundText(fmt.Sprint(in.Err), module.MaxErrorText))
 			continue
 		}
+		d := in.Descriptor
 
 		status := "enabled"
-		if dir, ok := moduletools.ModuleDir(Home(), r.Binary); ok && moduletools.Disabled(dir) {
+		if in.Disabled {
 			status = "disabled"
 		}
 		fmt.Printf("\n%s  v%s  (%s)  [%s]\n", d.Module, d.Version, d.Name, status)
@@ -139,8 +112,11 @@ func cmdModules() error {
 				}
 			}
 		}
-		for _, w := range res.Envelope.Warnings {
+		for _, w := range in.Warnings {
 			fmt.Printf("  warning: %s\n", w)
+		}
+		for _, w := range in.HostWarnings {
+			fmt.Printf("  host warning: %s\n", w)
 		}
 	}
 	return nil
@@ -159,23 +135,21 @@ func effectLine(e modproto.Effects) string {
 	if e.CostKnown {
 		parts = append(parts, "cost known")
 	} else {
-		parts = append(parts, "COST UNKNOWN - approval required")
+		parts = append(parts, "COST UNKNOWN")
 	}
 	return strings.Join(parts, ", ")
 }
 
-func cmdInvoke(moduleID, capability, input string) (*module.Result, error) {
-	return cmdInvokeWithSourceRoots(moduleID, capability, input, nil)
-}
-
-// cmdInvokeWithSourceRoots invokes one capability, granting the module the
-// configured source roots with overrides -- this command line's --source-root
-// values -- taking precedence for the names they give.
-func cmdInvokeWithSourceRoots(
+// invokeModule invokes one capability, granting the module the configured
+// source roots with overrides -- this command line's --source-root values --
+// taking precedence for the names they give. Without approve, the operator's
+// --approve, a capability the approval policy asks about is refused.
+func invokeModule(
 	moduleID,
 	capability,
 	input string,
 	overrides map[string]string,
+	approve bool,
 ) (*module.Result, error) {
 	// A root this command line asked for must be usable, or nothing runs: an
 	// explicit instruction for this one invocation is refused loudly, before
@@ -183,25 +157,35 @@ func cmdInvokeWithSourceRoots(
 	if err := validateSourceRootOverrides(overrides); err != nil {
 		return nil, err
 	}
-	runners, err := discover()
-	if err != nil {
+	if err := module.CheckID(moduleID); err != nil {
 		return nil, err
 	}
 
-	for _, r := range runners {
-		d, _, err := r.Describe(context.Background())
-		if err != nil || d.Module != moduleID {
+	for _, in := range discover() {
+		if in.Err != nil || in.Descriptor == nil || in.Descriptor.Module != moduleID {
 			continue
 		}
-		if dir, ok := moduletools.ModuleDir(Home(), r.Binary); ok && moduletools.Disabled(dir) {
+		if in.Disabled {
 			return nil, fmt.Errorf("module %q is disabled; enable it before invoking capabilities", moduleID)
 		}
+		// Discovery bound the runner to the module the descriptor names, so
+		// the invocation is checked against the module it claims to be.
+		r, d := in.Runner, in.Descriptor
 
-		// Bind identity now that the descriptor has named the module, so the
-		// invocation is checked against the module it claims to be.
-		r.ModuleID = d.Module
+		// Decided before anything runs, by the approval policy with origin
+		// cli, as the agent's calls and the Modules page's runs are decided.
+		// Without this an agent with the exec tool could run a capability the
+		// policy asks about or denies by calling this command.
+		policy, err := cliApprovalPolicy()
+		if err != nil {
+			return nil, err
+		}
+		approved, err := invokeApproval(policy, d, capability, approve)
+		if err != nil {
+			return nil, err
+		}
 
-		workspace, err := filepath.Abs(filepath.Join(Home(), "workspace"))
+		workspace, err := moduleWorkspace()
 		if err != nil {
 			return nil, err
 		}
@@ -228,16 +212,12 @@ func cmdInvokeWithSourceRoots(
 			Roots:      grantRoots(d, workspace, sources),
 			DeadlineMS: module.DefaultInvokeDeadlineMS,
 		}
-		// The CLI takes one JSON blob and normally sends it as Input, which is
-		// what a capability's RequestSchema describes. Some modules also read
-		// root-level fields of their own alongside it, so any key the caller
-		// supplies that is NOT part of the host's fixed envelope is passed
-		// through at the root as well.
-		//
-		// This is a v1 convenience for driving real modules by hand, not a
-		// protocol rule: Input remains the contract, and the host's own fields
-		// always win so a module cannot capture them.
-		if err := passThroughRootFields(req, input); err != nil {
+		// The CLI takes one JSON blob and places it the way the cockpit does:
+		// an explicit "input" key is Input and its siblings pass through at the
+		// root; otherwise the blob is Input and is also passed through. Host
+		// fields always win. Approval claims in the blob are stripped unless
+		// the operator approved this run, which the host then records.
+		if err := moduletools.PlaceInput(req, json.RawMessage(input), approved); err != nil {
 			return nil, err
 		}
 		// Per-invocation authority: only the binaries this module declared.
@@ -253,7 +233,7 @@ func cmdInvokeWithSourceRoots(
 		if missing := module.GrantBinaries(d, req); len(missing) > 0 {
 			fmt.Fprintf(os.Stderr, "note: unresolved binaries: %s\n", strings.Join(missing, " "))
 		}
-		module.ApplyGrants(d, req, module.GrantAll())
+		module.ApplyGrants(d, req, module.GrantsFor(approved))
 
 		res, err := r.Invoke(context.Background(), d, req)
 		if res != nil && res.Stderr != "" {
@@ -365,49 +345,72 @@ func configuredSourceRoots() (map[string]string, error) {
 	return cfg.Modules.SourceRoots, nil
 }
 
-// passThroughRootFields places one JSON blob from the command line into the
-// request.
-//
-// A capability's RequestSchema describes Request.Input, so an explicit "input"
-// key is used as Input verbatim and any sibling keys are passed through at the
-// request root. A blob with no "input" key is treated as Input in its entirety,
-// which is the common case.
-//
-// The passthrough exists because real modules already read some arguments
-// beside Input rather than inside it, and a v1 that cannot drive them is not a
-// working v1. Host-owned fields are never overwritten, so a module cannot
-// capture protocol, roots, grants, binaries, or the bounds by naming them.
-func passThroughRootFields(req *modproto.Request, input string) error {
-	var supplied map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(input), &supplied); err != nil {
-		return fmt.Errorf("input must be a JSON object: %w", err)
-	}
-
-	nested, hasNested := supplied["input"]
-	if hasNested {
-		req.Input = nested
-	} else {
-		// No explicit "input" key: the blob IS the input, which is the common
-		// case. It is also still passed through at the root, because a module
-		// may read some arguments there instead -- and duplicating a value the
-		// caller typed once is harmless, while dropping it is not.
-		req.Input = json.RawMessage(input)
-	}
-
-	reserved := map[string]bool{
-		"protocol": true, "capability": true, "request_id": true,
-		"input": true, "roots": true, "grants": true, "binaries": true,
-		"deadline_ms": true, "max_output_bytes": true,
-	}
-
-	req.Extra = make(map[string]json.RawMessage, len(supplied))
-	for k, v := range supplied {
-		if reserved[k] {
-			continue
+// moduleWorkspace is the workspace the config gives the agents, so a module
+// invoked here reads and writes where the agent's would. Without a readable
+// config it is the workspace under the state root.
+func moduleWorkspace() (string, error) {
+	workspace := ""
+	if path := internal.GetConfigPath(); path != "" {
+		if _, statErr := os.Stat(path); statErr == nil {
+			if cfg, err := config.LoadConfig(path); err == nil {
+				workspace = cfg.WorkspacePath()
+			}
 		}
-		req.Extra[k] = v
 	}
-	return nil
+	if strings.TrimSpace(workspace) == "" {
+		workspace = filepath.Join(Home(), "workspace")
+	}
+	return filepath.Abs(workspace)
+}
+
+// cliApprovalPolicy is the owner's approval policy (tools.approval) from the
+// config every other command reads. Without a config it is the default policy;
+// a config that cannot be read refuses the run rather than guessing.
+func cliApprovalPolicy() (approval.Policy, error) {
+	path := internal.GetConfigPath()
+	if _, err := os.Stat(path); errors.Is(err, fs.ErrNotExist) {
+		return approval.DefaultPolicy(), nil
+	}
+	cfg, err := config.LoadConfig(path)
+	if err != nil {
+		return approval.Policy{}, fmt.Errorf("could not read the approval policy from %s: %w", path, err)
+	}
+	return cfg.Tools.Approval, nil
+}
+
+// invokeApproval decides a run by policy, with origin cli, before the module
+// starts. It returns whether the run is approved: a rule allows it, or the
+// policy asks and the operator passed --approve. A run the default allows is
+// not approved; one the policy asks about without --approve, denies or hides
+// is refused, and so is a capability the module does not declare: its effects
+// are unknown.
+func invokeApproval(policy approval.Policy, d *modproto.Descriptor, capability string, approve bool) (bool, error) {
+	c, ok := lookupCapability(d, capability)
+	if !ok {
+		return false, fmt.Errorf("module %q declares no capability %q, so it was not started", d.Module, capability)
+	}
+	decision := policy.Decide(moduletools.ApprovalTool(d, c), approval.OriginCLI)
+	switch decision.Action {
+	case approval.Allow:
+		return decision.Approved(), nil
+	case approval.Ask:
+		if !approve {
+			return false, fmt.Errorf("%s needs your approval before it runs. Check its declared effects with"+
+				" `compa-kernel modules`, then run this command again with --approve", c.ID)
+		}
+		return true, nil
+	default:
+		return false, fmt.Errorf("%s is denied by the approval policy", c.ID)
+	}
+}
+
+func lookupCapability(d *modproto.Descriptor, id string) (modproto.Capability, bool) {
+	for _, c := range d.Capabilities {
+		if c.ID == id {
+			return c, true
+		}
+	}
+	return modproto.Capability{}, false
 }
 
 // grantRoots maps the logical root NAMES a module declared onto real absolute
@@ -519,6 +522,7 @@ func NewModulesCommand() *cobra.Command {
 // modules.source_roots.
 func NewModuleInvokeCommand() *cobra.Command {
 	var sourceRoots []string
+	var approve bool
 	cmd := &cobra.Command{
 		Use:   "module-invoke <module> <capability> [json]",
 		Short: "Invoke a module capability as a bounded detached process",
@@ -527,7 +531,11 @@ func NewModuleInvokeCommand() *cobra.Command {
 			"as a notes or session store that only you can locate -- come from\n" +
 			"modules.source_roots in the config; --source-root name=path adds or\n" +
 			"overrides one for this invocation. Every source root is granted\n" +
-			"read-only and must be an existing absolute directory or file.",
+			"read-only and must be an existing absolute directory or file.\n\n" +
+			"The approval policy (tools.approval) decides each run. A capability it\n" +
+			"asks about -- by default one with an unknown cost, network reach or\n" +
+			"external writes -- runs only with --approve; one it denies or hides\n" +
+			"does not run.",
 		Example: "  compa-kernel module-invoke some.module notes.search '{\"query\":\"deploy\"}' \\\n" +
 			"    --source-root notes_store=/home/me/notes \\\n" +
 			"    --source-root sessions_db=/home/me/data/sessions.db",
@@ -541,13 +549,17 @@ func NewModuleInvokeCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			_, err = cmdInvokeWithSourceRoots(args[0], args[1], input, overrides)
+			_, err = invokeModule(args[0], args[1], input, overrides, approve)
 			return err
 		},
 	}
 	cmd.Flags().StringArrayVar(&sourceRoots, "source-root", nil,
 		"grant a read-only source root for this invocation, as name=<absolute path>;"+
 			" repeatable, and overrides modules.source_roots in the config for that name")
+	cmd.Flags().BoolVar(&approve, "approve", false,
+		"approve this run of a capability the approval policy asks about, against its declared effects."+
+			" This is your decision as the operator: anything that can run this command, including"+
+			" an agent with the exec tool, can pass it, so never put it in a command you let an agent run")
 	return cmd
 }
 
@@ -589,6 +601,11 @@ func NewModuleRemoveCommand() *cobra.Command {
 		Short: "Remove an installed module (its state is left intact)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
+			// The ID is checked before anything turns it into a path:
+			// `modules-remove ..` used to delete the whole Compa home.
+			if err := module.CheckID(args[0]); err != nil {
+				return err
+			}
 			if err := module.Remove(Home(), args[0]); err != nil {
 				return err
 			}
@@ -616,6 +633,9 @@ func newModuleEnabledCommand(name string, enabled bool) *cobra.Command {
 		Short: verb + " an installed module without removing its files or state",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(_ *cobra.Command, args []string) error {
+			if err := module.CheckID(args[0]); err != nil {
+				return err
+			}
 			home := Home()
 			for _, in := range moduletools.Discover(context.Background(), home) {
 				if in.Descriptor == nil || in.Descriptor.Module != args[0] {

@@ -1,4 +1,4 @@
-import { launcherFetch } from "@/api/http"
+import { HttpError, launcherFetch } from "@/api/http"
 
 export interface SessionSummary {
   id: string
@@ -55,7 +55,7 @@ export async function getSessions(
 
   const res = await launcherFetch(`/api/sessions?${params.toString()}`)
   if (!res.ok) {
-    throw new Error(`Failed to fetch sessions: ${res.status}`)
+    throw new HttpError(`Failed to fetch sessions: ${res.status}`, res.status)
   }
   return res.json()
 }
@@ -74,7 +74,10 @@ export async function getSessionHistory(id: string): Promise<SessionDetail> {
     throw new SessionNotFoundError(id)
   }
   if (!res.ok) {
-    throw new Error(`Failed to fetch session ${id}: ${res.status}`)
+    throw new HttpError(
+      `Failed to fetch session ${id}: ${res.status}`,
+      res.status,
+    )
   }
   return res.json()
 }
@@ -84,6 +87,9 @@ export async function deleteSession(id: string): Promise<void> {
     method: "DELETE",
   })
   if (!res.ok) {
-    throw new Error(`Failed to delete session ${id}: ${res.status}`)
+    throw new HttpError(
+      `Failed to delete session ${id}: ${res.status}`,
+      res.status,
+    )
   }
 }

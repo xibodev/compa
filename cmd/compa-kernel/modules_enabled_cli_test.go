@@ -25,7 +25,7 @@ func TestModuleEnableDisableCommandsRoundTrip(t *testing.T) {
 	if !moduletools.Disabled(dir) {
 		t.Fatal("module remained enabled")
 	}
-	if _, err := cmdInvoke("fake", "fake.echo", `{"name":"test"}`); err == nil || !strings.Contains(err.Error(), "disabled") {
+	if _, err := invokeModule("fake", "fake.echo", `{"name":"test"}`, nil, false); err == nil || !strings.Contains(err.Error(), "disabled") {
 		t.Fatalf("disabled invocation error = %v", err)
 	}
 

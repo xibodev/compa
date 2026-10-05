@@ -20,3 +20,23 @@ own.
 Compa is not affiliated with or endorsed by Sipeed or the PicoClaw project.
 "PicoClaw" is named here solely to give the attribution the MIT License
 requires.
+
+
+Compa name and artwork
+----------------------
+
+The MIT License in LICENSE does not cover the Compa name, logos, icons and
+other artwork in brand/, nor the copies and renderings of that artwork
+elsewhere in this repository and in the programs built from it, such as the
+icons, logos and social preview image that brand/provenance.json lists.
+brand/LICENSES.md states the terms that apply to them.
+
+
+Third-party software
+--------------------
+
+Builds made with the whatsapp_native build tag, such as those of
+`make build-whatsapp-native`, also link go.mau.fi/libsignal, which is licensed
+under the GNU General Public License version 3. Anyone who distributes such a
+build must do so under the terms of the GPL-3.0. Compa's release builds leave
+this tag out.

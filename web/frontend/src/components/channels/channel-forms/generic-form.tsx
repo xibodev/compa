@@ -1,6 +1,7 @@
 import { useTranslation } from "react-i18next"
 
 import type { ChannelConfig } from "@/api/channels"
+import { ChannelAccessFields } from "@/components/channels/channel-access-fields"
 import {
   type ArrayFieldFlusher,
   ChannelArrayListField,
@@ -26,6 +27,10 @@ interface GenericFormProps {
   hiddenKeys?: string[]
   requiredKeys?: string[]
   supportsStreaming?: boolean
+  /** Chat channels choose who may talk to them, beside Allow From. */
+  accessPolicy?: boolean
+  /** Native WhatsApp also chooses which chats are input. */
+  whatsAppChats?: boolean
   fieldErrors?: Record<string, string>
   registerArrayFieldFlusher?: (
     fieldPath: string,
@@ -35,7 +40,13 @@ interface GenericFormProps {
 }
 
 // Fields to skip in the generic form (handled by enabled toggle or internal).
-const SKIP_FIELDS = new Set(["enabled", "reasoning_channel_id"])
+const SKIP_FIELDS = new Set([
+  "enabled",
+  "reasoning_channel_id",
+  "dm_policy",
+  "group_policy",
+  "chats",
+])
 
 // Fields that are objects/nested — show as JSON or skip.
 const OBJECT_FIELDS = new Set([
@@ -83,6 +94,8 @@ export function GenericForm({
   hiddenKeys = [],
   requiredKeys = [],
   supportsStreaming = false,
+  accessPolicy = false,
+  whatsAppChats = false,
   fieldErrors = {},
   registerArrayFieldFlusher,
   arrayFieldResetVersion,
@@ -97,6 +110,11 @@ export function GenericForm({
   const showStreamingConfig =
     (config.streaming !== undefined || supportsStreaming) &&
     !hiddenFieldSet.has("streaming")
+  // A chat channel's policies decide what Allow From means, so it shows
+  // even while empty.
+  const showAllowFrom =
+    (config.allow_from !== undefined || accessPolicy) &&
+    !hiddenFieldSet.has("allow_from")
 
   const rawFields = Object.keys(config).filter(
     (k) =>
@@ -124,18 +142,12 @@ export function GenericForm({
       corp_id: t("channels.form.desc.corpId"),
       bot_id: t("channels.form.desc.appId"),
       websocket_url: t("channels.form.desc.wsUrl"),
-      dm_policy: t("channels.form.desc.genericField", { field: "DM policy" }),
-      group_policy: t("channels.form.desc.genericField", {
-        field: "group policy",
-      }),
       group_allow_from: t("channels.form.desc.allowFrom"),
       send_thinking_message: t("channels.form.desc.genericField", {
         field: "thinking message behavior",
       }),
       agent_id: t("channels.form.desc.agentId"),
       webhook_url: t("channels.form.desc.webhookUrl"),
-      webhook_host: t("channels.form.desc.webhookHost"),
-      webhook_port: t("channels.form.desc.webhookPort"),
       webhook_path: t("channels.form.desc.webhookPath"),
       reply_timeout: t("channels.form.desc.replyTimeout"),
       max_steps: t("channels.form.desc.maxSteps"),
@@ -264,7 +276,8 @@ export function GenericForm({
 
   const hasAdvancedContent =
     advancedFields.length > 0 ||
-    (config.allow_from !== undefined && !hiddenFieldSet.has("allow_from")) ||
+    showAllowFrom ||
+    accessPolicy ||
     (config.allow_origins !== undefined &&
       !hiddenFieldSet.has("allow_origins")) ||
     (config.allow_token_query !== undefined &&
@@ -290,20 +303,27 @@ export function GenericForm({
           <CardContent className="divide-border/60 divide-y px-6 py-0 [&>div]:py-5">
             {advancedFields.map(renderField)}
 
-            {config.allow_from !== undefined &&
-              !hiddenFieldSet.has("allow_from") && (
-                <ChannelArrayListField
-                  label={t("channels.field.allowFrom")}
-                  hint={t("channels.form.desc.allowFrom")}
-                  value={asStringArray(config.allow_from)}
-                  onChange={(value) => onChange("allow_from", value)}
-                  placeholder={t("channels.field.allowFromPlaceholder")}
-                  parser={parseAllowFromInput}
-                  fieldPath="allow_from"
-                  registerFlusher={registerArrayFieldFlusher}
-                  resetVersion={arrayFieldResetVersion}
-                />
-              )}
+            {showAllowFrom && (
+              <ChannelArrayListField
+                label={t("channels.field.allowFrom")}
+                hint={t("channels.form.desc.allowFrom")}
+                value={asStringArray(config.allow_from)}
+                onChange={(value) => onChange("allow_from", value)}
+                placeholder={t("channels.field.allowFromPlaceholder")}
+                parser={parseAllowFromInput}
+                fieldPath="allow_from"
+                registerFlusher={registerArrayFieldFlusher}
+                resetVersion={arrayFieldResetVersion}
+              />
+            )}
+
+            {accessPolicy && (
+              <ChannelAccessFields
+                config={config}
+                onChange={onChange}
+                showChats={whatsAppChats}
+              />
+            )}
 
             {config.allow_origins !== undefined &&
               !hiddenFieldSet.has("allow_origins") && (

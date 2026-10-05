@@ -292,7 +292,9 @@ func TestEnsureWebChatChannel_Idempotent(t *testing.T) {
 	}
 }
 
-func TestHandleWebSocketProxyReloadsGatewayTargetFromConfig(t *testing.T) {
+// The chat goes where the running gateway listens, as its pid file says: a
+// port saved in the config takes effect only once the gateway runs there.
+func TestHandleWebSocketProxyFollowsTheRunningGateway(t *testing.T) {
 	origMatcher := gatewayProcessMatcher
 	gatewayProcessMatcher = func(int) (bool, bool) { return true, true }
 	t.Cleanup(func() { gatewayProcessMatcher = origMatcher })
@@ -351,31 +353,38 @@ func TestHandleWebSocketProxyReloadsGatewayTargetFromConfig(t *testing.T) {
 
 	gateway.pidData = &ppid.PidFileData{}
 	gateway.webChatToken = "web"
-	req1 := newWebChatProxyRequest(http.MethodGet, "/web/ws")
-	rec1 := httptest.NewRecorder()
-	handler(rec1, req1)
-
-	if rec1.Code != http.StatusOK {
-		t.Fatalf("first status = %d, want %d", rec1.Code, http.StatusOK)
+	proxied := func() string {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		handler(rec, newWebChatProxyRequest(http.MethodGet, "/web/ws"))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+		}
+		return rec.Body.String()
 	}
-	if body := rec1.Body.String(); body != "server1" {
+
+	if body := proxied(); body != "server1" {
 		t.Fatalf("first body = %q, want %q", body, "server1")
 	}
 
+	// A new port in the config: the gateway still runs on the old one.
 	cfg.Gateway.Port = mustGatewayTestPort(t, server2.URL)
 	if err := config.SaveConfig(configPath, cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
-
-	req2 := newWebChatProxyRequest(http.MethodGet, "/web/ws")
-	rec2 := httptest.NewRecorder()
-	handler(rec2, req2)
-
-	if rec2.Code != http.StatusOK {
-		t.Fatalf("second status = %d, want %d", rec2.Code, http.StatusOK)
+	if body := proxied(); body != "server1" {
+		t.Fatalf("body after the config change = %q, want %q", body, "server1")
 	}
-	if body := rec2.Body.String(); body != "server2" {
-		t.Fatalf("second body = %q, want %q", body, "server2")
+
+	// The gateway restarted on the new port.
+	writeTestPidFile(t, ppid.PidFileData{
+		PID:   cmd.Process.Pid,
+		Token: "test-token",
+		Host:  cfg.Gateway.Host,
+		Port:  cfg.Gateway.Port,
+	})
+	if body := proxied(); body != "server2" {
+		t.Fatalf("body after the restart = %q, want %q", body, "server2")
 	}
 }
 
@@ -729,7 +738,9 @@ func TestHandleWebSocketProxyRejectsStalePidDataAfterProcessExit(t *testing.T) {
 	}
 }
 
-func TestHandleWebSocketProxy_AllowsArbitraryOrigin(t *testing.T) {
+// Only the dashboard's own page may open the chat: the session cookie also
+// comes along from other sites' pages.
+func TestHandleWebSocketProxyRefusesAnotherOrigin(t *testing.T) {
 	origMatcher := gatewayProcessMatcher
 	gatewayProcessMatcher = func(int) (bool, bool) { return true, true }
 	t.Cleanup(func() { gatewayProcessMatcher = origMatcher })
@@ -791,13 +802,21 @@ func TestHandleWebSocketProxy_AllowsArbitraryOrigin(t *testing.T) {
 	gateway.pidData = &ppid.PidFileData{}
 	gateway.webChatToken = "ui-token"
 
-	req := httptest.NewRequest(http.MethodGet, "http://launcher.local/web/ws?session_id=test-session", nil)
-	req.Header.Set("Origin", "http://evil.example")
-	rec := httptest.NewRecorder()
-	handler(rec, req)
+	for _, tc := range []struct {
+		origin string
+		want   int
+	}{
+		{"http://evil.example", http.StatusForbidden},
+		{"http://launcher.local", http.StatusOK},
+	} {
+		req := httptest.NewRequest(http.MethodGet, "http://launcher.local/web/ws?session_id=test-session", nil)
+		req.Header.Set("Origin", tc.origin)
+		rec := httptest.NewRecorder()
+		handler(rec, req)
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+		if rec.Code != tc.want {
+			t.Fatalf("Origin %s: status = %d, want %d", tc.origin, rec.Code, tc.want)
+		}
 	}
 }
 

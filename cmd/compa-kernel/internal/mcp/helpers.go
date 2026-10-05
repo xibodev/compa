@@ -72,7 +72,9 @@ const mcpConfigSchemaJSON = `{
                   "headers": {
                     "type": "object",
                     "additionalProperties": { "type": "string" }
-                  }
+                  },
+                  "trusted": { "type": "boolean" },
+                  "cwd": { "type": "string" }
                 },
                 "required": ["enabled"],
                 "anyOf": [

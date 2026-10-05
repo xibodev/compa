@@ -12,9 +12,7 @@ export interface ModelLabel {
 
 /** The model's display name, falling back to the catalog's model id. */
 export function targetModelLabel(target: ProviderTarget): string {
-  return (
-    target.label?.trim() || target.display_name?.trim() || target.model_id
-  )
+  return target.label?.trim() || target.display_name?.trim() || target.model_id
 }
 
 /** The display name of the instance serving the model, else its id. */

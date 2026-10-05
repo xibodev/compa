@@ -1,13 +1,18 @@
 package cron
 
 import (
-	"fmt"
-	"path/filepath"
-
 	"github.com/spf13/cobra"
 
 	"github.com/xibodev/compa/cmd/compa-kernel/internal"
+	"github.com/xibodev/compa/pkg/cron"
 )
+
+// exampleJobID looks like a real job ID: 16 hex characters.
+const exampleJobID = "3f9a1c2b7d4e8f60"
+
+// openStore opens the cron store; it fails on a store that can't be loaded,
+// so a command never writes over a corrupt one.
+type openStore func() (*cron.CronService, error)
 
 func NewCronCommand() *cobra.Command {
 	var storePath string
@@ -20,24 +25,23 @@ func NewCronCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return cmd.Help()
 		},
-		// Resolve storePath at execution time so it reflects the current config
-		// and is shared across all subcommands.
+		// The gateway's store, shared by all subcommands.
 		PersistentPreRunE: func(_ *cobra.Command, _ []string) error {
-			cfg, err := internal.LoadConfig()
-			if err != nil {
-				return fmt.Errorf("error loading config: %w", err)
-			}
-			storePath = filepath.Join(cfg.WorkspacePath(), "cron", "jobs.json")
+			storePath = cron.DefaultStorePath(internal.GetHome())
 			return nil
 		},
 	}
 
+	open := func() (*cron.CronService, error) {
+		return cron.OpenCronService(storePath, nil)
+	}
+
 	cmd.AddCommand(
-		newListCommand(func() string { return storePath }),
-		newAddCommand(func() string { return storePath }),
-		newRemoveCommand(func() string { return storePath }),
-		newEnableCommand(func() string { return storePath }),
-		newDisableCommand(func() string { return storePath }),
+		newListCommand(open),
+		newAddCommand(open),
+		newRemoveCommand(open),
+		newEnableCommand(open),
+		newDisableCommand(open),
 	)
 
 	return cmd

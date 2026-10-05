@@ -11,15 +11,16 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func initPanicFile(panicFile string) io.WriteCloser {
+func initPanicFile(panicFile string) (io.WriteCloser, error) {
 	file, err := os.OpenFile(panicFile, os.O_WRONLY|os.O_CREATE|os.O_SYNC|os.O_APPEND, 0o600)
 	if err != nil {
-		panic(fmt.Sprintf("error in open panic: %v", err))
+		return nil, err
 	}
 	err = windows.SetStdHandle(windows.STD_ERROR_HANDLE, windows.Handle(file.Fd()))
 	if err != nil {
-		panic(fmt.Sprintf("Failed to redirect stderr to file: %v", err))
+		_ = file.Close()
+		return nil, fmt.Errorf("redirect stderr: %w", err)
 	}
 	os.Stderr = file
-	return file
+	return file, nil
 }

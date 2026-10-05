@@ -34,21 +34,49 @@ type GrantPolicy struct {
 	// different fields.
 	Subprocess []string
 
+	// AllowDeclared authorizes every name the module declared, without the
+	// host listing them. It is the trusted-desktop shortcut GrantAll uses.
+	//
+	// It used to be Publish that meant this, so a policy could not allow
+	// publishing without also allowing every network, credential and paid
+	// provider a module named.
+	AllowDeclared bool
+
 	// Publish is separate because it is a single capability rather than a set,
 	// and because publishing is the one effect a user almost always wants to
 	// approve per act rather than per session.
 	Publish bool
 }
 
-// GrantAll authorizes everything a module declared.
+// GrantAll authorizes everything a module declared, for a call the operator
+// approved: by a rule of the approval policy (tools.approval) that allows it,
+// or by answering an ask.
 //
 // This is for the trusted single-user desktop case this host was built for:
-// the person running the cockpit installed the module deliberately, and the
-// approval that matters happens at the call, in front of them, not in a policy
-// table they never wrote. Consent and cost gates still apply -- a grant says
-// "you may reach this provider", never "you may spend this money".
+// the person running it installed the module deliberately, and approved this
+// call against the effects it declares. Consent and cost gates still apply -- a
+// grant says "you may reach this provider", never "you may spend this money".
+//
+// Credentials are granted as NAMES. The host holds no secret for a module and
+// passes none: a module that needs a key reads it from its own configuration.
 func GrantAll() GrantPolicy {
-	return GrantPolicy{Publish: true, Subprocess: subprocessOverride()}
+	return GrantPolicy{AllowDeclared: true, Publish: true, Subprocess: subprocessOverride()}
+}
+
+// GrantDeclared is GrantAll without publishing: every name the module
+// declared, for a call the operator did not approve. Publishing is approved
+// per act, so only an approved call gets GrantAll.
+func GrantDeclared() GrantPolicy {
+	return GrantPolicy{AllowDeclared: true, Subprocess: subprocessOverride()}
+}
+
+// GrantsFor is the authority one call carries: GrantAll when the operator
+// approved it (approval.Approved), GrantDeclared otherwise.
+func GrantsFor(approved bool) GrantPolicy {
+	if approved {
+		return GrantAll()
+	}
+	return GrantDeclared()
 }
 
 // EnvSubprocessAllow names the executables the host may authorize, overriding
@@ -127,16 +155,16 @@ func ApplyGrants(d *modproto.Descriptor, req *modproto.Request, policy GrantPoli
 
 	p := d.Permissions
 	req.Grants = modproto.Grants{
-		Network:       intersect(p.Network, policy.Network, policy.Publish),
-		Credentials:   intersect(p.Credentials, policy.Credentials, policy.Publish),
-		PaidProviders: intersect(p.PaidProviders, policy.PaidProviders, policy.Publish),
+		Network:       intersect(p.Network, policy.Network, policy.AllowDeclared),
+		Credentials:   intersect(p.Credentials, policy.Credentials, policy.AllowDeclared),
+		PaidProviders: intersect(p.PaidProviders, policy.PaidProviders, policy.AllowDeclared),
 		// allowAll is deliberately FALSE when the policy names subprocesses:
 		// an explicit allow-list is the operator narrowing what this machine
 		// authorizes, and the trusted-host shortcut would discard it. The
 		// result is still a subset of what the module declared, so the
 		// override can only narrow, never widen.
 		Subprocess: intersect(p.Subprocess, policy.Subprocess,
-			policy.Publish && len(policy.Subprocess) == 0),
+			policy.AllowDeclared && len(policy.Subprocess) == 0),
 		Publish: p.Publish && policy.Publish,
 	}
 }

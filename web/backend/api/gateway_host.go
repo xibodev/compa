@@ -10,38 +10,11 @@ import (
 	"github.com/xibodev/compa/pkg/netbind"
 )
 
-func (h *Handler) effectiveLauncherPublic() bool {
-	if h.serverHostExplicit {
-		// -host takes precedence over -public and launcher-config public setting.
-		return false
-	}
-
-	if h.serverPublicExplicit {
-		return h.serverPublic
-	}
-
-	cfg, err := h.loadLauncherConfig()
-	if err == nil {
-		return cfg.Public
-	}
-
-	return h.serverPublic
-}
-
-func (h *Handler) gatewayHostOverride() string {
-	if h.serverHostExplicit {
-		return strings.TrimSpace(h.serverHostInput)
-	}
-	if h.effectiveLauncherPublic() {
-		return "*"
-	}
-	return ""
-}
-
+// effectiveGatewayBindHost is the host the kernel binds: its own config's
+// gateway.host. The launcher no longer widens it to its own listen host in
+// LAN mode: the kernel stays on loopback unless its config says otherwise,
+// and the dashboard proxies everything a browser needs from it.
 func (h *Handler) effectiveGatewayBindHost(cfg *config.Config) string {
-	if override := h.gatewayHostOverride(); override != "" {
-		return override
-	}
 	if cfg == nil {
 		return ""
 	}
@@ -56,11 +29,28 @@ func gatewayProbeHost(bindHost string) string {
 	return plan.ProbeHost
 }
 
+// gatewayProxyURL is where the web chat proxy sends requests: the running
+// kernel's address from its PID file, so a port saved in the config but not
+// yet applied by a restart does not break chat. Without a PID file the config
+// decides.
 func (h *Handler) gatewayProxyURL() *url.URL {
+	gateway.mu.Lock()
+	pidData := copyPidData(gateway.pidData)
+	gateway.mu.Unlock()
+
 	cfg, err := config.LoadConfig(h.configPath)
+	if err != nil {
+		cfg = nil
+	}
+	if pidData != nil && pidData.Port > 0 {
+		if target, parseErr := url.Parse(gatewayBaseURLForPidData(h, pidData, cfg)); parseErr == nil {
+			return target
+		}
+	}
+
 	port := 18790
 	bindHost := ""
-	if err == nil && cfg != nil {
+	if cfg != nil {
 		if cfg.Gateway.Port != 0 {
 			port = cfg.Gateway.Port
 		}

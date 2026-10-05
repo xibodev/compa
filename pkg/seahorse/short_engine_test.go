@@ -1274,10 +1274,12 @@ func TestEngineSessionMutexSharded(t *testing.T) {
 	mu3 := eng.getSessionMutex("agent:other")
 
 	// Both mutexes should be valid and usable
-	mu1.Lock()
-	mu1.Unlock()
-	mu3.Lock()
-	mu3.Unlock()
+	for _, mu := range []*sync.Mutex{mu1, mu3} {
+		if !mu.TryLock() {
+			t.Fatal("a session mutex is already held")
+		}
+		mu.Unlock()
+	}
 }
 
 func TestEngineSessionMutexBoundedMemory(t *testing.T) {

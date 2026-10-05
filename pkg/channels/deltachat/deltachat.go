@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mdp/qrterminal/v3"
@@ -149,6 +150,9 @@ type DeltaChatChannel struct {
 	serverPath string
 	dataDir    string
 
+	// rpcMu guards rpc, which a restart replaces, and orders a restart's
+	// SetRunning(true) against Stop.
+	rpcMu     sync.RWMutex
 	rpc       *rpcClient
 	accountID int64
 	selfAddr  string
@@ -156,6 +160,22 @@ type DeltaChatChannel struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 }
+
+// client returns the connection to the current RPC server.
+func (c *DeltaChatChannel) client() *rpcClient {
+	c.rpcMu.RLock()
+	defer c.rpcMu.RUnlock()
+	return c.rpc
+}
+
+// startRPCServer starts a deltachat-rpc-server; tests replace it.
+var startRPCServer = startRPC
+
+// The delays between attempts to restart an RPC server that died.
+var (
+	rpcRestartMinDelay = time.Second
+	rpcRestartMaxDelay = time.Minute
+)
 
 func parseDeltaChatEmailSetting(value string) (string, bool, error) {
 	email := strings.TrimSpace(value)
@@ -236,19 +256,7 @@ func (c *DeltaChatChannel) Start(ctx context.Context) error {
 		return fmt.Errorf("deltachat: create data dir %s: %w", c.dataDir, err)
 	}
 
-	rpc, err := startRPC(c.serverPath, c.dataDir)
-	if err != nil {
-		return err
-	}
-	c.rpc = rpc
-
-	if err := c.waitReady(c.ctx); err != nil {
-		c.rpc.close()
-		return err
-	}
-
-	if err := c.ensureAccount(c.ctx); err != nil {
-		c.rpc.close()
+	if err := c.startServer(c.ctx); err != nil {
 		return err
 	}
 
@@ -272,10 +280,66 @@ func (c *DeltaChatChannel) Start(ctx context.Context) error {
 	return nil
 }
 
+// startServer spawns the RPC server and sets its account up to receive.
+func (c *DeltaChatChannel) startServer(ctx context.Context) error {
+	rpc, err := startRPCServer(c.serverPath, c.dataDir)
+	if err != nil {
+		return err
+	}
+	c.rpcMu.Lock()
+	c.rpc = rpc
+	c.rpcMu.Unlock()
+
+	if err := c.waitReady(ctx); err != nil {
+		rpc.close()
+		return err
+	}
+	if err := c.ensureAccount(ctx); err != nil {
+		rpc.close()
+		return err
+	}
+	return nil
+}
+
+// restartRPC replaces dead, an RPC server that went away, retrying with
+// backoff until it succeeds or the channel stops. The channel reports it is
+// not running meanwhile. It reports whether the server is back.
+func (c *DeltaChatChannel) restartRPC(dead *rpcClient) bool {
+	c.SetRunning(false)
+	dead.close() // reap the process
+	delay := rpcRestartMinDelay
+	for {
+		logger.WarnCF("deltachat", "RPC server stopped; restarting it", map[string]any{"in": delay.String()})
+		select {
+		case <-c.ctx.Done():
+			return false
+		case <-time.After(delay):
+		}
+		err := c.startServer(c.ctx)
+		if err == nil {
+			c.rpcMu.Lock()
+			stopped := c.ctx.Err() != nil
+			if !stopped {
+				c.SetRunning(true)
+			}
+			rpc := c.rpc
+			c.rpcMu.Unlock()
+			if stopped { // Stop ran meanwhile and missed this server
+				rpc.close()
+				return false
+			}
+			logger.InfoC("deltachat", "RPC server restarted")
+			return true
+		}
+		logger.ErrorCF("deltachat", "Failed to restart the RPC server", map[string]any{"error": err.Error()})
+		delay = min(delay*2, rpcRestartMaxDelay)
+	}
+}
+
 // printInviteLink fetches the account-level secure-join invite link and prints
 // it (with a scannable QR) to the terminal and log.
 func (c *DeltaChatChannel) printInviteLink(ctx context.Context) {
-	raw, err := c.rpc.call(ctx, "get_chat_securejoin_qr_code", c.accountID, nil)
+	raw, err := c.client().call(ctx, "get_chat_securejoin_qr_code", c.accountID, nil)
 	if err != nil {
 		logger.WarnCF("deltachat", "Could not generate invite link", map[string]any{"error": err.Error()})
 		return
@@ -299,17 +363,20 @@ func (c *DeltaChatChannel) printInviteLink(ctx context.Context) {
 // Stop stops IO and terminates the RPC server.
 func (c *DeltaChatChannel) Stop(ctx context.Context) error {
 	logger.InfoC("deltachat", "Stopping Delta Chat channel")
+	c.rpcMu.Lock()
 	c.SetRunning(false)
 	if c.cancel != nil {
 		c.cancel()
 	}
-	if c.rpc != nil && c.accountID > 0 {
+	rpc := c.rpc
+	c.rpcMu.Unlock()
+	if rpc != nil && c.accountID > 0 {
 		stopCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		_, _ = c.rpc.call(stopCtx, "stop_io", c.accountID)
+		_, _ = rpc.call(stopCtx, "stop_io", c.accountID)
 		cancel()
 	}
-	if c.rpc != nil {
-		c.rpc.close()
+	if rpc != nil {
+		rpc.close()
 	}
 	logger.InfoC("deltachat", "Delta Chat channel stopped")
 	return nil
@@ -331,7 +398,7 @@ func (c *DeltaChatChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([
 	}
 
 	// misc_send_msg(account_id, chat_id, text, file, name, location, quoted_message_id)
-	raw, err := c.rpc.call(ctx, "misc_send_msg", c.accountID, chatID, msg.Content, nil, nil, nil, nil)
+	raw, err := c.client().call(ctx, "misc_send_msg", c.accountID, chatID, msg.Content, nil, nil, nil, nil)
 	if err != nil {
 		return nil, fmt.Errorf("deltachat send: %w", err)
 	}
@@ -388,7 +455,7 @@ func (c *DeltaChatChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaM
 			Filename: part.Filename,
 			Viewtype: deltaChatViewtype(part, meta),
 		}
-		raw, err := c.rpc.call(ctx, "send_msg", c.accountID, chatID, data)
+		raw, err := c.client().call(ctx, "send_msg", c.accountID, chatID, data)
 		if err != nil {
 			logger.ErrorCF("deltachat", "Failed to send media", map[string]any{
 				"ref":   part.Ref,
@@ -599,7 +666,7 @@ func (c *DeltaChatChannel) resolveEmailChatID(ctx context.Context, address strin
 }
 
 func (c *DeltaChatChannel) lookupContactIDByAddress(ctx context.Context, address string) (int64, error) {
-	raw, err := c.rpc.call(ctx, "lookup_contact_id_by_addr", c.accountID, address)
+	raw, err := c.client().call(ctx, "lookup_contact_id_by_addr", c.accountID, address)
 	if err != nil {
 		return 0, fmt.Errorf("lookup contact by address: %w", err)
 	}
@@ -611,7 +678,7 @@ func (c *DeltaChatChannel) createContact(ctx context.Context, address, name stri
 	if strings.TrimSpace(name) != "" {
 		displayName = strings.TrimSpace(name)
 	}
-	raw, err := c.rpc.call(ctx, "create_contact", c.accountID, address, displayName)
+	raw, err := c.client().call(ctx, "create_contact", c.accountID, address, displayName)
 	if err != nil {
 		return 0, fmt.Errorf("create contact: %w", err)
 	}
@@ -626,7 +693,7 @@ func (c *DeltaChatChannel) createContact(ctx context.Context, address, name stri
 }
 
 func (c *DeltaChatChannel) chatIDForContact(ctx context.Context, contactID int64) (int64, error) {
-	raw, err := c.rpc.call(ctx, "get_chat_id_by_contact_id", c.accountID, contactID)
+	raw, err := c.client().call(ctx, "get_chat_id_by_contact_id", c.accountID, contactID)
 	if err != nil {
 		return 0, fmt.Errorf("get chat by contact: %w", err)
 	}
@@ -638,7 +705,7 @@ func (c *DeltaChatChannel) chatIDForContact(ctx context.Context, contactID int64
 		return chatID, nil
 	}
 
-	raw, err = c.rpc.call(ctx, "create_chat_by_contact_id", c.accountID, contactID)
+	raw, err = c.client().call(ctx, "create_chat_by_contact_id", c.accountID, contactID)
 	if err != nil {
 		return 0, fmt.Errorf("create chat by contact: %w", err)
 	}
@@ -723,7 +790,7 @@ func uniqueStrings(values []string) []string {
 }
 
 func (c *DeltaChatChannel) findMatchingContacts(ctx context.Context, query string) ([]dcContact, error) {
-	raw, err := c.rpc.call(ctx, "get_contacts", c.accountID, 0, query)
+	raw, err := c.client().call(ctx, "get_contacts", c.accountID, 0, query)
 	if err != nil {
 		return nil, fmt.Errorf("search contacts: %w", err)
 	}
@@ -790,7 +857,7 @@ func contactMatchesAlias(contact dcContact, query string) bool {
 }
 
 func (c *DeltaChatChannel) findMatchingChats(ctx context.Context, query string) ([]dcChat, error) {
-	raw, err := c.rpc.call(ctx, "get_chatlist_entries", c.accountID, 0, query, nil)
+	raw, err := c.client().call(ctx, "get_chatlist_entries", c.accountID, 0, query, nil)
 	if err != nil {
 		return nil, fmt.Errorf("search chats: %w", err)
 	}
@@ -845,7 +912,7 @@ func exactChatMatches(query string, chats []dcChat) []dcChat {
 }
 
 func (c *DeltaChatChannel) getFullChatByContext(ctx context.Context, chatID int64) (*dcChat, error) {
-	raw, err := c.rpc.call(ctx, "get_full_chat_by_id", c.accountID, chatID)
+	raw, err := c.client().call(ctx, "get_full_chat_by_id", c.accountID, chatID)
 	if err != nil {
 		return nil, fmt.Errorf("get chat %d: %w", chatID, err)
 	}
@@ -941,7 +1008,7 @@ func (c *DeltaChatChannel) waitReady(ctx context.Context) error {
 			return ctx.Err()
 		}
 		callCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
-		_, err := c.rpc.call(callCtx, "get_system_info")
+		_, err := c.client().call(callCtx, "get_system_info")
 		cancel()
 		if err == nil {
 			return nil
@@ -961,7 +1028,9 @@ func (c *DeltaChatChannel) ensureAccount(ctx context.Context) error {
 		return c.createChatmailBootstrapAccount(ctx, server)
 	}
 
-	c.selfAddr = strings.ToLower(c.config.Email)
+	if selfAddr := strings.ToLower(c.config.Email); c.selfAddr != selfAddr {
+		c.selfAddr = selfAddr
+	}
 
 	accounts, err := c.listAccounts(ctx)
 	if err != nil {
@@ -981,7 +1050,7 @@ func (c *DeltaChatChannel) ensureAccount(ctx context.Context) error {
 			return c.passwordRequiredError("account not found")
 		}
 
-		raw, callErr := c.rpc.call(ctx, "add_account")
+		raw, callErr := c.client().call(ctx, "add_account")
 		if callErr != nil {
 			return fmt.Errorf("deltachat add_account: %w", callErr)
 		}
@@ -1014,26 +1083,30 @@ func (c *DeltaChatChannel) ensureAccount(ctx context.Context) error {
 		}
 	}
 
-	if _, err := c.rpc.call(ctx, "select_account", accountID); err != nil {
+	if _, err := c.client().call(ctx, "select_account", accountID); err != nil {
 		return fmt.Errorf("deltachat select_account: %w", err)
 	}
 	if err := c.applyProfileConfig(ctx, accountID); err != nil {
 		return err
 	}
 	// Mark this account as a bot so the core delivers all messages to us.
-	if _, err := c.rpc.call(ctx, "batch_set_config", accountID, map[string]string{"bot": "1"}); err != nil {
+	if _, err := c.client().call(ctx, "batch_set_config", accountID, map[string]string{"bot": "1"}); err != nil {
 		return fmt.Errorf("deltachat set bot config: %w", err)
 	}
-	if _, err := c.rpc.call(ctx, "start_io", accountID); err != nil {
+	if _, err := c.client().call(ctx, "start_io", accountID); err != nil {
 		return fmt.Errorf("deltachat start_io: %w", err)
 	}
 
-	c.accountID = accountID
+	// A restart finds the same account; leaving the fields alone then keeps
+	// them safe to read from other goroutines.
+	if c.accountID != accountID {
+		c.accountID = accountID
+	}
 	return nil
 }
 
 func (c *DeltaChatChannel) createChatmailBootstrapAccount(ctx context.Context, server string) error {
-	raw, err := c.rpc.call(ctx, "add_account")
+	raw, err := c.client().call(ctx, "add_account")
 	if err != nil {
 		return fmt.Errorf("deltachat add_account: %w", err)
 	}
@@ -1051,7 +1124,7 @@ func (c *DeltaChatChannel) createChatmailBootstrapAccount(ctx context.Context, s
 
 	confCtx, cancel := context.WithTimeout(ctx, configureTimeout)
 	defer cancel()
-	if _, callErr := c.rpc.call(
+	if _, callErr := c.client().call(
 		confCtx,
 		"add_transport_from_qr",
 		accountID,
@@ -1088,20 +1161,20 @@ func (c *DeltaChatChannel) createChatmailBootstrapAccount(ctx context.Context, s
 }
 
 func (c *DeltaChatChannel) cleanupPendingAccount(ctx context.Context, accountID int64) {
-	if accountID <= 0 || c.rpc == nil {
+	if accountID <= 0 || c.client() == nil {
 		return
 	}
 	stopCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	_, _ = c.rpc.call(stopCtx, "stop_ongoing_process", accountID)
+	_, _ = c.client().call(stopCtx, "stop_ongoing_process", accountID)
 	cancel()
 
 	removeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	_, _ = c.rpc.call(removeCtx, "remove_account", accountID)
+	_, _ = c.client().call(removeCtx, "remove_account", accountID)
 	cancel()
 }
 
 func (c *DeltaChatChannel) getAccountConfigString(ctx context.Context, accountID int64, key string) (string, error) {
-	raw, err := c.rpc.call(ctx, "get_config", accountID, key)
+	raw, err := c.client().call(ctx, "get_config", accountID, key)
 	if err != nil {
 		return "", fmt.Errorf("get config %s: %w", key, err)
 	}
@@ -1138,7 +1211,7 @@ func (c *DeltaChatChannel) applyProfileConfig(ctx context.Context, accountID int
 	if len(cfgMap) == 0 {
 		return nil
 	}
-	if _, err := c.rpc.call(ctx, "batch_set_config", accountID, cfgMap); err != nil {
+	if _, err := c.client().call(ctx, "batch_set_config", accountID, cfgMap); err != nil {
 		return fmt.Errorf("deltachat set profile config: %w", err)
 	}
 	return nil
@@ -1152,7 +1225,7 @@ func (c *DeltaChatChannel) configureAccount(ctx context.Context, accountID int64
 	}
 
 	cfgMap := accountConfigMap(c.config)
-	if _, err := c.rpc.call(ctx, "batch_set_config", accountID, cfgMap); err != nil {
+	if _, err := c.client().call(ctx, "batch_set_config", accountID, cfgMap); err != nil {
 		return fmt.Errorf("deltachat set account config: %w", err)
 	}
 
@@ -1161,7 +1234,7 @@ func (c *DeltaChatChannel) configureAccount(ctx context.Context, accountID int64
 	})
 	confCtx, cancel := context.WithTimeout(ctx, configureTimeout)
 	defer cancel()
-	if _, err := c.rpc.call(confCtx, "configure", accountID); err != nil {
+	if _, err := c.client().call(confCtx, "configure", accountID); err != nil {
 		return fmt.Errorf("deltachat configure (check email/password/server): %w", err)
 	}
 	return nil
@@ -1170,7 +1243,7 @@ func (c *DeltaChatChannel) configureAccount(ctx context.Context, accountID int64
 func (c *DeltaChatChannel) accountConfigChanged(ctx context.Context, accountID int64) (bool, error) {
 	want := accountConfigMap(c.config)
 	for _, key := range managedAccountConfigKeys {
-		raw, err := c.rpc.call(ctx, "get_config", accountID, key)
+		raw, err := c.client().call(ctx, "get_config", accountID, key)
 		if err != nil {
 			return false, fmt.Errorf("deltachat get config %s: %w", key, err)
 		}
@@ -1232,7 +1305,7 @@ func accountConfigOptionalInt(value int) *string {
 }
 
 func (c *DeltaChatChannel) listAccounts(ctx context.Context) ([]dcAccount, error) {
-	raw, err := c.rpc.call(ctx, "get_all_accounts")
+	raw, err := c.client().call(ctx, "get_all_accounts")
 	if err != nil {
 		return nil, fmt.Errorf("deltachat get_all_accounts: %w", err)
 	}
@@ -1244,7 +1317,7 @@ func (c *DeltaChatChannel) listAccounts(ctx context.Context) ([]dcAccount, error
 }
 
 func (c *DeltaChatChannel) isConfigured(ctx context.Context, accountID int64) (bool, error) {
-	raw, err := c.rpc.call(ctx, "is_configured", accountID)
+	raw, err := c.client().call(ctx, "is_configured", accountID)
 	if err != nil {
 		return false, fmt.Errorf("deltachat is_configured: %w", err)
 	}
@@ -1261,13 +1334,13 @@ func (c *DeltaChatChannel) joinInviteLink(ctx context.Context) error {
 	if link == "" {
 		return nil
 	}
-	chatRaw, err := c.rpc.call(ctx, "secure_join", c.accountID, link)
+	chatRaw, err := c.client().call(ctx, "secure_join", c.accountID, link)
 	if err != nil {
 		return err
 	}
 	var chatID int64
 	if err := json.Unmarshal(chatRaw, &chatID); err == nil && chatID > 0 {
-		_, _ = c.rpc.call(ctx, "accept_chat", c.accountID, chatID)
+		_, _ = c.client().call(ctx, "accept_chat", c.accountID, chatID)
 		logger.InfoCF("deltachat", "Joined invite chat", map[string]any{"chat_id": chatID})
 	}
 	return nil

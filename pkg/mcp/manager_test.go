@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -277,6 +278,7 @@ func TestConnectServerPublishesRuntimeEvents(t *testing.T) {
 		_ context.Context,
 		name string,
 		cfg config.MCPServerConfig,
+		_ connectOptions,
 	) (*ServerConnection, error) {
 		if name == "bad" {
 			return nil, fmt.Errorf("connect failed")
@@ -465,7 +467,7 @@ func TestConnectServer_StreamableHTTPRequestResponseMode(t *testing.T) {
 				Headers: map[string]string{
 					"Authorization": "Bearer test-token",
 				},
-			})
+			}, connectOptions{})
 			if err != nil {
 				t.Fatalf("connectServer(%q) error = %v", transportType, err)
 			}
@@ -537,78 +539,173 @@ func TestConnectServer_StreamableHTTPRequestResponseMode(t *testing.T) {
 	}
 }
 
-func TestCallTool_ReconnectsWhenHTTPServerLosesSession(t *testing.T) {
-	originalConnectServerFunc := connectServerFunc
-	t.Cleanup(func() {
-		connectServerFunc = originalConnectServerFunc
-	})
+// A call whose session the server lost is sent again only for a tool that a
+// trusted server declares read-only or idempotent; either way the server is
+// reconnected for the calls that follow.
+func TestCallToolAfterLostSession(t *testing.T) {
+	cases := []struct {
+		name        string
+		trusted     bool
+		annotations *sdkmcp.ToolAnnotations
+		wantRetry   bool
+	}{
+		{name: "untrusted idempotent", annotations: &sdkmcp.ToolAnnotations{IdempotentHint: true}},
+		{name: "trusted without hints", trusted: true},
+		{name: "trusted destructive", trusted: true, annotations: &sdkmcp.ToolAnnotations{}},
+		{name: "trusted read-only", trusted: true, annotations: &sdkmcp.ToolAnnotations{ReadOnlyHint: true}, wantRetry: true},
+		{name: "trusted idempotent", trusted: true, annotations: &sdkmcp.ToolAnnotations{IdempotentHint: true}, wantRetry: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			originalConnectServerFunc := connectServerFunc
+			t.Cleanup(func() { connectServerFunc = originalConnectServerFunc })
 
-	staleConn, staleTransport, err := newScriptedServerConnection(
-		"session-1",
-		nil,
-		fmt.Errorf(`sending "tools/call": failed to connect (session ID: session-1): %w`, sdkmcp.ErrSessionMissing),
-	)
+			staleConn, staleTransport, err := newScriptedServerConnection(
+				"session-1",
+				nil,
+				fmt.Errorf(`sending "tools/call": failed to connect (session ID: session-1): %w`, sdkmcp.ErrSessionMissing),
+			)
+			if err != nil {
+				t.Fatalf("newScriptedServerConnection(stale) error = %v", err)
+			}
+			staleConn.Config.Trusted = tc.trusted
+			staleConn.Tools[0].Annotations = tc.annotations
+			freshConn, freshTransport, err := newScriptedServerConnection(
+				"session-2",
+				&sdkmcp.CallToolResult{Content: []sdkmcp.Content{&sdkmcp.TextContent{Text: "reconnected"}}},
+				nil,
+			)
+			if err != nil {
+				t.Fatalf("newScriptedServerConnection(fresh) error = %v", err)
+			}
+
+			connectCalls := 0
+			connectServerFunc = func(context.Context, string, config.MCPServerConfig, connectOptions) (*ServerConnection, error) {
+				connectCalls++
+				if connectCalls == 1 {
+					return freshConn, nil
+				}
+				return nil, fmt.Errorf("unexpected reconnect attempt %d", connectCalls)
+			}
+
+			mgr := NewManager()
+			mgr.servers["flaky"] = staleConn
+
+			result, err := mgr.CallTool(context.Background(), "flaky", "echo", map[string]any{"query": "hello"})
+			if tc.wantRetry {
+				if err != nil {
+					t.Fatalf("CallTool() error = %v", err)
+				}
+				if got := joinTextContent(result); got != "reconnected" {
+					t.Fatalf("CallTool() text = %q, want %q", got, "reconnected")
+				}
+			} else if !errors.Is(err, ErrSessionLost) || !strings.Contains(err.Error(), "may or may not have run") {
+				t.Fatalf("CallTool() error = %v, want ErrSessionLost", err)
+			}
+			if staleTransport.calls() != 1 {
+				t.Fatalf("stale session got %d tools/call, want 1", staleTransport.calls())
+			}
+			wantFresh := 0
+			if tc.wantRetry {
+				wantFresh = 1
+			}
+			if freshTransport.calls() != wantFresh {
+				t.Fatalf("fresh session got %d tools/call, want %d", freshTransport.calls(), wantFresh)
+			}
+
+			// The server was reconnected for the calls that follow.
+			conn, ok := mgr.GetServer("flaky")
+			if !ok || conn.Session.ID() != "session-2" || connectCalls != 1 {
+				t.Fatalf("server after the lost session: ok=%v connects=%d", ok, connectCalls)
+			}
+			if _, err := mgr.CallTool(context.Background(), "flaky", "echo", nil); err != nil {
+				t.Fatalf("next CallTool() error = %v", err)
+			}
+		})
+	}
+}
+
+// A server reconnected after its session ended may list other tools: the
+// manager's tools-changed handler is told them.
+func TestReconnectedServerToolsReachTheToolsChangedHandler(t *testing.T) {
+	originalConnectServerFunc := connectServerFunc
+	t.Cleanup(func() { connectServerFunc = originalConnectServerFunc })
+
+	staleConn, _, err := newScriptedServerConnection("session-1", nil, nil)
 	if err != nil {
 		t.Fatalf("newScriptedServerConnection(stale) error = %v", err)
 	}
-	freshConn, freshTransport, err := newScriptedServerConnection(
-		"session-2",
-		&sdkmcp.CallToolResult{
-			Content: []sdkmcp.Content{
-				&sdkmcp.TextContent{Text: "reconnected"},
-			},
-		},
-		nil,
-	)
+	staleConn.lost.Store(true)
+	freshConn, _, err := newScriptedServerConnection("session-2",
+		&sdkmcp.CallToolResult{Content: []sdkmcp.Content{&sdkmcp.TextContent{Text: "ok"}}}, nil)
 	if err != nil {
 		t.Fatalf("newScriptedServerConnection(fresh) error = %v", err)
 	}
-
-	connectCalls := 0
-	connectServerFunc = func(ctx context.Context, name string, cfg config.MCPServerConfig) (*ServerConnection, error) {
-		connectCalls++
-		if connectCalls == 1 {
-			return freshConn, nil
-		}
-		return nil, fmt.Errorf("unexpected reconnect attempt %d", connectCalls)
+	freshConn.Tools = append(freshConn.Tools, &sdkmcp.Tool{Name: "added", InputSchema: map[string]any{"type": "object"}})
+	connectServerFunc = func(context.Context, string, config.MCPServerConfig, connectOptions) (*ServerConnection, error) {
+		return freshConn, nil
 	}
 
-	mgr := NewManager()
+	changed := make(chan []*sdkmcp.Tool, 4)
+	mgr := NewManager(WithToolsChangedHandler(func(name string, tools []*sdkmcp.Tool) {
+		if name == "flaky" {
+			changed <- tools
+		}
+	}))
 	mgr.servers["flaky"] = staleConn
 
-	result, err := mgr.CallTool(context.Background(), "flaky", "echo", map[string]any{
-		"query": "hello",
-	})
-	if err != nil {
+	if _, err := mgr.CallTool(context.Background(), "flaky", "echo", nil); err != nil {
 		t.Fatalf("CallTool() error = %v", err)
 	}
-	if result == nil || len(result.Content) != 1 {
-		t.Fatalf("CallTool() returned unexpected content: %#v", result)
+	select {
+	case tools := <-changed:
+		if len(tools) != 2 || tools[1].Name != "added" {
+			t.Fatalf("handler told %d tools, want the reconnected server's 2", len(tools))
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the tools-changed handler was not told the reconnected server's tools")
 	}
+}
 
-	text, ok := result.Content[0].(*sdkmcp.TextContent)
-	if !ok {
-		t.Fatalf("CallTool() content type = %T, want *sdkmcp.TextContent", result.Content[0])
-	}
-	if text.Text != "reconnected" {
-		t.Fatalf("CallTool() text = %q, want %q", text.Text, "reconnected")
-	}
+// A tool whose own error says "session not found" did not lose the session:
+// its error comes back as it is, and the server is neither reconnected nor
+// called again, even for a trusted read-only tool.
+func TestCallToolReturnsAToolErrorThatMentionsASession(t *testing.T) {
+	originalConnectServerFunc := connectServerFunc
+	t.Cleanup(func() { connectServerFunc = originalConnectServerFunc })
 
-	conn, ok := mgr.GetServer("flaky")
-	if !ok {
-		t.Fatal("expected flaky server to remain connected after reconnect")
+	conn, transport, err := newScriptedServerConnection("session-1", nil, nil)
+	if err != nil {
+		t.Fatalf("newScriptedServerConnection() error = %v", err)
 	}
-	if conn.Session.ID() != "session-2" {
-		t.Fatalf("Session.ID() = %q, want %q", conn.Session.ID(), "session-2")
+	const toolErr = "session not found: the cart expired"
+	transport.toolCallRPCErr = &jsonrpc.Error{Code: -32000, Message: toolErr}
+	conn.Config.Trusted = true
+	conn.Tools[0].Annotations = &sdkmcp.ToolAnnotations{ReadOnlyHint: true}
+	freshConn, freshTransport, err := newScriptedServerConnection("session-2",
+		&sdkmcp.CallToolResult{Content: []sdkmcp.Content{&sdkmcp.TextContent{Text: "sent again"}}}, nil)
+	if err != nil {
+		t.Fatalf("newScriptedServerConnection(fresh) error = %v", err)
 	}
-	if connectCalls != 1 {
-		t.Fatalf("connectCalls = %d, want 1", connectCalls)
+	connects := 0
+	connectServerFunc = func(context.Context, string, config.MCPServerConfig, connectOptions) (*ServerConnection, error) {
+		connects++
+		return freshConn, nil
 	}
-	if staleTransport.toolCallCalls != 1 {
-		t.Fatalf("stale toolCallCalls = %d, want 1", staleTransport.toolCallCalls)
+	mgr := NewManager()
+	mgr.servers["flaky"] = conn
+
+	_, err = mgr.CallTool(context.Background(), "flaky", "echo", map[string]any{"query": "hello"})
+	var rpcErr *jsonrpc.Error
+	if !errors.As(err, &rpcErr) || rpcErr.Message != toolErr {
+		t.Fatalf("CallTool() error = %v, want the tool's error", err)
 	}
-	if freshTransport.toolCallCalls != 1 {
-		t.Fatalf("fresh toolCallCalls = %d, want 1", freshTransport.toolCallCalls)
+	if errors.Is(err, ErrSessionLost) || strings.Contains(err.Error(), "may or may not have run") {
+		t.Fatalf("CallTool() error = %v, want no lost session", err)
+	}
+	if transport.calls() != 1 || freshTransport.calls() != 0 || connects != 0 || conn.lost.Load() {
+		t.Fatalf("tools/call sent %d+%d times, %d reconnects, lost = %v; want one call and no reconnect",
+			transport.calls(), freshTransport.calls(), connects, conn.lost.Load())
 	}
 }
 
@@ -620,6 +717,58 @@ func TestClose_IdempotentOnEmptyManager(t *testing.T) {
 	}
 	if err := mgr.Close(); err != nil {
 		t.Fatalf("second close should be idempotent, got: %v", err)
+	}
+}
+
+// TL-12: a server that announces its tool list changed has its tools listed
+// again, and the manager's tools-changed handler told them.
+func TestToolListChangedNotificationRefreshesServerTools(t *testing.T) {
+	server := sdkmcp.NewServer(&sdkmcp.Implementation{Name: "dynamic", Version: "1.0.0"}, nil)
+	echo := func(context.Context, *sdkmcp.CallToolRequest, map[string]any) (*sdkmcp.CallToolResult, any, error) {
+		return &sdkmcp.CallToolResult{Content: []sdkmcp.Content{&sdkmcp.TextContent{Text: "ok"}}}, nil, nil
+	}
+	sdkmcp.AddTool(server, &sdkmcp.Tool{Name: "first", Description: "first tool"}, echo)
+	handler := sdkmcp.NewStreamableHTTPHandler(func(*http.Request) *sdkmcp.Server { return server }, nil)
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+
+	changed := make(chan []*sdkmcp.Tool, 16)
+	mgr := NewManager(WithToolsChangedHandler(func(name string, tools []*sdkmcp.Tool) {
+		if name == "dynamic" {
+			changed <- tools
+		}
+	}))
+	defer mgr.Close()
+	// "sse" keeps the stream open that server notifications arrive on.
+	if err := mgr.ConnectServer(context.Background(), "dynamic", config.MCPServerConfig{
+		Enabled: true,
+		Type:    "sse",
+		URL:     httpServer.URL,
+	}); err != nil {
+		t.Fatalf("ConnectServer() error = %v", err)
+	}
+	if got := len(mgr.ServerTools("dynamic")); got != 1 {
+		t.Fatalf("ServerTools() has %d tools at connect, want 1", got)
+	}
+
+	// The notification stream opens after connecting; add tools until one
+	// change is announced on it.
+	deadline := time.After(15 * time.Second)
+	for added := 1; ; added++ {
+		sdkmcp.AddTool(server, &sdkmcp.Tool{Name: fmt.Sprintf("added_%d", added), Description: "added"}, echo)
+		select {
+		case tools := <-changed:
+			if len(tools) < 2 {
+				t.Fatalf("changed tool list has %d tools, want the added ones too", len(tools))
+			}
+			if got := len(mgr.ServerTools("dynamic")); got < 2 {
+				t.Fatalf("ServerTools() has %d tools after the change, want the new list", got)
+			}
+			return
+		case <-time.After(300 * time.Millisecond):
+		case <-deadline:
+			t.Fatal("the tool list change was never handled")
+		}
 	}
 }
 
@@ -662,6 +811,9 @@ type scriptedTransport struct {
 	sessionID      string
 	toolCallResult *sdkmcp.CallToolResult
 	toolCallErr    error
+	// toolCallRPCErr, when set, is the server's JSON-RPC error answer to
+	// tools/call.
+	toolCallRPCErr *jsonrpc.Error
 
 	mu            sync.Mutex
 	toolCallCalls int
@@ -727,6 +879,14 @@ func (t *scriptedTransport) Write(ctx context.Context, msg jsonrpc.Message) erro
 		if t.toolCallErr != nil {
 			return t.toolCallErr
 		}
+		if t.toolCallRPCErr != nil {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case t.incoming <- &jsonrpc.Response{ID: req.ID, Error: t.toolCallRPCErr}:
+				return nil
+			}
+		}
 
 		payload, err := json.Marshal(t.toolCallResult)
 		if err != nil {
@@ -756,4 +916,10 @@ func (t *scriptedTransport) Close() error {
 
 func (t *scriptedTransport) SessionID() string {
 	return t.sessionID
+}
+
+func (t *scriptedTransport) calls() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.toolCallCalls
 }

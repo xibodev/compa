@@ -53,7 +53,7 @@ func (r *RouteResolver) ResolveRoute(inbound bus.InboundContext) ResolvedRoute {
 	}
 
 	return ResolvedRoute{
-		AgentID:       r.pickAgentID(r.resolveDefaultAgentID()),
+		AgentID:       r.pickAgentID(ResolveDefaultAgentID(r.cfg)),
 		Channel:       channel,
 		AccountID:     accountID,
 		SessionPolicy: r.sessionPolicy(nil),
@@ -64,7 +64,7 @@ func (r *RouteResolver) ResolveRoute(inbound bus.InboundContext) ResolvedRoute {
 func (r *RouteResolver) pickAgentID(agentID string) string {
 	trimmed := strings.TrimSpace(agentID)
 	if trimmed == "" {
-		return NormalizeAgentID(r.resolveDefaultAgentID())
+		return ResolveDefaultAgentID(r.cfg)
 	}
 	normalized := NormalizeAgentID(trimmed)
 	agents := r.cfg.Agents.List
@@ -76,18 +76,24 @@ func (r *RouteResolver) pickAgentID(agentID string) string {
 			return normalized
 		}
 	}
-	return NormalizeAgentID(r.resolveDefaultAgentID())
+	return ResolveDefaultAgentID(r.cfg)
 }
 
-func (r *RouteResolver) resolveDefaultAgentID() string {
-	agents := r.cfg.Agents.List
+// ResolveDefaultAgentID returns the agent that handles what no dispatch rule
+// claims, and the background work that belongs to no conversation: the first
+// agents.list entry marked default, else the first entry, else the implicit
+// "main" agent. It is the single definition of the default agent.
+func ResolveDefaultAgentID(cfg *config.Config) string {
+	if cfg == nil {
+		return DefaultAgentID
+	}
+	agents := cfg.Agents.List
 	if len(agents) == 0 {
 		return DefaultAgentID
 	}
 	for _, a := range agents {
 		if a.Default {
-			id := strings.TrimSpace(a.ID)
-			if id != "" {
+			if id := strings.TrimSpace(a.ID); id != "" {
 				return NormalizeAgentID(id)
 			}
 		}

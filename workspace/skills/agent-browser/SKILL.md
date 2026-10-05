@@ -8,7 +8,7 @@ metadata: {"compa":{"emoji":"🌐","requires":{"bins":["agent-browser"]},"instal
 
 CLI browser automation via Chrome/Chromium CDP. Install: `npm i -g agent-browser && agent-browser install`.
 
-**Before using this skill**, verify the tool is available by running `which agent-browser`. If the command is not found, tell the user that browser automation requires the `agent-browser` CLI and Chromium, which are only available in the heavy container image. Do not attempt to install it at runtime.
+**Before using this skill**, verify the tool is available by running `which agent-browser`. If the command is not found, tell the user that browser automation requires the `agent-browser` CLI and Chromium. Do not attempt to install it at runtime.
 
 ## Core Workflow
 
@@ -79,22 +79,17 @@ agent-browser find role button click --name "Submit"
 
 ## Authentication
 
-```bash
-# Option 1: Import from user's running Chrome
-agent-browser --auto-connect state save ./auth.json
-agent-browser --state ./auth.json open https://app.example.com
+Never import cookies or saved logins from the user's own browser, and don't write session
+state files into the workspace. Let the user log in once in a dedicated profile or session:
 
-# Option 2: Persistent profile
+```bash
+# Option 1: Persistent profile
 agent-browser --profile ~/.myapp open https://app.example.com/login
 # ... login once, all future runs are authenticated
 
-# Option 3: Session name (auto-save/restore)
+# Option 2: Session name (auto-save/restore)
 agent-browser --session-name myapp open https://app.example.com/login
 # ... login, close, next run state is restored
-
-# Option 4: State file
-agent-browser state save auth.json
-agent-browser state load auth.json
 ```
 
 ## Iframes
