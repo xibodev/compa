@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -929,6 +930,23 @@ func TestChannel_SecureStrings_ApiKeys_NoMerge(t *testing.T) {
 	assert.Equal(t, "", cfg.Token.String())
 	// ["[NOT_HERE]"] entries are filtered out → nil
 	assert.Nil(t, cfg.ApiKeys)
+}
+
+// Turns running at the same time read the same channel's settings; decoding
+// them on first use doesn't race (go test -race).
+func TestGetDecodedOnFirstUseFromSeveralGoroutines(t *testing.T) {
+	ch := DefaultConfig().Channels["web"]
+	var wg sync.WaitGroup
+	for range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if decoded, err := ch.GetDecoded(); err != nil || decoded == nil {
+				t.Errorf("GetDecoded() = %v, %v", decoded, err)
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 // ─── helper ───

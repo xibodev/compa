@@ -390,11 +390,17 @@ func (b *Channel) Decode(target any) error {
 	return nil
 }
 
+// decodeMu serializes GetDecoded's decoding on first use: turns running at
+// the same time read the same channel's settings.
+var decodeMu sync.Mutex
+
 // GetDecoded returns the previously decoded settings struct.
 // If Decode hasn't been called yet, it lazily decodes using the channel Type prototype.
 // Returns an error if decoding fails; the decoded value (possibly nil) is still returned
 // so callers can distinguish between "not decoded" and "decode failed".
 func (b *Channel) GetDecoded() (any, error) {
+	decodeMu.Lock()
+	defer decodeMu.Unlock()
 	if b.extend == nil {
 		// fallback to prototype-based creation
 		if target := newChannelSettings(b.Type); target != nil {

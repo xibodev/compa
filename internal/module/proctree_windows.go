@@ -33,6 +33,8 @@ type processTree struct {
 	job   windows.Handle // 0 when the process could not be put in a job
 	timer *time.Timer
 	done  bool
+	// stopped is set by a stop asked for before started knew the process.
+	stopped bool
 }
 
 func newProcessTree() *processTree { return &processTree{} }
@@ -48,6 +50,7 @@ func (t *processTree) prepare(cmd *exec.Cmd) {
 }
 
 // started puts the suspended process in a kill-on-close job, then lets it run.
+// A process asked to stop before this ends without running.
 //
 // A process that cannot join a job still runs: some hosts run inside a job
 // that forbids nesting. Stopping it then falls back to taskkill /T.
@@ -61,8 +64,13 @@ func (t *processTree) started(p *os.Process) error {
 			_ = windows.CloseHandle(job)
 		}
 	}
+	stopped := t.stopped
 	t.mu.Unlock()
 
+	if stopped {
+		t.kill()
+		return nil
+	}
 	if err := resumeProcess(uint32(p.Pid)); err != nil {
 		t.kill()
 		return fmt.Errorf("could not start the module after creating it: %w", err)
@@ -75,10 +83,14 @@ func (t *processTree) started(p *os.Process) error {
 // CTRL_BREAK is the console's graceful stop. It only reaches a process sharing
 // this host's console, so a host without one stops the tree at once. Before
 // started knows the process there is nothing to signal: a break to process
-// group 0 would reach every process on the console, this host included.
+// group 0 would reach every process on the console, this host included. The
+// process is still suspended then, and started ends it instead of resuming it.
 func (t *processTree) interrupt() error {
 	t.mu.Lock()
 	pid, done := t.pid, t.done
+	if pid == 0 {
+		t.stopped = true
+	}
 	t.mu.Unlock()
 	if done || pid == 0 {
 		return os.ErrProcessDone

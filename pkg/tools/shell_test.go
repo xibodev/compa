@@ -1794,19 +1794,18 @@ func TestShellTool_Background_ReadAfterExit(t *testing.T) {
 	require.NotEmpty(t, resp.SessionID)
 	sessionID := resp.SessionID
 
-	// Wait for process to exit (sleep 1 + some buffer)
-	time.Sleep(1500 * time.Millisecond)
-
-	// Poll to verify process is done
-	pollResult := tool.Execute(ctx, map[string]any{
-		"action":    "poll",
-		"sessionId": sessionID,
-	})
-	require.False(t, pollResult.IsError, "poll should succeed: %s", pollResult.ForLLM)
-	var pollResp ExecResponse
-	err = json.Unmarshal([]byte(pollResult.ForLLM), &pollResp)
-	require.NoError(t, err)
-	require.Equal(t, "done", pollResp.Status, "process should be done")
+	// Wait for the process to exit; a busy machine can take a while past the
+	// command's second of sleep.
+	require.Eventually(t, func() bool {
+		pollResult := tool.Execute(ctx, map[string]any{
+			"action":    "poll",
+			"sessionId": sessionID,
+		})
+		var pollResp ExecResponse
+		return !pollResult.IsError &&
+			json.Unmarshal([]byte(pollResult.ForLLM), &pollResp) == nil &&
+			pollResp.Status == "done"
+	}, 15*time.Second, 100*time.Millisecond, "process should be done")
 
 	// Try to read output AFTER process has exited
 	readResult := tool.Execute(ctx, map[string]any{
