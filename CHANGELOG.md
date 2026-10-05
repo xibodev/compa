@@ -5,6 +5,8 @@ Notable changes to Compa, newest first. Versions follow
 
 ## Unreleased
 
+## 2.0.0 - 2026-10-05
+
 Settings below are keys in `~/.compa/config.json` unless noted.
 
 ### Channels
@@ -88,7 +90,8 @@ Settings below are keys in `~/.compa/config.json` unless noted.
 - The heartbeat runs for your chat and only writes when something needs your
   attention; without a known chat it is skipped.
 - Scheduled jobs are stored in `~/.compa/state/cron`, outside the agent's
-  workspace, and failed runs are recorded as errors.
+  workspace, and failed runs are recorded as errors. Jobs made with 1.0.0, in
+  the workspace's `cron` folder, aren't moved there: add them again.
 - `compa-kernel onboard` keeps workspace files you changed; `--force` replaces
   them after a backup.
 - `compa-kernel update` puts the previous version back when the new kernel
@@ -104,5 +107,6 @@ Settings below are keys in `~/.compa/config.json` unless noted.
   `COMPA_KEY_PASSPHRASE` and `COMPA_SSH_KEY_PATH`. Secrets are plain values in
   `.security.yml` (mode 600), or `file://` references to files beside it.
 - `COMPA_APPROVE_CAPABILITIES`, replaced by `tools.approval`.
-- `agents.defaults.subturn.default_token_budget`. A config that still has it
-  fails to load, and the error names the key.
+- `agents.defaults.subturn.default_token_budget`, which every config written
+  by 1.0.0 has. Remove it: a config that still has it fails to load, and the
+  error names the key.
