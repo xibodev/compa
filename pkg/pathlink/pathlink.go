@@ -30,6 +30,8 @@ const maxHops = 40
 //
 // A path that does not exist resolves to itself with no error: naming a file
 // about to be written is legitimate, and the caller's lexical check governs it.
+// The part of it that exists is resolved all the same, so a file about to be
+// written compares equal to the folder it goes in.
 func Resolve(path string) (string, error) {
 	if real, err := filepath.EvalSymlinks(path); err == nil && !IsLink(real) {
 		return real, nil
@@ -45,9 +47,30 @@ func Resolve(path string) (string, error) {
 			return "", err
 		}
 		if !changed {
-			return cur, nil
+			return canonical(cur), nil
 		}
 		cur = next
+	}
+}
+
+// canonical returns path with its longest existing prefix in the form
+// filepath.EvalSymlinks gives it -- the true names, which on Windows means
+// long names rather than 8.3 short ones -- and the rest as written. Resolve
+// calls it once no link is left in that prefix, so it only renames. A root
+// that was resolved and a path under it that does not exist yet, or that was
+// reached through a junction, then agree on how the root is spelled.
+func canonical(path string) string {
+	var rest []string
+	for dir := path; ; {
+		if real, err := filepath.EvalSymlinks(dir); err == nil {
+			return filepath.Join(append([]string{real}, rest...)...)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return path
+		}
+		rest = append([]string{filepath.Base(dir)}, rest...)
+		dir = parent
 	}
 }
 

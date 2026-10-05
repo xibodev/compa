@@ -1408,6 +1408,13 @@ func (t *ExecTool) guardCommand(command, cwd string) string {
 		if err != nil {
 			return ""
 		}
+		// The paths in the command are resolved below (links, and on Windows
+		// long names), so the folder they are compared with is too: a
+		// workspace reached through a link, or named with a short name, must
+		// not make every path inside it look outside.
+		if resolved, err := pathlink.Resolve(cwdPath); err == nil {
+			cwdPath = resolved
+		}
 
 		// Web URL schemes whose path components (starting with //) should be exempt
 		// from workspace sandbox checks. file: is intentionally excluded so that

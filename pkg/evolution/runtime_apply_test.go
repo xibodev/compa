@@ -24,6 +24,24 @@ func runColdPathWithApproval(
 	if err := rt.RunColdPathOnce(context.Background(), root); err != nil {
 		return err
 	}
+	approveCandidateDrafts(t, store, skip...)
+	return rt.RunColdPathOnce(context.Background(), root)
+}
+
+// generateAndApprove runs the cold path once and approves the candidate
+// drafts it produced, so that the next run in apply mode writes them.
+func generateAndApprove(t *testing.T, rt *evolution.Runtime, store *evolution.Store, root string) {
+	t.Helper()
+	if err := rt.RunColdPathOnce(context.Background(), root); err != nil {
+		t.Fatalf("RunColdPathOnce (drafting): %v", err)
+	}
+	approveCandidateDrafts(t, store)
+}
+
+// approveCandidateDrafts marks the stored candidate drafts approved, except
+// those in skip.
+func approveCandidateDrafts(t *testing.T, store *evolution.Store, skip ...string) {
+	t.Helper()
 	drafts, err := store.LoadDrafts()
 	if err != nil {
 		t.Fatalf("LoadDrafts: %v", err)
@@ -42,7 +60,6 @@ func runColdPathWithApproval(
 	if err := store.SaveDrafts(approved); err != nil {
 		t.Fatalf("SaveDrafts: %v", err)
 	}
-	return rt.RunColdPathOnce(context.Background(), root)
 }
 
 func slicesContains(values []string, v string) bool {
@@ -1113,13 +1130,6 @@ func TestRuntime_RunColdPathOnce_DraftSaveFailureRollsBackAppliedSkill(t *testin
 		t.Fatalf("AppendLearningRecords: %v", err)
 	}
 
-	if err := os.Chmod(paths.RootDir, 0o555); err != nil {
-		t.Fatalf("Chmod(root read-only): %v", err)
-	}
-	t.Cleanup(func() {
-		_ = os.Chmod(paths.RootDir, 0o755)
-	})
-
 	rt, err := evolution.NewRuntime(evolution.RuntimeOptions{
 		Config: config.EvolutionConfig{Enabled: true, Mode: "apply"},
 		Now:    func() time.Time { return time.Unix(1700001000, 0).UTC() },
@@ -1145,6 +1155,16 @@ func TestRuntime_RunColdPathOnce_DraftSaveFailureRollsBackAppliedSkill(t *testin
 	if err != nil {
 		t.Fatalf("NewRuntime: %v", err)
 	}
+	generateAndApprove(t, rt, store, root)
+
+	// The run that writes the approved draft writes the skill, then cannot
+	// save the draft: the state folder is read-only now.
+	if err := os.Chmod(paths.RootDir, 0o555); err != nil {
+		t.Fatalf("Chmod(root read-only): %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(paths.RootDir, 0o755)
+	})
 
 	err = rt.RunColdPathOnce(context.Background(), root)
 	if err == nil {
@@ -1268,13 +1288,6 @@ func TestRuntime_RunColdPathOnce_ProfileSaveFailureRollsBackSkillAndQuarantinesD
 		t.Fatalf("AppendLearningRecords: %v", err)
 	}
 
-	if err := os.MkdirAll(filepath.Dir(paths.ProfilesDir), 0o755); err != nil {
-		t.Fatalf("MkdirAll: %v", err)
-	}
-	if err := os.WriteFile(paths.ProfilesDir, []byte("not-a-directory"), 0o644); err != nil {
-		t.Fatalf("WriteFile(profiles): %v", err)
-	}
-
 	rt, err := evolution.NewRuntime(evolution.RuntimeOptions{
 		Config: config.EvolutionConfig{Enabled: true, Mode: "apply"},
 		Now:    func() time.Time { return time.Unix(1700001000, 0).UTC() },
@@ -1300,8 +1313,21 @@ func TestRuntime_RunColdPathOnce_ProfileSaveFailureRollsBackSkillAndQuarantinesD
 	if err != nil {
 		t.Fatalf("NewRuntime: %v", err)
 	}
+	generateAndApprove(t, rt, store, root)
 
-	err = runColdPathWithApproval(t, rt, store, root)
+	// The run that writes the approved draft writes the skill, then cannot
+	// save its profile: a file stands where the profiles folder goes.
+	if err := os.RemoveAll(paths.ProfilesDir); err != nil {
+		t.Fatalf("RemoveAll(profiles): %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(paths.ProfilesDir), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(paths.ProfilesDir, []byte("not-a-directory"), 0o644); err != nil {
+		t.Fatalf("WriteFile(profiles): %v", err)
+	}
+
+	err = rt.RunColdPathOnce(context.Background(), root)
 	if err == nil {
 		t.Fatal("expected RunColdPathOnce to fail")
 	}

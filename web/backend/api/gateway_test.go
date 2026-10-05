@@ -882,8 +882,9 @@ func TestGatewayStopRefusesNonGatewayAttachedProcess(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "/api/gateway/stop", nil)
 	mux.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	// Not a gateway: the conflict is reported and the process left alone.
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusConflict)
 	}
 	if !isCmdProcessAliveLocked(cmd) {
 		t.Fatal("non-gateway process should not be terminated by /api/gateway/stop")
