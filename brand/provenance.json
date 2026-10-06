@@ -148,7 +148,18 @@
       "note": "README.md shows docs/compa-logo.svg, the website's copy of the lockup."
     },
     {
-      "target": "other repository, package, release, and social presentation",
+      "target": "repository social preview",
+      "files": [
+        "docs/og.png"
+      ],
+      "sources": [
+        "og/og-default.svg"
+      ],
+      "status": "applied",
+      "note": "Uploaded in the repository's settings. GitHub keeps its own copy, so a changed card has to be uploaded again."
+    },
+    {
+      "target": "package and release presentation",
       "sources": [
         "logos/lockup.svg",
         "icons/app-icon.svg",
