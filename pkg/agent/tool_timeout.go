@@ -11,9 +11,9 @@ import (
 )
 
 // defaultToolTimeout bounds a tool call: a tool that hangs must not hold its
-// turn, and with it its session, forever. A tool with a timeout setting of
-// its own (tools.SelfTimed), such as exec or an MCP server's tools, is left to
-// that timeout instead, which may be longer.
+// turn, and with it its session, forever. A call that ends within a timeout
+// of its tool's own (tools.SelfTimed), such as an MCP call or an exec run
+// with a timeout, is left to that timeout instead, which may be longer.
 var defaultToolTimeout = 10 * time.Minute
 
 // toolStopGrace is how long a tool whose deadline passed gets to return.
@@ -33,7 +33,8 @@ func executeToolWithTimeout(
 ) *tools.ToolResult {
 	tool, ok := registry.Get(name)
 	_, isAsync := tool.(tools.AsyncExecutor)
-	_, selfTimed := tool.(tools.SelfTimed)
+	timed, isTimed := tool.(tools.SelfTimed)
+	selfTimed := isTimed && timed.SelfTimed(tools.WithToolContext(ctx, channel, chatID), args)
 	if !ok || defaultToolTimeout <= 0 || selfTimed || (isAsync && asyncCallback != nil) {
 		return registry.ExecuteWithContext(ctx, name, args, channel, chatID, asyncCallback)
 	}

@@ -188,12 +188,13 @@ type AsyncExecutor interface {
 	ExecuteAsync(ctx context.Context, args map[string]any, cb AsyncCallback) *ToolResult
 }
 
-// SelfTimed is implemented by a tool that bounds each call with a timeout
-// setting of its own, which can be longer than the agent's default limit
-// on a tool call. The agent leaves such a tool to its own timeout.
+// SelfTimed is implemented by a tool whose calls can end within a timeout of
+// its own, which can be longer than the agent's default limit on a tool
+// call. SelfTimed reports whether the call with args does; the agent then
+// leaves the call to that timeout.
 type SelfTimed interface {
 	Tool
-	SelfTimed()
+	SelfTimed(ctx context.Context, args map[string]any) bool
 }
 
 func ToolToSchema(tool Tool) map[string]any {

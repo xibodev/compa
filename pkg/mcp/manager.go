@@ -1202,7 +1202,9 @@ func (m *Manager) reconnectServer(
 		staleToClose := staleConn
 		handler, tools := m.toolsChanged, freshConn.Tools
 		m.mu.Unlock()
-		_ = closeConnection(staleToClose)
+		// Closing a session waits for the calls still on it, which may run to
+		// their own timeouts; this call and the reconnect lock don't wait.
+		go func() { _ = closeConnection(staleToClose) }()
 		// The server started again may list other tools. The handler
 		// registers them; not on this call's goroutine, whose tool runs.
 		if handler != nil {

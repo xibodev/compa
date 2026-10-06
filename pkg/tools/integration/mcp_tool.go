@@ -108,9 +108,9 @@ func (t *MCPTool) SetTrusted(trusted bool) {
 	t.trusted = trusted
 }
 
-// SelfTimed marks the tool as bounded by its own timeout: the manager ends a
-// call after the server's call timeout (call_timeout_seconds).
-func (t *MCPTool) SelfTimed() {}
+// SelfTimed reports that every call ends within the tool's own timeout: the
+// manager ends a call after the server's call timeout (call_timeout_seconds).
+func (t *MCPTool) SelfTimed(context.Context, map[string]any) bool { return true }
 
 var _ toolshared.SelfTimed = (*MCPTool)(nil)
 

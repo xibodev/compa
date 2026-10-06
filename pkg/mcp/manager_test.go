@@ -748,6 +748,45 @@ func TestCallToolTimeouts(t *testing.T) {
 	}
 }
 
+// A call that reconnects doesn't wait for the old session to close: closing
+// it waits for the calls still on it, which may run to their own timeouts.
+func TestReconnectDoesNotWaitForTheOldSessionToClose(t *testing.T) {
+	originalConnectServerFunc := connectServerFunc
+	t.Cleanup(func() { connectServerFunc = originalConnectServerFunc })
+
+	staleConn, staleTransport, err := newScriptedServerConnection("session-1", nil, nil)
+	if err != nil {
+		t.Fatalf("newScriptedServerConnection(stale) error = %v", err)
+	}
+	staleTransport.closeGate = make(chan struct{})
+	t.Cleanup(func() { close(staleTransport.closeGate) })
+	staleConn.lost.Store(true)
+	freshConn, _, err := newScriptedServerConnection("session-2",
+		&sdkmcp.CallToolResult{Content: []sdkmcp.Content{&sdkmcp.TextContent{Text: "ok"}}}, nil)
+	if err != nil {
+		t.Fatalf("newScriptedServerConnection(fresh) error = %v", err)
+	}
+	connectServerFunc = func(context.Context, string, config.MCPServerConfig, connectOptions) (*ServerConnection, error) {
+		return freshConn, nil
+	}
+	mgr := NewManager()
+	mgr.servers["flaky"] = staleConn
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := mgr.CallTool(context.Background(), "flaky", "echo", nil)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("CallTool() error = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the call waited for the old session to close")
+	}
+}
+
 func TestClose_IdempotentOnEmptyManager(t *testing.T) {
 	mgr := NewManager()
 
@@ -853,6 +892,9 @@ type scriptedTransport struct {
 	// toolCallRPCErr, when set, is the server's JSON-RPC error answer to
 	// tools/call.
 	toolCallRPCErr *jsonrpc.Error
+	// closeGate, when set, holds Close until it is closed, as closing a
+	// session with calls still on it waits for them.
+	closeGate chan struct{}
 
 	mu            sync.Mutex
 	toolCallCalls int
@@ -943,6 +985,9 @@ func (t *scriptedTransport) Write(ctx context.Context, msg jsonrpc.Message) erro
 }
 
 func (t *scriptedTransport) Close() error {
+	if t.closeGate != nil {
+		<-t.closeGate
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.closed {

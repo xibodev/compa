@@ -214,14 +214,16 @@ func TestToolCallsHaveADefaultTimeout(t *testing.T) {
 	}
 }
 
-// slowSelfTimedTool finishes on its own after delay. It has a timeout of its
-// own, as exec and MCP tools do.
+// slowSelfTimedTool finishes on its own after delay. Its calls end within a
+// timeout of its own, as MCP calls and exec runs with a timeout do.
 type slowSelfTimedTool struct{ delay time.Duration }
 
 func (s *slowSelfTimedTool) Name() string               { return "slow" }
 func (s *slowSelfTimedTool) Description() string        { return "finishes on its own" }
 func (s *slowSelfTimedTool) Parameters() map[string]any { return map[string]any{"type": "object"} }
-func (s *slowSelfTimedTool) SelfTimed()                 {}
+func (s *slowSelfTimedTool) SelfTimed(_ context.Context, args map[string]any) bool {
+	return args["timed"] == true
+}
 func (s *slowSelfTimedTool) Execute(ctx context.Context, _ map[string]any) *tools.ToolResult {
 	select {
 	case <-time.After(s.delay):
@@ -231,18 +233,23 @@ func (s *slowSelfTimedTool) Execute(ctx context.Context, _ map[string]any) *tool
 	}
 }
 
-// A tool with a timeout of its own runs to that timeout, past the default
-// limit: a user may set it longer.
+// A call that ends within its tool's own timeout runs to that timeout, past
+// the default limit: a user may set it longer. A call of the same tool
+// without one keeps the default limit.
 func TestSelfTimedToolsOutlastTheDefaultTimeout(t *testing.T) {
-	previousTimeout := defaultToolTimeout
-	defaultToolTimeout = 50 * time.Millisecond
-	defer func() { defaultToolTimeout = previousTimeout }()
+	previousTimeout, previousGrace := defaultToolTimeout, toolStopGrace
+	defaultToolTimeout, toolStopGrace = 50*time.Millisecond, 50*time.Millisecond
+	defer func() { defaultToolTimeout, toolStopGrace = previousTimeout, previousGrace }()
 
 	registry := tools.NewToolRegistry()
 	registry.Register(&slowSelfTimedTool{delay: 300 * time.Millisecond})
-	result := executeToolWithTimeout(context.Background(), registry, "slow", map[string]any{}, "cli", "direct", nil)
+	result := executeToolWithTimeout(context.Background(), registry, "slow", map[string]any{"timed": true}, "cli", "direct", nil)
 	if result == nil || result.IsError || result.ForLLM != "done" {
 		t.Fatalf("result = %+v, want the tool's own result", result)
+	}
+	result = executeToolWithTimeout(context.Background(), registry, "slow", map[string]any{}, "cli", "direct", nil)
+	if result == nil || !result.IsError || !strings.Contains(result.ForLLM, "context deadline exceeded") {
+		t.Fatalf("result = %+v, want the default limit to stop an untimed call", result)
 	}
 }
 

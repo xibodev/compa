@@ -13,9 +13,9 @@ Notable changes to Compa, newest first. Versions follow
 - An MCP tool call fails when the server hasn't answered within 5 minutes, a
   limit 2.0.0 added. `tools.mcp.call_timeout_seconds` sets it for every server,
   and a server's `call_timeout_seconds` for that server.
-- The 10-minute limit 2.0.0 put on every tool call no longer cuts short a tool
-  with a timeout of its own: MCP calls and `exec` runs last as long as their
-  timeouts allow, and an `exec` run in the terminal without a timeout has none.
+- The 10-minute limit 2.0.0 put on every tool call no longer cuts short a
+  call with a timeout of its own: MCP calls and `exec` runs with a timeout
+  last as long as their timeouts allow.
 
 ## 2.0.0 - 2026-10-05
 

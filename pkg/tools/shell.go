@@ -366,10 +366,18 @@ func (t *ExecTool) timeoutDescription() string {
 	)
 }
 
-// SelfTimed marks the tool as bounded by its own timeout: a foreground run
-// stops at the timeout commandTimeout gives it, which can be longer than the
-// agent's default limit on a tool call, or, in the terminal, none.
-func (t *ExecTool) SelfTimed() {}
+// SelfTimed reports whether the call ends within a timeout of the tool's
+// own: a foreground run with a timeout does, and that timeout can be longer
+// than the agent's default limit on a tool call. A run without a timeout and
+// the other actions keep that limit.
+func (t *ExecTool) SelfTimed(ctx context.Context, args map[string]any) bool {
+	action, _ := args["action"].(string)
+	background, _ := args["background"].(bool)
+	if s, ok := args["background"].(string); ok {
+		background = s == "true"
+	}
+	return action == "run" && !background && t.commandTimeout(ctx, args) > 0
+}
 
 var _ SelfTimed = (*ExecTool)(nil)
 

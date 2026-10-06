@@ -1771,6 +1771,33 @@ func TestShellTool_Action_Run_Sync(t *testing.T) {
 	require.Contains(t, result.ForLLM, "hello")
 }
 
+// A foreground run with a timeout ends within it, so the agent leaves it to
+// that timeout; a run without one, a background run and the other actions
+// keep the agent's limit.
+func TestExecToolSelfTimed(t *testing.T) {
+	tool, err := NewExecTool("", false)
+	require.NoError(t, err)
+	terminal := WithToolContext(context.Background(), "cli", "direct")
+	chat := WithToolContext(context.Background(), "telegram", "chat-1")
+	for _, tc := range []struct {
+		name string
+		ctx  context.Context
+		args map[string]any
+		want bool
+	}{
+		{"run in a chat, with the default timeout", chat, map[string]any{"action": "run", "command": "x"}, true},
+		{"run in the terminal, without a timeout", terminal, map[string]any{"action": "run", "command": "x"}, false},
+		{"run in the terminal, with a timeout", terminal,
+			map[string]any{"action": "run", "command": "x", "timeout": float64(30)}, true},
+		{"background run", chat, map[string]any{"action": "run", "command": "x", "background": "true"}, false},
+		{"write", chat, map[string]any{"action": "write", "sessionId": "s", "data": "y"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, tool.SelfTimed(tc.ctx, tc.args))
+		})
+	}
+}
+
 // TestShellTool_Background_ReadAfterExit verifies that we can read
 // buffered output even after the background process has exited.
 func TestShellTool_Background_ReadAfterExit(t *testing.T) {
