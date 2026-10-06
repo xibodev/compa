@@ -292,19 +292,20 @@ Motion should explain the relationship between the C and its core:
 | Public website header | `logos/mark.svg`, or `logos/lockup.svg` | Canvas or Surface | Adopted, with the palette and type |
 | Public website dark footer | `logos/lockup-inverse.svg` | Core Night | Planned |
 | Website metadata | `icons/favicon.svg`, `og/og-default.png` | Supplied | Adopted: the page draws the favicon tile, and `docs/og.png` is the social card |
-| Repository and package surfaces | `logos/lockup.svg`, `icons/app-icon.svg` | Surface | The README shows the lockup; the rest is planned |
-| Repository and release social cards | `og/og-default.png` | Core Night | Planned |
+| Repository README and package surfaces | `logos/lockup.svg`, `icons/app-icon.svg` | Surface | The README shows the lockup; package surfaces are planned |
+| Repository social preview | `docs/og.png`, from `og/og-default.svg` | Core Night | Adopted; uploaded in the repository settings |
+| Release social cards | `og/og-default.png` | Core Night | Planned |
 | Single-color print or engraving | `logos/mono-black.svg` or `logos/mono-white.svg` | One ink | Ready artwork |
 
 ## Adoption
 
 `provenance.json` records the kit's consumer files. The app header, browser
-and install icons, tray icon, manifest colors, the public website and the
-repository README use it. The app's color theme and the other repository,
-release and social surfaces don't yet. Map each of those deliberately, through
-its normal review path, and verify the result in the product rather than
-treating this kit as runtime evidence. The mockups in `preview.html` remain
-illustrative.
+and install icons, tray icon, manifest colors, the public website, and the
+repository's README and social preview use it. The app's color theme and the
+package and release surfaces don't yet. Map each of those deliberately,
+through its normal review path, and verify the result in the product rather
+than treating this kit as runtime evidence. The mockups in `preview.html`
+remain illustrative.
 
 Rebuild every raster and consumer copy with `node brand/export.mjs`, then run
 `node brand/check.mjs`; `README.md` describes both.
