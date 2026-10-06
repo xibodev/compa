@@ -1082,6 +1082,12 @@ func TestConfigSignatureTracksToolSettingsAndGuards(t *testing.T) {
 		"workspace restriction": func(cfg *config.Config) {
 			cfg.Agents.Defaults.RestrictToWorkspace = !cfg.Agents.Defaults.RestrictToWorkspace
 		},
+		"reads outside the workspace": func(cfg *config.Config) {
+			cfg.Agents.Defaults.AllowReadOutsideWorkspace = !cfg.Agents.Defaults.AllowReadOutsideWorkspace
+		},
+		"an agent's workspace": func(cfg *config.Config) {
+			cfg.Agents.List = []config.AgentConfig{{ID: "helper", Workspace: "/srv/helper"}}
+		},
 		"isolation":        func(cfg *config.Config) { cfg.Isolation.Enabled = true },
 		"owner-only rules": func(cfg *config.Config) { cfg.Commands.OwnerOnly = !cfg.Commands.OwnerOnly },
 	}
@@ -1098,6 +1104,15 @@ func TestConfigSignatureTracksToolSettingsAndGuards(t *testing.T) {
 	tuned.Tools.Approval.Default = "ask"
 	if signature := computeConfigSignature(tuned); !signature.equalBesidesLive(boot) {
 		t.Error("a model parameter or the approval policy asked for a restart")
+	}
+
+	// An agent's model is a live selection, not a restart.
+	withAgent := config.DefaultConfig()
+	withAgent.Agents.List = []config.AgentConfig{{ID: "helper", Model: "owned/chat"}}
+	otherModel := config.DefaultConfig()
+	otherModel.Agents.List = []config.AgentConfig{{ID: "helper", Model: "fast"}}
+	if !computeConfigSignature(otherModel).equalBesidesLive(computeConfigSignature(withAgent)) {
+		t.Error("changing an agent's model asked for a restart")
 	}
 }
 

@@ -61,10 +61,11 @@ In `~/.compa/logs`:
 The **Logs** page shows the gateway's recent output and has a level menu. For
 more detail everywhere, start Compa with `compa -d`.
 
-When a log file reaches 10 MB, Compa starts a new one and keeps up to 5 of
-each (`logging.max_size_mb` and `logging.max_files` in `config.json`). With
-`logging.redact_secrets`, on by default, Compa masks the keys and tokens it
-knows before it writes a log line.
+`launcher.log` and `gateway.log` start over in a new file at 10 MB, and Compa
+keeps up to 5 of each; `logging.max_size_mb` and `logging.max_files` in
+`config.json` change that for `gateway.log`. With `logging.redact_secrets`, on
+by default, Compa masks the keys and tokens it knows before it writes a log
+line.
 
 ## A model doesn't answer
 

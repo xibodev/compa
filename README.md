@@ -25,8 +25,9 @@ installs, options, updating and uninstalling: [docs/install.md](docs/install.md)
 
 ## Your first chat
 
-1. Compa opens its setup page in your browser: set a password. If you closed
-   the page, choose **Open Console** in Compa's tray menu.
+1. On your desktop the installer starts Compa, which opens its setup page in
+   your browser: set a password. If you closed the page, choose **Open
+   Console** in Compa's tray menu.
 2. Go to **Models**. Press **Try free providers**, or connect a provider with
    an API key or a model server on your computer.
 3. Go to **Chat** and ask something.

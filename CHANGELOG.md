@@ -11,9 +11,10 @@ Notable changes to Compa, newest first. Versions follow
   and company DNS and local host names work; it asked 8.8.8.8 and 1.1.1.1
   instead.
 - **Gateway restart required** shows after a change to any tool setting, such
-  as **Allow Remote Commands** or an MCP server, and to the workspace,
-  `isolation`, `commands` or `hooks`, which apply only after a restart. It
-  showed only when a tool was turned on or off.
+  as **Allow Remote Commands** or an MCP server, and to the workspaces, the
+  restriction to them, `isolation`, `commands` or `hooks`, which the running
+  gateway takes up only when it restarts or reloads. It showed only when a
+  tool was turned on or off.
 
 ## 2.1.0 - 2026-10-05
 

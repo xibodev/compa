@@ -96,9 +96,10 @@ File tools work in the workspace folder, `~/.compa/workspace` by default
 (**Config** → **Agent** → **Workspace Directory**). With **Restrict to
 Workspace** on, which is the default, file tools refuse paths outside the
 workspace, except reading Compa's attachment folder and the paths that
-`tools.allow_read_paths` and `tools.allow_write_paths` in `config.json` match.
-Those are regular expressions matched against the full path, such as
-`^/home/me/notes/`; in JSON, each `\` of a Windows path is written `\\\\`.
+`tools.allow_read_paths` and `tools.allow_write_paths` in `config.json` match;
+`agents.defaults.allow_read_outside_workspace` lets them read anywhere.
+The path patterns are regular expressions matched against the full path, such
+as `^/home/me/notes/`; in JSON, each `\` of a Windows path is written `\\\\`.
 Commands start in the workspace and are blocked when they name other paths,
 except those `tools.allow_read_paths` matches. They still run as your user
 account, so this is a guard, not a sandbox. **Config** → **Run Commands**
@@ -168,7 +169,7 @@ sets matches:
 | Field | Matches |
 |---|---|
 | `tool` | The tool's name as the agent sees it, such as `exec` or `install_skill`. |
-| `source` | Where the tool comes from: `builtin`, `mcp:<server>` or `module:<id>`. To match one MCP server's tools, use `source`: a name glob like `mcp_git_*` also matches the tools of a server named `git_hub`. |
+| `source` | Where the tool comes from: `builtin`, `mcp:<server>` or `module:<id>`. To match one MCP server's tools, use `source`, such as `mcp:git`: a `tool` glob like `mcp_git_*` also matches the tools of a server named `git_hub`. |
 | `origin` | Any of `web` (the browser chat), `cli` (`compa-kernel agent`), `chat` (chat apps) and `cron` (scheduled jobs and the heartbeat). A subagent's calls have its parent's origin. |
 | `hints` | Any of `read_only`, `destructive`, `idempotent` and `open_world`, the annotations of an MCP tool, and `cost_unknown`, `network` and `external_writes`, the effects a module declares for a capability. |
 

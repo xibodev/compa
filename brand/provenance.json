@@ -3,25 +3,10 @@
     "publicName": "Compa",
     "visualWordmark": "compa",
     "meaning": "Mexican Spanish slang for pal",
-    "basis": [
-      "Identity kit drawn for an earlier working name and relabelled Compa by operator decision",
-      "Current repository product truth"
-    ],
     "selection": "operator-approved"
   },
   "adoption": {
-    "decision": "Relabel the kit as Compa and adopt it",
-    "status": "adopted",
-    "geometryChanged": false,
-    "paletteChanged": false,
-    "rulesChanged": false,
-    "relabelled": [
-      "name and accessible titles",
-      "wordmark text",
-      "CSS custom property prefix",
-      "brand idea, audience, and positioning copy",
-      "social preview and preview-board copy"
-    ]
+    "status": "adopted"
   },
   "compatibilityIdentifiers": {
     "repository": "compa",
@@ -30,9 +15,7 @@
       "compa",
       "compa-kernel"
     ],
-    "stateDirectory": "~/.compa",
-    "matchPublicName": true,
-    "migrationRequired": false
+    "stateDirectory": "~/.compa"
   },
   "assetInventory": {
     "guidance": [

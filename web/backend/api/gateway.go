@@ -464,8 +464,9 @@ const (
 	// signatureTools: every tool setting but the approval policy, MCP
 	// servers included.
 	signatureTools = "tools"
-	// signatureGuards: the workspace and its restriction, isolation, and who
-	// may run commands or approve tool calls (commands, hooks).
+	// signatureGuards: the workspaces and the restriction to them,
+	// isolation, and who may run commands or approve tool calls (commands,
+	// hooks).
 	signatureGuards = "guards"
 	// signatureAccess: a channel's allow_from, dm_policy and group_policy.
 	signatureAccess = "access:"
@@ -479,22 +480,32 @@ func computeConfigSignature(cfg *config.Config) configSignature {
 	}
 	tools := cfg.Tools
 	tools.Approval = approval.Policy{}
+	// An agent's model is a live model selection.
+	agents := make([]config.AgentConfig, len(cfg.Agents.List))
+	copy(agents, cfg.Agents.List)
+	for i := range agents {
+		agents[i].Model = ""
+	}
 	signature := configSignature{
 		signatureModels:   modelSelectionSignature(cfg),
 		signatureApproval: signatureJSON(cfg.Tools.Approval),
 		signatureTools:    signatureJSON(tools),
 		signatureGuards: signatureJSON(struct {
-			Workspace           string                 `json:"workspace"`
-			RestrictToWorkspace bool                   `json:"restrict_to_workspace"`
-			Isolation           config.IsolationConfig `json:"isolation"`
-			Commands            config.CommandsConfig  `json:"commands"`
-			Hooks               config.HooksConfig     `json:"hooks"`
+			Workspace                 string                 `json:"workspace"`
+			RestrictToWorkspace       bool                   `json:"restrict_to_workspace"`
+			AllowReadOutsideWorkspace bool                   `json:"allow_read_outside_workspace"`
+			Agents                    []config.AgentConfig   `json:"agents"`
+			Isolation                 config.IsolationConfig `json:"isolation"`
+			Commands                  config.CommandsConfig  `json:"commands"`
+			Hooks                     config.HooksConfig     `json:"hooks"`
 		}{
-			Workspace:           cfg.Agents.Defaults.Workspace,
-			RestrictToWorkspace: cfg.Agents.Defaults.RestrictToWorkspace,
-			Isolation:           cfg.Isolation,
-			Commands:            cfg.Commands,
-			Hooks:               cfg.Hooks,
+			Workspace:                 cfg.Agents.Defaults.Workspace,
+			RestrictToWorkspace:       cfg.Agents.Defaults.RestrictToWorkspace,
+			AllowReadOutsideWorkspace: cfg.Agents.Defaults.AllowReadOutsideWorkspace,
+			Agents:                    agents,
+			Isolation:                 cfg.Isolation,
+			Commands:                  cfg.Commands,
+			Hooks:                     cfg.Hooks,
 		}),
 	}
 	for name, channel := range cfg.Channels {

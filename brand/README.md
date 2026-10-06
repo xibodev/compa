@@ -13,7 +13,7 @@ the surfaces that don't use it yet.
 | `BRAND.md` | Identity, naming, geometry, accessibility, voice, and use rules | Yes |
 | `README.md` | Inventory, export, and validation instructions | Yes |
 | `LICENSES.md` | Brand-art ownership and software-license boundary | Yes |
-| `provenance.json` | Operator decision, inventory, compatibility identifiers, and consumers | Yes |
+| `provenance.json` | Identity, inventory, compatibility identifiers, and consumers | Yes |
 | `tokens.json` | Tool-neutral palette, semantics, typography, and fixed geometry | Yes |
 | `tokens.css` | CSS projection of the same token system | Yes |
 | `preview.html` | Offline decision board and illustrative application mockups | Yes |

@@ -151,9 +151,6 @@ assert.equal(provenance.identity.publicName, "Compa");
 assert.equal(provenance.identity.visualWordmark, "compa");
 assert.equal(provenance.identity.meaning, "Mexican Spanish slang for pal");
 assert.equal(provenance.adoption.status, "adopted");
-for (const unchanged of ["geometryChanged", "paletteChanged", "rulesChanged"]) {
-  assert.equal(provenance.adoption[unchanged], false, `provenance.json: a relabel keeps ${unchanged} false`);
-}
 assert.deepEqual(
   provenance.compatibilityIdentifiers,
   {
@@ -161,10 +158,8 @@ assert.deepEqual(
     goModule: "github.com/xibodev/compa/v2",
     binaries: ["compa", "compa-kernel"],
     stateDirectory: "~/.compa",
-    matchPublicName: true,
-    migrationRequired: false,
   },
-  "provenance.json: the compatibility identifiers already are compa",
+  "provenance.json: the compatibility identifiers",
 );
 
 const svgFiles = walk(brandRoot)
