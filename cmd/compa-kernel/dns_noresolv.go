@@ -1,3 +1,5 @@
+//go:build linux
+
 package main
 
 import (
@@ -10,48 +12,31 @@ import (
 	"time"
 )
 
+// On a Linux system without /etc/resolv.conf, such as Android, Go's resolver
+// asks a DNS server on localhost, which isn't there. compa-kernel asks the
+// servers in COMPA_DNS_SERVER instead (see dnsServers), in turn. Elsewhere
+// the system's resolver stays in charge.
 func init() {
-	// 仅在 /etc/resolv.conf 不存在时才覆盖（即 Android 环境）
 	if _, err := os.Stat("/etc/resolv.conf"); err == nil {
 		return
 	}
 
-	// 从环境变量获取 DNS server 列表，多个用 ; 隔开
-	// 例如: COMPA_DNS_SERVER="8.8.8.8:53;1.1.1.1:53;223.5.5.5:53"
-	dnsEnv := os.Getenv("COMPA_DNS_SERVER")
-	if dnsEnv == "" {
-		dnsEnv = "8.8.8.8:53;1.1.1.1:53"
-	}
-
-	var dnsServers []string
-	for _, s := range strings.Split(dnsEnv, ";") {
-		s = strings.TrimSpace(s)
-		if s != "" {
-			// 如果没有带端口号，自动补上 :53
-			if _, _, err := net.SplitHostPort(s); err != nil {
-				s = s + ":53"
-			}
-			dnsServers = append(dnsServers, s)
-		}
-	}
-
-	// 轮询索引，在多个 DNS 服务器之间轮转
+	servers := dnsServers(os.Getenv("COMPA_DNS_SERVER"))
 	var idx uint64
 
 	customResolver := &net.Resolver{
 		PreferGo: true,
 		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
 			d := net.Dialer{Timeout: 5 * time.Second}
-			// Round-robin: 依次尝试不同的 DNS 服务器
-			server := dnsServers[atomic.AddUint64(&idx, 1)%uint64(len(dnsServers))]
+			server := servers[atomic.AddUint64(&idx, 1)%uint64(len(servers))]
 			return d.DialContext(ctx, "udp", server)
 		},
 	}
 
-	// 覆盖全局 DefaultResolver
 	net.DefaultResolver = customResolver
 
-	// 覆盖 http.DefaultTransport 使用自定义 DNS 解析的 DialContext
+	// http.DefaultTransport dials with its own dialer, which needs the
+	// resolver too.
 	dialer := &net.Dialer{
 		Timeout:   30 * time.Second,
 		KeepAlive: 30 * time.Second,
@@ -61,4 +46,25 @@ func init() {
 	if tr, ok := http.DefaultTransport.(*http.Transport); ok {
 		tr.DialContext = dialer.DialContext
 	}
+}
+
+// dnsServers reads the servers of value, separated by ";", such as
+// "9.9.9.9;1.1.1.1:53"; a server without a port is on port 53. A value that
+// names none gives 8.8.8.8 and 1.1.1.1.
+func dnsServers(value string) []string {
+	var servers []string
+	for _, s := range strings.Split(value, ";") {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		if _, _, err := net.SplitHostPort(s); err != nil {
+			s = net.JoinHostPort(strings.Trim(s, "[]"), "53")
+		}
+		servers = append(servers, s)
+	}
+	if len(servers) == 0 {
+		return []string{"8.8.8.8:53", "1.1.1.1:53"}
+	}
+	return servers
 }

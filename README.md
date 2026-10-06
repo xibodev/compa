@@ -20,16 +20,14 @@ macOS and Linux:
 curl -fsSL https://github.com/xibodev/compa/releases/latest/download/install.sh | sh
 ```
 
-The installer checks the download against the release's SHA-256 checksums,
-installs two programs, `compa` and `compa-kernel`, and, in a terminal on your
-desktop, starts Compa. Compa runs on Windows 10 or later, macOS 12 or later
-and Linux. Where it installs, options, updating and uninstalling:
-[docs/install.md](docs/install.md).
+Compa runs on Windows 10 or later, macOS 12 or later and Linux. Where it
+installs, options, updating and uninstalling: [docs/install.md](docs/install.md).
 
 ## Your first chat
 
-1. Compa opens http://localhost:18800 in your browser (open it yourself if it
-   doesn't). Set a password.
+1. On your desktop the installer starts Compa, which opens its setup page in
+   your browser: set a password. If you closed the page, choose **Open
+   Console** in Compa's tray menu.
 2. Go to **Models**. Press **Try free providers**, or connect a provider with
    an API key or a model server on your computer.
 3. Go to **Chat** and ask something.
@@ -64,29 +62,10 @@ and Linux. Where it installs, options, updating and uninstalling:
 
 ## For developers
 
-`compa-kernel` is the agent runtime and works on its own in a terminal; see
-[docs/cli.md](docs/cli.md). The same runtime is a Go package you can run inside
-your own program; see [docs/embedding.md](docs/embedding.md).
-
-### Build from source
-
-You need Go 1.26.6, Node.js 22 and pnpm. The web UI is built first, because
-`compa` embeds it when it links.
-
-```sh
-cd web/frontend
-pnpm install --frozen-lockfile
-pnpm run build:backend
-cd ../..
-go build -tags goolm,stdjson -o build/compa-kernel ./cmd/compa-kernel
-go build -tags goolm,stdjson -o build/compa ./web/backend
-```
-
-On Windows, name the outputs `compa-kernel.exe` and `compa.exe`. Keep both
-programs in one folder: `compa` runs the `compa-kernel` beside it. More in
-[docs/install.md](docs/install.md#run-from-source); tests, checks and how to
-contribute are in [CONTRIBUTING.md](CONTRIBUTING.md), and how to report a
-security problem in [SECURITY.md](SECURITY.md). Changes are listed in
+To build Compa from source, see
+[Run from source](docs/install.md#run-from-source). Tests, checks and how to
+contribute are in [CONTRIBUTING.md](CONTRIBUTING.md), how to report a security
+problem in [SECURITY.md](SECURITY.md), and the changes in
 [CHANGELOG.md](CHANGELOG.md).
 
 ## License

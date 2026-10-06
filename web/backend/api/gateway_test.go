@@ -1067,6 +1067,57 @@ func TestConfigSignatureTracksModelSelections(t *testing.T) {
 	}
 }
 
+// A change to a tool's settings or to the guards around the tools asks for a
+// restart: the gateway applies it when it starts. Model parameters don't.
+func TestConfigSignatureTracksToolSettingsAndGuards(t *testing.T) {
+	boot := computeConfigSignature(config.DefaultConfig())
+
+	changes := map[string]func(cfg *config.Config){
+		"allow remote commands": func(cfg *config.Config) { cfg.Tools.Exec.AllowRemote = !cfg.Tools.Exec.AllowRemote },
+		"command timeout":       func(cfg *config.Config) { cfg.Tools.Exec.TimeoutSeconds = 30 },
+		"read paths":            func(cfg *config.Config) { cfg.Tools.AllowReadPaths = []string{"^/srv/notes/"} },
+		"MCP server": func(cfg *config.Config) {
+			cfg.Tools.MCP.Servers = map[string]config.MCPServerConfig{"git": {Enabled: true, Command: "git-mcp"}}
+		},
+		"workspace": func(cfg *config.Config) { cfg.Agents.Defaults.Workspace = "/srv/compa" },
+		"workspace restriction": func(cfg *config.Config) {
+			cfg.Agents.Defaults.RestrictToWorkspace = !cfg.Agents.Defaults.RestrictToWorkspace
+		},
+		"reads outside the workspace": func(cfg *config.Config) {
+			cfg.Agents.Defaults.AllowReadOutsideWorkspace = !cfg.Agents.Defaults.AllowReadOutsideWorkspace
+		},
+		"an agent's workspace": func(cfg *config.Config) {
+			cfg.Agents.List = []config.AgentConfig{{ID: "helper", Workspace: "/srv/helper"}}
+		},
+		"isolation":        func(cfg *config.Config) { cfg.Isolation.Enabled = true },
+		"owner-only rules": func(cfg *config.Config) { cfg.Commands.OwnerOnly = !cfg.Commands.OwnerOnly },
+		"hooks":            func(cfg *config.Config) { cfg.Hooks.Enabled = !cfg.Hooks.Enabled },
+	}
+	for name, change := range changes {
+		cfg := config.DefaultConfig()
+		change(cfg)
+		if signature := computeConfigSignature(cfg); signature.equalBesidesLive(boot) {
+			t.Errorf("changing the %s asked for no restart", name)
+		}
+	}
+
+	tuned := config.DefaultConfig()
+	tuned.Agents.Defaults.MaxTokens = 4096
+	tuned.Tools.Approval.Default = "ask"
+	if signature := computeConfigSignature(tuned); !signature.equalBesidesLive(boot) {
+		t.Error("a model parameter or the approval policy asked for a restart")
+	}
+
+	// An agent's model is a live selection, not a restart.
+	withAgent := config.DefaultConfig()
+	withAgent.Agents.List = []config.AgentConfig{{ID: "helper", Model: "owned/chat"}}
+	otherModel := config.DefaultConfig()
+	otherModel.Agents.List = []config.AgentConfig{{ID: "helper", Model: "fast"}}
+	if !computeConfigSignature(otherModel).equalBesidesLive(computeConfigSignature(withAgent)) {
+		t.Error("changing an agent's model asked for a restart")
+	}
+}
+
 // A channel's secrets are in its signature; its access lists and policies
 // are its live part, and nothing else.
 func TestConfigSignatureTracksChannelSecretsAndAccess(t *testing.T) {
@@ -1085,10 +1136,16 @@ func TestConfigSignatureTracksChannelSecretsAndAccess(t *testing.T) {
 		t.Error("changing a channel's secret left the config signature unchanged")
 	}
 
-	access := withToken("old-token")
-	access.Channels["web"].AllowFrom = config.FlexibleStringSlice{"web:1"}
-	if signature := computeConfigSignature(access); signature.liveEqual(boot) || !signature.equalBesidesLive(boot) {
-		t.Error("changing a channel's allow_from changed other than the live part of the config signature")
+	for name, change := range map[string]func(channel *config.Channel){
+		"allow_from":   func(channel *config.Channel) { channel.AllowFrom = config.FlexibleStringSlice{"web:1"} },
+		"dm_policy":    func(channel *config.Channel) { channel.DMPolicy = config.DMPolicyPairing },
+		"group_policy": func(channel *config.Channel) { channel.GroupPolicy = config.GroupPolicyAllowlist },
+	} {
+		access := withToken("old-token")
+		change(access.Channels["web"])
+		if signature := computeConfigSignature(access); signature.liveEqual(boot) || !signature.equalBesidesLive(boot) {
+			t.Errorf("changing a channel's %s changed other than the live part of the config signature", name)
+		}
 	}
 }
 

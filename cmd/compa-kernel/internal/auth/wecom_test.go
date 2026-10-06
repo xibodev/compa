@@ -38,7 +38,7 @@ func TestNewWeComCommand(t *testing.T) {
 
 	require.NotNil(t, cmd)
 	assert.Equal(t, "wecom", cmd.Use)
-	assert.Equal(t, "Scan a WeCom QR code and configure channels.wecom", cmd.Short)
+	assert.Equal(t, "Scan a WeCom QR code and set up the WeCom channel", cmd.Short)
 	assert.NotNil(t, cmd.Flags().Lookup("timeout"))
 }
 

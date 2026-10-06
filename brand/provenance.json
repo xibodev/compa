@@ -3,25 +3,10 @@
     "publicName": "Compa",
     "visualWordmark": "compa",
     "meaning": "Mexican Spanish slang for pal",
-    "basis": [
-      "Identity kit drawn for an earlier working name and relabelled Compa by operator decision",
-      "Current repository product truth"
-    ],
     "selection": "operator-approved"
   },
   "adoption": {
-    "decision": "Relabel the kit as Compa and adopt it",
-    "status": "adopted",
-    "geometryChanged": false,
-    "paletteChanged": false,
-    "rulesChanged": false,
-    "relabelled": [
-      "name and accessible titles",
-      "wordmark text",
-      "CSS custom property prefix",
-      "brand idea, audience, and positioning copy",
-      "social preview and preview-board copy"
-    ]
+    "status": "adopted"
   },
   "compatibilityIdentifiers": {
     "repository": "compa",
@@ -30,9 +15,7 @@
       "compa",
       "compa-kernel"
     ],
-    "stateDirectory": "~/.compa",
-    "matchPublicName": true,
-    "migrationRequired": false
+    "stateDirectory": "~/.compa"
   },
   "assetInventory": {
     "guidance": [
@@ -136,20 +119,36 @@
       "note": "Windows embeds icon.ico and other systems embed icon.png. web/backend/winres/winres.json names the same icon.ico for a Windows executable resource; no build step generates that resource yet."
     },
     {
-      "target": "public website mark and lockup files",
+      "target": "public website: palette, type, mark, lockup, icon and social card",
       "files": [
+        "docs/index.html",
         "docs/compa-mark.svg",
-        "docs/compa-logo.svg"
+        "docs/compa-logo.svg",
+        "docs/og.png"
       ],
       "sources": [
+        "tokens.json",
         "logos/mark.svg",
+        "logos/lockup.svg",
+        "icons/favicon.svg",
+        "og/og-default.svg"
+      ],
+      "status": "applied",
+      "note": "The page sets the palette and type itself and draws the favicon tile inline; export.mjs writes the mark and lockup copies and renders docs/og.png from the same master as og/og-default.png."
+    },
+    {
+      "target": "repository README: lockup",
+      "files": [
+        "README.md"
+      ],
+      "sources": [
         "logos/lockup.svg"
       ],
       "status": "applied",
-      "note": "The website page itself, its colors, and its metadata are not restyled."
+      "note": "README.md shows docs/compa-logo.svg, the website's copy of the lockup."
     },
     {
-      "target": "repository, package, release, and social presentation",
+      "target": "other repository, package, release, and social presentation",
       "sources": [
         "logos/lockup.svg",
         "icons/app-icon.svg",

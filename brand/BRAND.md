@@ -62,15 +62,14 @@ claim that other products already embed Compa.
 | Product and public prose | **Compa** | Capital C. Use for the product identity. |
 | Visual wordmark | **compa** | Lowercase. Use as artwork, not as sentence-case prose. |
 | Meaning | Mexican Spanish slang for **pal** | Explain when useful; do not turn it into a second tagline. |
-| Repository | `compa` | Already matches the name. Keep verbatim. |
-| Go module | `github.com/xibodev/compa/v2` | Already matches the name. Keep verbatim. |
-| Headed binary | `compa` | Already matches the name. Keep verbatim. |
-| Runtime binary | `compa-kernel` | Already matches the name. Keep verbatim. |
-| Local state | `~/.compa` | Already matches the name. Keep verbatim. |
+| Repository | `compa` | Keep verbatim. |
+| Go module | `github.com/xibodev/compa/v2` | Keep verbatim. |
+| Headed binary | `compa` | Keep verbatim. |
+| Runtime binary | `compa-kernel` | Keep verbatim. |
+| Local state | `~/.compa` | Keep verbatim. |
 
-The compatibility identifiers already are `compa`, so adopting this kit
-migrates nothing. Changing any of them is a separately approved code and state
-migration, never part of a brand change.
+Changing any of these identifiers is a code and state change, never part of a
+brand change.
 
 ## Mark
 
@@ -290,25 +289,22 @@ Motion should explain the relationship between the C and its core:
 | App install icons and manifest | `icons/icon-192.svg`, `icons/icon-512.svg`, `icons/maskable.svg` | Core Night tile | Adopted; the maskable entry reuses the 512 tile |
 | App color theme | `tokens.json`, `tokens.css` | Match application theme | Planned; the app keeps its own accent |
 | Desktop tray icon | `icons/favicon.svg` for small sizes, `icons/app-icon.svg` for large | Core Night tile | Adopted |
-| Public website header | `logos/mark.svg`, or `logos/lockup.svg` | Canvas or Surface | Mark file adopted; page not restyled |
+| Public website header | `logos/mark.svg`, or `logos/lockup.svg` | Canvas or Surface | Adopted, with the palette and type |
 | Public website dark footer | `logos/lockup-inverse.svg` | Core Night | Planned |
-| Website metadata | `icons/favicon.svg`, `og/og-default.png` | Supplied | Planned |
-| Repository and package surfaces | `logos/lockup.svg`, `icons/app-icon.svg` | Surface | Planned |
-| Release and social cards | `og/og-default.png` | Core Night | Planned |
+| Website metadata | `icons/favicon.svg`, `og/og-default.png` | Supplied | Adopted: the page draws the favicon tile, and `docs/og.png` is the social card |
+| Repository and package surfaces | `logos/lockup.svg`, `icons/app-icon.svg` | Surface | The README shows the lockup; the rest is planned |
+| Repository and release social cards | `og/og-default.png` | Core Night | Planned |
 | Single-color print or engraving | `logos/mono-black.svg` or `logos/mono-white.svg` | One ink | Ready artwork |
 
-## Adoption note
+## Adoption
 
-This kit was drawn for an earlier working name and relabelled Compa. Its
-geometry, palette, and rules did not change; its name, wordmark, and copy did.
-`provenance.json` records every adopted consumer file.
-
-The app header, browser and install icons, tray icon, manifest colors, and the
-website's mark files use the kit. The app's color theme, the website page,
-repository and release surfaces, and social metadata have not adopted it yet.
-Map each of those deliberately, through its normal review path, and verify the
-result in the product rather than treating this kit as runtime evidence. The
-mockups in `preview.html` remain illustrative.
+`provenance.json` records the kit's consumer files. The app header, browser
+and install icons, tray icon, manifest colors, the public website and the
+repository README use it. The app's color theme and the other repository,
+release and social surfaces don't yet. Map each of those deliberately, through
+its normal review path, and verify the result in the product rather than
+treating this kit as runtime evidence. The mockups in `preview.html` remain
+illustrative.
 
 Rebuild every raster and consumer copy with `node brand/export.mjs`, then run
 `node brand/check.mjs`; `README.md` describes both.

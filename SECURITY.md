@@ -22,7 +22,7 @@ In scope:
 - `compa` and `compa-kernel`, including the web UI, the gateway, the
   channels, tools, skills and module host.
 - The installers, `install.sh` and `install.ps1`.
-- The updater: `compa-kernel update` and updating from the web UI.
+- The updater: `compa-kernel update` and the launcher's `POST /api/update`.
 - The release workflow and the files it publishes.
 
 Compa is a single-user assistant that runs as your account, and whoever is

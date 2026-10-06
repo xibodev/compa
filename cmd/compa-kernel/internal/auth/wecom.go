@@ -82,7 +82,7 @@ func newWeComCommand() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "wecom",
-		Short: "Scan a WeCom QR code and configure channels.wecom",
+		Short: "Scan a WeCom QR code and set up the WeCom channel",
 		Args:  cobra.NoArgs,
 		RunE: func(_ *cobra.Command, _ []string) error {
 			return authWeComCmd(timeout)

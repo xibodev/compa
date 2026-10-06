@@ -23,14 +23,17 @@ compa [options] [config.json]
 | `-public` | Listen on all interfaces instead of localhost only. Read [LAN access](install.md#lan-access) first. |
 | `-no-browser` | Don't open the browser on startup. |
 | `-console` | Run in the terminal, without the tray icon. |
-| `-lang en`, `-lang zh` | Language of the tray menu (default: from the system locale). |
-| `-password <password>` | Set the dashboard password (at least 8 characters) and exit. `-password -` asks for it, or reads a line piped to it, which keeps it out of your shell history. |
+| `-lang en`, `-lang zh` | Language of the tray menu (default: from `LANG`, else English). |
+| `-password <password>` | Set the dashboard password (at least 8 characters) and exit. `-password -` asks for it, or reads a line piped to it, which keeps it out of your shell history (macOS and Linux). |
 | `-d`, `-debug` | Debug logging. |
 
 `config.json` is the configuration file, `~/.compa/config.json` by default.
 When you name one and `COMPA_HOME` isn't set, Compa keeps its other state in
 that file's folder. `-port` and `-public` override the **Service Port** and
-**Enable LAN Access** settings on the Config page for that run.
+**Enable LAN Access** settings on the Config page for that run. On Windows,
+the released `compa.exe` has no console window of its own, so PowerShell gives
+the prompt back at once: with `-console` or `-password`, Compa's output
+follows it.
 
 ## compa-kernel
 
@@ -110,7 +113,7 @@ decides it.
 | `auth logout [-p <provider>]` | Remove stored credentials (OpenAI and Anthropic without `-p`). |
 | `auth status` | Show current auth status. |
 | `auth weixin` | Connect a WeChat personal account via QR code. |
-| `auth wecom` | Scan a WeCom QR code and configure `channels.wecom`. |
+| `auth wecom` | Scan a WeCom QR code and set up the WeCom channel. |
 
 ### gateway
 
@@ -132,7 +135,7 @@ Scheduled jobs run while the gateway runs.
 | Command | What it does |
 |---|---|
 | `cron list` | List all scheduled jobs. |
-| `cron add -n <name> -m <message> -c '<cron expression>'` | Add a job, such as `-c '0 9 * * *'`; `-e <seconds>` repeats every N seconds instead; `--channel` and `--to` choose where the result goes. |
+| `cron add -n <name> -m <message> -c '<cron expression>'` | Add a job, such as `-c '0 9 * * *'`, in local time or the time zone `--tz Europe/Prague` names; `-e <seconds>` (60 or more) repeats every N seconds instead; `--channel` and `--to` choose where the result goes. |
 | `cron enable <id>`, `cron disable <id>` | Turn a job on or off. |
 | `cron remove <id>` | Remove a job by ID. |
 
@@ -141,6 +144,8 @@ Scheduled jobs run while the gateway runs.
 | Command | What it does |
 |---|---|
 | `skills list` | List installed skills. |
+| `skills list-builtin` | List the skills that come with Compa. |
+| `skills install-builtin` | Copy the skills that come with Compa into the workspace; a skill already there is kept. |
 | `skills search [query]` | Search available skills. |
 | `skills install <owner/repo/path>` | Install a skill from GitHub. |
 | `skills install --registry <name> <slug>` | Install a skill from a registry, such as `clawhub`. |
@@ -149,17 +154,14 @@ Scheduled jobs run while the gateway runs.
 
 ### evolution
 
-In `draft` and `apply` modes, evolution proposes skill changes as drafts. A
-draft changes a skill only after you accept it. When `evolution.mode` is
-`apply`, accepting a draft writes it; in `draft` mode it marks the draft
-accepted, and the draft is written once evolution runs in `apply` mode.
-Evolution keeps its task and pattern records for 30 days; older ones are
-dropped the next time it loads or rewrites them.
+In `draft` and `apply` modes (`evolution.mode`), evolution proposes skill
+changes as drafts; a draft changes a skill only after you accept it. Evolution
+keeps its task and pattern records for 30 days.
 
 | Command | What it does |
 |---|---|
-| `evolution drafts list [--all]` | List drafts waiting for review, with the change each one makes; `--all` also lists accepted, rejected and quarantined drafts. |
-| `evolution drafts accept <draft-id>` | Accept a draft. In `apply` mode it is written to its skill at once (the old version is backed up); in `draft` mode, once evolution runs in `apply` mode. |
+| `evolution drafts list [--all]` | List the drafts waiting for review, with the change each one makes; `--all` also lists the written, rejected and quarantined ones. |
+| `evolution drafts accept <draft-id>` | Accept a draft. In `apply` mode it is written to its skill at once, the old version backed up; in another mode it is marked `approved` and written when evolution next runs in `apply` mode. |
 | `evolution drafts reject <draft-id>` | Reject a draft; it is never written. |
 
 ### mcp
@@ -167,7 +169,7 @@ dropped the next time it loads or rewrites them.
 | Command | What it does |
 |---|---|
 | `mcp list [--status]` | List configured MCP servers. |
-| `mcp add [flags] <name> <command-or-url> [args...]` | Add or update an MCP server (`-t stdio`, `http` or `sse`; `-e KEY=value`; `-H 'Name: Value'`). `--trusted` makes Compa believe the server's tool annotations, and `--cwd <folder>` sets a stdio server's working folder (see [MCP servers](use.md#mcp-servers)). Flags go before the name. |
+| `mcp add [flags] <name> <command-or-url> [args...]` | Add or update an MCP server, and turn MCP on. Flags go before the name: `-t stdio`, `http` or `sse`; `-e KEY=value`, or `--env-file <file>` for secrets; `-H 'Name: Value'`; `--trusted` makes Compa believe the server's tool annotations; `--cwd <folder>` sets a stdio server's working folder (see [MCP servers](use.md#mcp-servers)); `--deferred` hides the server's tools until the agent finds them with tool search, `--no-deferred` always offers them; `-f` replaces a server of that name without asking. In `mcp add <name> -- <command> [args...]`, everything after `--` is the command. |
 | `mcp show <name>` | Show details and tools for a configured MCP server, including **Trusted** and **Cwd**. |
 | `mcp test <name>` | Test connectivity for a configured MCP server. |
 | `mcp remove <name>` | Remove an MCP server from config. |
@@ -179,7 +181,7 @@ dropped the next time it loads or rewrites them.
 |---|---|
 | `modules` | List installed modules and their capabilities. |
 | `modules-add <path>` | Install a module from a local program. |
-| `modules-enable <id>`, `modules-disable <id>` | Offer a module's capabilities to the agent, or stop offering them. |
+| `modules-enable <id>`, `modules-disable <id>` | Turn a module on or off. A disabled module's capabilities aren't offered to the agent and don't run with `module-invoke`; its files and state stay. |
 | `modules-remove <id>` | Remove a module; its state is left intact. |
 | `module-invoke <module> <capability> [json]` | Run one capability; `--source-root name=path` grants a folder or file read-only. A capability the [approval policy](use.md#approvals) asks about runs only with `--approve`, your approval of this run; an agent that can run commands can pass it too. One the policy denies or hides doesn't run. The policy sees these runs with the origin `cli`. |
 
@@ -188,9 +190,9 @@ dropped the next time it loads or rewrites them.
 | Command | What it does |
 |---|---|
 | `onboard [--force]` | Initialize Compa configuration and workspace. Run again, it keeps `config.json` and the workspace files you changed, and adds the missing ones; `--force` replaces the changed files with the defaults, after saving each as `<file>.bak-<time>`. |
-| `config reset [-f]` | Reset configuration to factory defaults, after backing it up. |
+| `config reset [-f]` | Reset `config.json` to the defaults, after saving a dated backup beside it. Secrets stay; providers have to be connected again. `-f` skips the question. |
 | `status` | Show the config, workspace and model in use. |
-| `update [--version v1.2.3] [--allow-downgrade]` | Install a release of `compa` and `compa-kernel`; restart Compa afterwards. A release older than the running one needs `--allow-downgrade`. |
+| `update [--version v1.2.3 \| -u <release page>] [--allow-downgrade]` | Install a release of `compa` and `compa-kernel`, by default the latest; restart Compa afterwards. A release older than the running one needs `--allow-downgrade`. |
 | `version` | Show version information. |
 
 ## Environment variables
@@ -204,9 +206,10 @@ dropped the next time it loads or rewrites them.
 | `COMPA_LAUNCHER_HOST` | Address the web UI listens on, as `-host` sets it; `-host` wins when you give both. It overrides `-public` and **Enable LAN Access**, so an address other than localhost opens the web UI to the network; read [LAN access](install.md#lan-access) first. |
 | `COMPA_BINARY` | The `compa-kernel` that `compa` runs, instead of the one beside it. |
 | `COMPA_GATEWAY_HOST`, `COMPA_GATEWAY_PORT` | Address and port of the gateway, instead of `gateway.host` and `gateway.port`. |
-| `COMPA_LOG_LEVEL` | Log level, instead of `gateway.log_level`: `debug`, `info`, `warn` (the default) or `error`. |
+| `COMPA_LOG_LEVEL` | Log level, instead of `gateway.log_level`: `debug`, `info`, `warn` (the default), `error` or `fatal`. |
 | `COMPA_LOG_FILE` | `compa-kernel agent` writes its log to this file instead of the terminal. |
 | `COMPA_SUBPROCESS_ALLOW` | Program names, separated by commas, that modules may run, out of those each module declares. Unset, every declared program is allowed. |
+| `COMPA_DNS_SERVER` | On Linux without `/etc/resolv.conf`, the DNS servers `compa-kernel` asks, separated by `;` (default `8.8.8.8:53;1.1.1.1:53`). |
 
 Many `config.json` settings can be set with a variable named after their place
 in the file, such as `COMPA_AGENTS_DEFAULTS_WORKSPACE` for
