@@ -14,11 +14,11 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/xibodev/compa/pkg/bus"
-	"github.com/xibodev/compa/pkg/commands"
-	"github.com/xibodev/compa/pkg/constants"
-	"github.com/xibodev/compa/pkg/cron"
-	"github.com/xibodev/compa/pkg/logger"
+	"github.com/xibodev/compa/v2/pkg/bus"
+	"github.com/xibodev/compa/v2/pkg/commands"
+	"github.com/xibodev/compa/v2/pkg/constants"
+	"github.com/xibodev/compa/v2/pkg/cron"
+	"github.com/xibodev/compa/v2/pkg/logger"
 )
 
 // In-chat approvals: a call the approval policy says to ask about, when no

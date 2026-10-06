@@ -1,7 +1,7 @@
 package routing
 
 import (
-	"github.com/xibodev/compa/pkg/providers"
+	"github.com/xibodev/compa/v2/pkg/providers"
 )
 
 // defaultThreshold is used when the config threshold is zero or negative.

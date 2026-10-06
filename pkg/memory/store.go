@@ -3,7 +3,7 @@ package memory
 import (
 	"context"
 
-	"github.com/xibodev/compa/pkg/providers"
+	"github.com/xibodev/compa/v2/pkg/providers"
 )
 
 // Store defines an interface for persistent session storage.

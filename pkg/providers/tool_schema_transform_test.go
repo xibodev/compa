@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	providercommon "github.com/xibodev/compa/pkg/providers/common"
+	providercommon "github.com/xibodev/compa/v2/pkg/providers/common"
 )
 
 type toolCaptureProvider struct {

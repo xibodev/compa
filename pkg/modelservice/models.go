@@ -3,7 +3,7 @@ package modelservice
 import (
 	"context"
 
-	"github.com/xibodev/compa/pkg/config"
+	"github.com/xibodev/compa/v2/pkg/config"
 )
 
 // CatalogModel represents a single model entry in a saved catalog.

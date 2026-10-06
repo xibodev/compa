@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/xibodev/compa/pkg/config"
-	agenttools "github.com/xibodev/compa/pkg/tools"
+	"github.com/xibodev/compa/v2/pkg/config"
+	agenttools "github.com/xibodev/compa/v2/pkg/tools"
 )
 
 type allowlistTestTool struct {

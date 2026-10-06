@@ -5,8 +5,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/xibodev/compa/pkg/config"
-	"github.com/xibodev/compa/pkg/providers"
+	"github.com/xibodev/compa/v2/pkg/config"
+	"github.com/xibodev/compa/v2/pkg/providers"
 	llmgwproviders "github.com/xibodev/llmgw-core/providers"
 )
 

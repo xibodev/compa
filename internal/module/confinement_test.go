@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xibodev/compa/pkg/modproto"
+	"github.com/xibodev/compa/v2/pkg/modproto"
 )
 
 // withinRoot is the confinement primitive: every artefact path the host accepts

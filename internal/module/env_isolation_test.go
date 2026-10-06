@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/internal/module"
-	"github.com/xibodev/compa/pkg/modproto"
+	"github.com/xibodev/compa/v2/internal/module"
+	"github.com/xibodev/compa/v2/pkg/modproto"
 )
 
 // The environment guarantee, proven against a REAL SPAWNED PROCESS rather than

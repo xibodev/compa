@@ -14,12 +14,12 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/xibodev/compa/pkg/approval"
-	runtimeevents "github.com/xibodev/compa/pkg/events"
-	"github.com/xibodev/compa/pkg/logger"
-	mcpclient "github.com/xibodev/compa/pkg/mcp"
-	"github.com/xibodev/compa/pkg/media"
-	toolshared "github.com/xibodev/compa/pkg/tools/shared"
+	"github.com/xibodev/compa/v2/pkg/approval"
+	runtimeevents "github.com/xibodev/compa/v2/pkg/events"
+	"github.com/xibodev/compa/v2/pkg/logger"
+	mcpclient "github.com/xibodev/compa/v2/pkg/mcp"
+	"github.com/xibodev/compa/v2/pkg/media"
+	toolshared "github.com/xibodev/compa/v2/pkg/tools/shared"
 )
 
 // MCPManager defines the interface for MCP manager operations
@@ -107,6 +107,12 @@ func (t *MCPTool) SetEventPublisher(eventBus runtimeevents.Bus) {
 func (t *MCPTool) SetTrusted(trusted bool) {
 	t.trusted = trusted
 }
+
+// SelfTimed marks the tool as bounded by its own timeout: the manager ends a
+// call after the server's call timeout (call_timeout_seconds).
+func (t *MCPTool) SelfTimed() {}
+
+var _ toolshared.SelfTimed = (*MCPTool)(nil)
 
 // ApprovalInfo tells the approval policy the tool's server, its name there
 // and its annotations, which are its hints only when the server is trusted.

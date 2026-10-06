@@ -3,7 +3,7 @@ package gateway
 import (
 	"strconv"
 
-	"github.com/xibodev/compa/pkg/netbind"
+	"github.com/xibodev/compa/v2/pkg/netbind"
 )
 
 func openGatewayListeners(host string, port int) (netbind.Plan, netbind.OpenResult, error) {

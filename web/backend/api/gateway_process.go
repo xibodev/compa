@@ -6,8 +6,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xibodev/compa/pkg/logger"
-	ppid "github.com/xibodev/compa/pkg/pid"
+	"github.com/xibodev/compa/v2/pkg/logger"
+	ppid "github.com/xibodev/compa/v2/pkg/pid"
 )
 
 // gatewayLifecycleMu serializes starting, stopping and restarting the kernel,

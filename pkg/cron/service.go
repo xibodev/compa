@@ -16,7 +16,7 @@ import (
 
 	"github.com/adhocore/gronx"
 
-	"github.com/xibodev/compa/pkg/fileutil"
+	"github.com/xibodev/compa/v2/pkg/fileutil"
 )
 
 const (

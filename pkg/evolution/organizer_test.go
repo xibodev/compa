@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/pkg/evolution"
+	"github.com/xibodev/compa/v2/pkg/evolution"
 )
 
 func TestOrganizer_BuildRulesCreatesRuleRecord(t *testing.T) {

@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/xibodev/compa/pkg/credential"
+	"github.com/xibodev/compa/v2/pkg/credential"
 )
 
 func TestResolve_PlainKey(t *testing.T) {

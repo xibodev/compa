@@ -11,12 +11,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/pkg/audio/asr"
-	"github.com/xibodev/compa/pkg/bus"
-	"github.com/xibodev/compa/pkg/config"
-	"github.com/xibodev/compa/pkg/media"
-	"github.com/xibodev/compa/pkg/providers"
-	"github.com/xibodev/compa/pkg/tools"
+	"github.com/xibodev/compa/v2/pkg/audio/asr"
+	"github.com/xibodev/compa/v2/pkg/bus"
+	"github.com/xibodev/compa/v2/pkg/config"
+	"github.com/xibodev/compa/v2/pkg/media"
+	"github.com/xibodev/compa/v2/pkg/providers"
+	"github.com/xibodev/compa/v2/pkg/tools"
 )
 
 func newDispatchTestLoop(t *testing.T, provider providers.LLMProvider) (*AgentLoop, *bus.MessageBus) {
@@ -211,6 +211,38 @@ func TestToolCallsHaveADefaultTimeout(t *testing.T) {
 				t.Fatalf("result = %+v, want an error mentioning %q", result, tc.want)
 			}
 		})
+	}
+}
+
+// slowSelfTimedTool finishes on its own after delay. It has a timeout of its
+// own, as exec and MCP tools do.
+type slowSelfTimedTool struct{ delay time.Duration }
+
+func (s *slowSelfTimedTool) Name() string               { return "slow" }
+func (s *slowSelfTimedTool) Description() string        { return "finishes on its own" }
+func (s *slowSelfTimedTool) Parameters() map[string]any { return map[string]any{"type": "object"} }
+func (s *slowSelfTimedTool) SelfTimed()                 {}
+func (s *slowSelfTimedTool) Execute(ctx context.Context, _ map[string]any) *tools.ToolResult {
+	select {
+	case <-time.After(s.delay):
+		return tools.NewToolResult("done")
+	case <-ctx.Done():
+		return tools.ErrorResult("stopped: " + ctx.Err().Error())
+	}
+}
+
+// A tool with a timeout of its own runs to that timeout, past the default
+// limit: a user may set it longer.
+func TestSelfTimedToolsOutlastTheDefaultTimeout(t *testing.T) {
+	previousTimeout := defaultToolTimeout
+	defaultToolTimeout = 50 * time.Millisecond
+	defer func() { defaultToolTimeout = previousTimeout }()
+
+	registry := tools.NewToolRegistry()
+	registry.Register(&slowSelfTimedTool{delay: 300 * time.Millisecond})
+	result := executeToolWithTimeout(context.Background(), registry, "slow", map[string]any{}, "cli", "direct", nil)
+	if result == nil || result.IsError || result.ForLLM != "done" {
+		t.Fatalf("result = %+v, want the tool's own result", result)
 	}
 }
 

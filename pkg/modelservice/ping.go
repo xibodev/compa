@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/xibodev/compa/pkg/config"
+	"github.com/xibodev/compa/v2/pkg/config"
 )
 
 // Ping probes an instance's reachability and measures round-trip latency.

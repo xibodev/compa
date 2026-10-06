@@ -6,8 +6,8 @@
 package agent
 
 import (
-	"github.com/xibodev/compa/pkg/providers"
-	"github.com/xibodev/compa/pkg/tokenizer"
+	"github.com/xibodev/compa/v2/pkg/providers"
+	"github.com/xibodev/compa/v2/pkg/tokenizer"
 )
 
 // parseTurnBoundaries returns the starting index of each Turn in the history.

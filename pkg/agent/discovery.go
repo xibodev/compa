@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/xibodev/compa/pkg/routing"
+	"github.com/xibodev/compa/v2/pkg/routing"
 )
 
 // AgentDescriptor is the structured discovery payload injected into each

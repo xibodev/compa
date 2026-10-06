@@ -139,6 +139,11 @@ again: it fails with "the server lost its session during this call; the tool
 may or may not have run", and Compa reconnects for the next call. Only a tool
 that a trusted server marks read-only or idempotent is called once more.
 
+A call the server hasn't answered within 5 minutes fails, and the server is
+told to cancel it. For tools that take longer, such as renders or builds, set
+`tools.mcp.call_timeout_seconds` for every server or a server's
+`call_timeout_seconds` for that one, in `config.json`.
+
 ### Approvals
 
 `tools.approval` decides every tool call: it runs, waits for your approval, is

@@ -6,7 +6,7 @@ package identity
 import (
 	"strings"
 
-	"github.com/xibodev/compa/pkg/bus"
+	"github.com/xibodev/compa/v2/pkg/bus"
 )
 
 // BuildCanonicalID constructs a canonical "platform:id" identifier.

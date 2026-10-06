@@ -7,8 +7,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/xibodev/compa/pkg/modelservice"
-	"github.com/xibodev/compa/web/backend/launcherconfig"
+	"github.com/xibodev/compa/v2/pkg/modelservice"
+	"github.com/xibodev/compa/v2/web/backend/launcherconfig"
 )
 
 // Handler serves HTTP API requests.

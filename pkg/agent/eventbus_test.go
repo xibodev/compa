@@ -7,13 +7,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/pkg/bus"
-	"github.com/xibodev/compa/pkg/config"
-	runtimeevents "github.com/xibodev/compa/pkg/events"
-	"github.com/xibodev/compa/pkg/providers"
-	"github.com/xibodev/compa/pkg/routing"
-	"github.com/xibodev/compa/pkg/session"
-	"github.com/xibodev/compa/pkg/tools"
+	"github.com/xibodev/compa/v2/pkg/bus"
+	"github.com/xibodev/compa/v2/pkg/config"
+	runtimeevents "github.com/xibodev/compa/v2/pkg/events"
+	"github.com/xibodev/compa/v2/pkg/providers"
+	"github.com/xibodev/compa/v2/pkg/routing"
+	"github.com/xibodev/compa/v2/pkg/session"
+	"github.com/xibodev/compa/v2/pkg/tools"
 )
 
 func TestAgentLoop_PublishesRuntimeEvents(t *testing.T) {

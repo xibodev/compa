@@ -22,11 +22,11 @@ import (
 
 	"github.com/creack/pty"
 
-	"github.com/xibodev/compa/pkg/config"
-	"github.com/xibodev/compa/pkg/constants"
-	"github.com/xibodev/compa/pkg/isolation"
-	"github.com/xibodev/compa/pkg/logger"
-	"github.com/xibodev/compa/pkg/pathlink"
+	"github.com/xibodev/compa/v2/pkg/config"
+	"github.com/xibodev/compa/v2/pkg/constants"
+	"github.com/xibodev/compa/v2/pkg/isolation"
+	"github.com/xibodev/compa/v2/pkg/logger"
+	"github.com/xibodev/compa/v2/pkg/pathlink"
 )
 
 var (
@@ -365,6 +365,13 @@ func (t *ExecTool) timeoutDescription() string {
 		int(defaultExecTimeout/time.Second),
 	)
 }
+
+// SelfTimed marks the tool as bounded by its own timeout: a foreground run
+// stops at the timeout commandTimeout gives it, which can be longer than the
+// agent's default limit on a tool call, or, in the terminal, none.
+func (t *ExecTool) SelfTimed() {}
+
+var _ SelfTimed = (*ExecTool)(nil)
 
 // commandTimeout returns the timeout of one foreground run: the timeout
 // argument, capped at execTimeoutCapFactor times the configured timeout, or

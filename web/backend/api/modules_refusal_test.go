@@ -3,7 +3,7 @@ package api
 import (
 	"testing"
 
-	"github.com/xibodev/compa/pkg/modproto"
+	"github.com/xibodev/compa/v2/pkg/modproto"
 )
 
 // The bug this exists for: a module returned ok:true with an artifact whose

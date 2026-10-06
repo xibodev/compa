@@ -18,9 +18,9 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/xibodev/compa/pkg/fileutil"
-	"github.com/xibodev/compa/pkg/logger"
-	"github.com/xibodev/compa/pkg/pathlink"
+	"github.com/xibodev/compa/v2/pkg/fileutil"
+	"github.com/xibodev/compa/v2/pkg/logger"
+	"github.com/xibodev/compa/v2/pkg/pathlink"
 )
 
 const MaxReadFileSize = 64 * 1024 // 64KB limit to avoid context overflow

@@ -3,7 +3,7 @@ package channels
 import (
 	"testing"
 
-	"github.com/xibodev/compa/pkg/bus"
+	"github.com/xibodev/compa/v2/pkg/bus"
 )
 
 // The bug this exists for: the typing indicator stopped on the first outbound

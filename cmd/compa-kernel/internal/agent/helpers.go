@@ -11,13 +11,13 @@ import (
 
 	"github.com/ergochat/readline"
 
-	"github.com/xibodev/compa/cmd/compa-kernel/internal"
-	"github.com/xibodev/compa/internal/moduleagent"
-	"github.com/xibodev/compa/pkg/agent"
-	"github.com/xibodev/compa/pkg/bus"
-	"github.com/xibodev/compa/pkg/config"
-	"github.com/xibodev/compa/pkg/logger"
-	"github.com/xibodev/compa/pkg/session"
+	"github.com/xibodev/compa/v2/cmd/compa-kernel/internal"
+	"github.com/xibodev/compa/v2/internal/moduleagent"
+	"github.com/xibodev/compa/v2/pkg/agent"
+	"github.com/xibodev/compa/v2/pkg/bus"
+	"github.com/xibodev/compa/v2/pkg/config"
+	"github.com/xibodev/compa/v2/pkg/logger"
+	"github.com/xibodev/compa/v2/pkg/session"
 )
 
 func agentCmd(message, sessionKey, model, workspace string, debug bool) error {

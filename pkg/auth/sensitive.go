@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xibodev/compa/pkg/config"
+	"github.com/xibodev/compa/v2/pkg/config"
 )
 
 // Provider keys and sign-in tokens live in the auth store rather than the

@@ -6,9 +6,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/xibodev/compa/cmd/compa-kernel/internal"
-	"github.com/xibodev/compa/pkg/config"
-	"github.com/xibodev/compa/pkg/modelservice"
+	"github.com/xibodev/compa/v2/cmd/compa-kernel/internal"
+	"github.com/xibodev/compa/v2/pkg/config"
+	"github.com/xibodev/compa/v2/pkg/modelservice"
 )
 
 // checkSelection validates a selection against the config; tests replace it.

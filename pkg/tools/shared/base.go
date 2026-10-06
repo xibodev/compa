@@ -3,7 +3,7 @@ package toolshared
 import (
 	"context"
 
-	"github.com/xibodev/compa/pkg/session"
+	"github.com/xibodev/compa/v2/pkg/session"
 )
 
 // Tool is the interface that all tools must implement.
@@ -186,6 +186,14 @@ type AsyncExecutor interface {
 	// invoked (possibly from another goroutine) when the async operation
 	// completes. cb is guaranteed to be non-nil by the caller (registry).
 	ExecuteAsync(ctx context.Context, args map[string]any, cb AsyncCallback) *ToolResult
+}
+
+// SelfTimed is implemented by a tool that bounds each call with a timeout
+// setting of its own, which can be longer than the agent's default limit
+// on a tool call. The agent leaves such a tool to its own timeout.
+type SelfTimed interface {
+	Tool
+	SelfTimed()
 }
 
 func ToolToSchema(tool Tool) map[string]any {

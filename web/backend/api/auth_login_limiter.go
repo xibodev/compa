@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xibodev/compa/web/backend/middleware"
+	"github.com/xibodev/compa/v2/web/backend/middleware"
 )
 
 const (

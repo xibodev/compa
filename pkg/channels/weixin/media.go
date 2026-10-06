@@ -24,10 +24,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/h2non/filetype"
 
-	"github.com/xibodev/compa/pkg/bus"
-	basechannels "github.com/xibodev/compa/pkg/channels"
-	"github.com/xibodev/compa/pkg/logger"
-	"github.com/xibodev/compa/pkg/media"
+	"github.com/xibodev/compa/v2/pkg/bus"
+	basechannels "github.com/xibodev/compa/v2/pkg/channels"
+	"github.com/xibodev/compa/v2/pkg/logger"
+	"github.com/xibodev/compa/v2/pkg/media"
 )
 
 const (

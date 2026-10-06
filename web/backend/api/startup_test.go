@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xibodev/compa/web/backend/launcherconfig"
+	"github.com/xibodev/compa/v2/web/backend/launcherconfig"
 )
 
 func TestResolveLaunchCommandUsesConfigFileDefaults(t *testing.T) {

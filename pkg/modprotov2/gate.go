@@ -4,8 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/xibodev/compa/pkg/contractv2"
-	"github.com/xibodev/compa/pkg/modproto"
+	"github.com/xibodev/compa/v2/pkg/contractv2"
+	"github.com/xibodev/compa/v2/pkg/modproto"
 )
 
 // Accepted is a descriptor whose contract pin PASSED. It is the only way to

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xibodev/compa/internal/module"
+	"github.com/xibodev/compa/v2/internal/module"
 )
 
 // Two default deadlines exist and they are NOT interchangeable:

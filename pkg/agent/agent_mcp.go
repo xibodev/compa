@@ -11,13 +11,14 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"time"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/xibodev/compa/pkg/config"
-	"github.com/xibodev/compa/pkg/logger"
-	"github.com/xibodev/compa/pkg/mcp"
-	"github.com/xibodev/compa/pkg/tools"
+	"github.com/xibodev/compa/v2/pkg/config"
+	"github.com/xibodev/compa/v2/pkg/logger"
+	"github.com/xibodev/compa/v2/pkg/mcp"
+	"github.com/xibodev/compa/v2/pkg/tools"
 )
 
 // mcpRuntime is the MCP state of the loop: the manager of the connected
@@ -229,6 +230,7 @@ func (al *AgentLoop) connectMCP(
 		mcp.WithRuntimeEvents(al.runtimeEvents),
 		// The servers may work in the agents' workspaces.
 		mcp.WithRoots(mcpWorkspaces(workspacePath, registry)...),
+		mcp.WithCallTimeout(time.Duration(mcpCfg.CallTimeoutSeconds)*time.Second),
 		mcp.WithToolsChangedHandler(func(serverName string, _ []*mcpsdk.Tool) {
 			// Only the registry these servers serve: a reload replaced it
 			// and its manager with them.

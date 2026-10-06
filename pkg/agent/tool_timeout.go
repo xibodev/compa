@@ -7,12 +7,13 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/xibodev/compa/pkg/tools"
+	"github.com/xibodev/compa/v2/pkg/tools"
 )
 
 // defaultToolTimeout bounds a tool call: a tool that hangs must not hold its
-// turn, and with it its session, forever. A tool's own shorter timeout still
-// ends it first.
+// turn, and with it its session, forever. A tool with a timeout setting of
+// its own (tools.SelfTimed), such as exec or an MCP server's tools, is left to
+// that timeout instead, which may be longer.
 var defaultToolTimeout = 10 * time.Minute
 
 // toolStopGrace is how long a tool whose deadline passed gets to return.
@@ -32,7 +33,8 @@ func executeToolWithTimeout(
 ) *tools.ToolResult {
 	tool, ok := registry.Get(name)
 	_, isAsync := tool.(tools.AsyncExecutor)
-	if !ok || defaultToolTimeout <= 0 || (isAsync && asyncCallback != nil) {
+	_, selfTimed := tool.(tools.SelfTimed)
+	if !ok || defaultToolTimeout <= 0 || selfTimed || (isAsync && asyncCallback != nil) {
 		return registry.ExecuteWithContext(ctx, name, args, channel, chatID, asyncCallback)
 	}
 

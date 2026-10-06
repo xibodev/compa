@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/pkg/memory"
+	"github.com/xibodev/compa/v2/pkg/memory"
 )
 
 // writeWebChatTestHistory writes the web chat session sessionID straight to

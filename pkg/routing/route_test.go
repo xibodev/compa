@@ -3,8 +3,8 @@ package routing
 import (
 	"testing"
 
-	"github.com/xibodev/compa/pkg/bus"
-	"github.com/xibodev/compa/pkg/config"
+	"github.com/xibodev/compa/v2/pkg/bus"
+	"github.com/xibodev/compa/v2/pkg/config"
 )
 
 func testConfig(agents []config.AgentConfig) *config.Config {

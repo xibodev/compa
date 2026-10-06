@@ -14,7 +14,7 @@ import (
 
 	"github.com/minio/selfupdate"
 
-	"github.com/xibodev/compa/pkg/updater/updatertest"
+	"github.com/xibodev/compa/v2/pkg/updater/updatertest"
 )
 
 func fakeOptions(srv *httptest.Server, dir string) Options {

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	runtimeevents "github.com/xibodev/compa/pkg/events"
+	runtimeevents "github.com/xibodev/compa/v2/pkg/events"
 )
 
 func TestPublishConsume(t *testing.T) {

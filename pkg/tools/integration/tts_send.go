@@ -4,8 +4,8 @@ import (
 	"context"
 	"strings"
 
-	"github.com/xibodev/compa/pkg/audio/tts"
-	"github.com/xibodev/compa/pkg/media"
+	"github.com/xibodev/compa/v2/pkg/audio/tts"
+	"github.com/xibodev/compa/v2/pkg/media"
 )
 
 type SendTTSTool struct {

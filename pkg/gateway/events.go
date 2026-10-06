@@ -3,8 +3,8 @@ package gateway
 import (
 	"time"
 
-	"github.com/xibodev/compa/pkg/agent"
-	runtimeevents "github.com/xibodev/compa/pkg/events"
+	"github.com/xibodev/compa/v2/pkg/agent"
+	runtimeevents "github.com/xibodev/compa/v2/pkg/events"
 )
 
 type gatewayEventPayload struct {

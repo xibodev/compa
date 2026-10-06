@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/pkg/config"
-	"github.com/xibodev/compa/pkg/evolution"
-	"github.com/xibodev/compa/pkg/providers"
-	"github.com/xibodev/compa/pkg/skills"
+	"github.com/xibodev/compa/v2/pkg/config"
+	"github.com/xibodev/compa/v2/pkg/evolution"
+	"github.com/xibodev/compa/v2/pkg/providers"
+	"github.com/xibodev/compa/v2/pkg/skills"
 )
 
 // recordsClock is the clock of the runtimes whose records are dated around

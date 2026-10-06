@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xibodev/compa/pkg/evolution"
+	"github.com/xibodev/compa/v2/pkg/evolution"
 )
 
 const weatherBody = "---\nname: weather\ndescription: weather helper\n---\n# Weather\nUse native names.\n"

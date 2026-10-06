@@ -1,4 +1,4 @@
-module github.com/xibodev/compa
+module github.com/xibodev/compa/v2
 
 go 1.26.6
 

@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xibodev/compa/pkg/config"
-	"github.com/xibodev/compa/pkg/modelservice"
+	"github.com/xibodev/compa/v2/pkg/config"
+	"github.com/xibodev/compa/v2/pkg/modelservice"
 )
 
 // listedInstances returns GET /api/provider-instances keyed by id, both as

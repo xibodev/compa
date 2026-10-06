@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xibodev/compa/pkg/modproto"
+	"github.com/xibodev/compa/v2/pkg/modproto"
 )
 
 // describeKey identifies one version of an installed module: its binary's size

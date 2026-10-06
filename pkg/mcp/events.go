@@ -1,8 +1,8 @@
 package mcp
 
 import (
-	"github.com/xibodev/compa/pkg/config"
-	runtimeevents "github.com/xibodev/compa/pkg/events"
+	"github.com/xibodev/compa/v2/pkg/config"
+	runtimeevents "github.com/xibodev/compa/v2/pkg/events"
 )
 
 func (m *Manager) publishServerEvent(

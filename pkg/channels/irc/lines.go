@@ -6,8 +6,8 @@ import (
 
 	"github.com/ergochat/irc-go/ircmsg"
 
-	"github.com/xibodev/compa/pkg/bus"
-	"github.com/xibodev/compa/pkg/identity"
+	"github.com/xibodev/compa/v2/pkg/bus"
+	"github.com/xibodev/compa/v2/pkg/identity"
 )
 
 const (

@@ -9,7 +9,7 @@ import (
 
 	coreproviders "github.com/xibodev/llmgw-core/providers"
 
-	"github.com/xibodev/compa/pkg/config"
+	"github.com/xibodev/compa/v2/pkg/config"
 )
 
 // Credential kinds a provider instance reports: what it signs in with.

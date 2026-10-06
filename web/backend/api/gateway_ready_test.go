@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/pkg/config"
+	"github.com/xibodev/compa/v2/pkg/config"
 )
 
 // serveKernelReadiness answers the tracked test gateway's probes: /health

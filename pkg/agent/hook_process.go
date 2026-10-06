@@ -13,10 +13,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	runtimeevents "github.com/xibodev/compa/pkg/events"
-	"github.com/xibodev/compa/pkg/isolation"
-	"github.com/xibodev/compa/pkg/logger"
-	"github.com/xibodev/compa/pkg/tools"
+	runtimeevents "github.com/xibodev/compa/v2/pkg/events"
+	"github.com/xibodev/compa/v2/pkg/isolation"
+	"github.com/xibodev/compa/v2/pkg/logger"
+	"github.com/xibodev/compa/v2/pkg/tools"
 )
 
 const (

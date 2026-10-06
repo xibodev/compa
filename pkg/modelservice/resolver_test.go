@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/pkg/auth"
-	"github.com/xibodev/compa/pkg/config"
-	"github.com/xibodev/compa/pkg/providers"
+	"github.com/xibodev/compa/v2/pkg/auth"
+	"github.com/xibodev/compa/v2/pkg/config"
+	"github.com/xibodev/compa/v2/pkg/providers"
 )
 
 func resolverInstance(id string) *config.ProviderInstanceConfig {

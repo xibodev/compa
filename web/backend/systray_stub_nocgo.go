@@ -10,7 +10,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/xibodev/compa/pkg/logger"
+	"github.com/xibodev/compa/v2/pkg/logger"
 )
 
 // runTray falls back to a headless mode on platforms where systray requires cgo.

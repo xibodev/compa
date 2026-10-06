@@ -4,7 +4,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/xibodev/compa/pkg/config"
+	"github.com/xibodev/compa/v2/pkg/config"
 )
 
 func TestStoredSecretsListsEveryStoredToken(t *testing.T) {

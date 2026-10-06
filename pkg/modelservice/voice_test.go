@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xibodev/compa/pkg/auth"
-	"github.com/xibodev/compa/pkg/config"
+	"github.com/xibodev/compa/v2/pkg/auth"
+	"github.com/xibodev/compa/v2/pkg/config"
 )
 
 func voiceConfig(instances ...*config.ProviderInstanceConfig) *config.Config {

@@ -9,8 +9,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/xibodev/compa/pkg/credential"
-	"github.com/xibodev/compa/pkg/logger"
+	"github.com/xibodev/compa/v2/pkg/credential"
+	"github.com/xibodev/compa/v2/pkg/logger"
 )
 
 // FlexibleStringSlice is a []string that also accepts JSON numbers,

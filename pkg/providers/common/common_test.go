@@ -9,7 +9,7 @@ import (
 
 	core "github.com/xibodev/llmgw-core"
 
-	"github.com/xibodev/compa/pkg/providers/protocoltypes"
+	"github.com/xibodev/compa/v2/pkg/providers/protocoltypes"
 )
 
 // --- SerializeMessages tests ---

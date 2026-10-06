@@ -18,8 +18,8 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/xibodev/compa/pkg/config"
-	runtimeevents "github.com/xibodev/compa/pkg/events"
+	"github.com/xibodev/compa/v2/pkg/config"
+	runtimeevents "github.com/xibodev/compa/v2/pkg/events"
 )
 
 func TestLoadEnvFile(t *testing.T) {
@@ -706,6 +706,45 @@ func TestCallToolReturnsAToolErrorThatMentionsASession(t *testing.T) {
 	if transport.calls() != 1 || freshTransport.calls() != 0 || connects != 0 || conn.lost.Load() {
 		t.Fatalf("tools/call sent %d+%d times, %d reconnects, lost = %v; want one call and no reconnect",
 			transport.calls(), freshTransport.calls(), connects, conn.lost.Load())
+	}
+}
+
+// A call ends after the server's call_timeout_seconds, or without one after
+// the manager's call timeout.
+func TestCallToolTimeouts(t *testing.T) {
+	server := sdkmcp.NewServer(&sdkmcp.Implementation{Name: "slow", Version: "1.0.0"}, nil)
+	sdkmcp.AddTool(server, &sdkmcp.Tool{Name: "wait", Description: "waits until it is cancelled"},
+		func(ctx context.Context, _ *sdkmcp.CallToolRequest, _ map[string]any) (*sdkmcp.CallToolResult, any, error) {
+			<-ctx.Done()
+			return nil, nil, ctx.Err()
+		})
+	httpServer := httptest.NewServer(sdkmcp.NewStreamableHTTPHandler(func(*http.Request) *sdkmcp.Server { return server }, nil))
+	defer httpServer.Close()
+
+	for _, tc := range []struct {
+		name          string
+		managerLimit  time.Duration
+		serverSeconds int
+	}{
+		{name: "the server's setting wins", managerLimit: 10 * time.Second, serverSeconds: 1},
+		{name: "the manager's setting", managerLimit: time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mgr := NewManager(WithCallTimeout(tc.managerLimit))
+			defer mgr.Close()
+			if err := mgr.ConnectServer(context.Background(), "slow", config.MCPServerConfig{
+				Enabled:            true,
+				Type:               "http",
+				URL:                httpServer.URL,
+				CallTimeoutSeconds: tc.serverSeconds,
+			}); err != nil {
+				t.Fatalf("ConnectServer() error = %v", err)
+			}
+			_, err := mgr.CallTool(context.Background(), "slow", "wait", nil)
+			if err == nil || !strings.Contains(err.Error(), "within 1s") {
+				t.Fatalf("CallTool() error = %v, want no answer within 1s", err)
+			}
+		})
 	}
 }
 

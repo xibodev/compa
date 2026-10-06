@@ -42,7 +42,7 @@ package contractv2
 import (
 	"fmt"
 
-	"github.com/xibodev/compa/pkg/modproto"
+	"github.com/xibodev/compa/v2/pkg/modproto"
 )
 
 // ContractID is the behavioural contract this host implements.

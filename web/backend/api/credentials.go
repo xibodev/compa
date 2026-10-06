@@ -11,9 +11,9 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/xibodev/compa/pkg/auth"
-	"github.com/xibodev/compa/pkg/config"
-	"github.com/xibodev/compa/pkg/modelservice"
+	"github.com/xibodev/compa/v2/pkg/auth"
+	"github.com/xibodev/compa/v2/pkg/config"
+	"github.com/xibodev/compa/v2/pkg/modelservice"
 )
 
 const (

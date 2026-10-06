@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/xibodev/compa/pkg/tools"
+	"github.com/xibodev/compa/v2/pkg/tools"
 )
 
 // GrepTool searches summaries and messages for matching content.

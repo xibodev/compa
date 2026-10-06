@@ -6,17 +6,17 @@ import (
 	"context"
 	"strings"
 
-	"github.com/xibodev/compa/pkg/agent/interfaces"
-	"github.com/xibodev/compa/pkg/audio/asr"
-	"github.com/xibodev/compa/pkg/bus"
-	"github.com/xibodev/compa/pkg/channels"
-	"github.com/xibodev/compa/pkg/config"
-	"github.com/xibodev/compa/pkg/constants"
-	"github.com/xibodev/compa/pkg/logger"
-	"github.com/xibodev/compa/pkg/media"
-	"github.com/xibodev/compa/pkg/providers"
-	"github.com/xibodev/compa/pkg/state"
-	"github.com/xibodev/compa/pkg/tools"
+	"github.com/xibodev/compa/v2/pkg/agent/interfaces"
+	"github.com/xibodev/compa/v2/pkg/audio/asr"
+	"github.com/xibodev/compa/v2/pkg/bus"
+	"github.com/xibodev/compa/v2/pkg/channels"
+	"github.com/xibodev/compa/v2/pkg/config"
+	"github.com/xibodev/compa/v2/pkg/constants"
+	"github.com/xibodev/compa/v2/pkg/logger"
+	"github.com/xibodev/compa/v2/pkg/media"
+	"github.com/xibodev/compa/v2/pkg/providers"
+	"github.com/xibodev/compa/v2/pkg/state"
+	"github.com/xibodev/compa/v2/pkg/tools"
 )
 
 func (al *AgentLoop) RegisterTool(tool tools.Tool) {

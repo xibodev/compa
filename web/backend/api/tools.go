@@ -8,9 +8,9 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/xibodev/compa/internal/moduletools"
-	"github.com/xibodev/compa/pkg/config"
-	agenttools "github.com/xibodev/compa/pkg/tools"
+	"github.com/xibodev/compa/v2/internal/moduletools"
+	"github.com/xibodev/compa/v2/pkg/config"
+	agenttools "github.com/xibodev/compa/v2/pkg/tools"
 )
 
 type toolCatalogEntry struct {

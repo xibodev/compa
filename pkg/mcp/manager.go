@@ -19,9 +19,9 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/xibodev/compa/pkg/config"
-	runtimeevents "github.com/xibodev/compa/pkg/events"
-	"github.com/xibodev/compa/pkg/logger"
+	"github.com/xibodev/compa/v2/pkg/config"
+	runtimeevents "github.com/xibodev/compa/v2/pkg/events"
+	"github.com/xibodev/compa/v2/pkg/logger"
 )
 
 // ErrSessionLost is the error of a tool call during which the server lost
@@ -162,7 +162,9 @@ const (
 	// handshake and listing its tools, so a server that never answers cannot
 	// hold up its caller.
 	DefaultConnectTimeout = 30 * time.Second
-	// DefaultCallTimeout bounds one tool call.
+	// DefaultCallTimeout bounds one tool call to a server, unless the
+	// manager (WithCallTimeout) or the server (call_timeout_seconds) sets
+	// another bound.
 	DefaultCallTimeout = 5 * time.Minute
 	// defaultCloseTimeout bounds each step of Close: waiting for in-flight
 	// calls, then closing the sessions.
@@ -261,7 +263,8 @@ func WithConnectTimeout(timeout time.Duration) ManagerOption {
 	}
 }
 
-// WithCallTimeout bounds one tool call. 0 or less keeps DefaultCallTimeout.
+// WithCallTimeout bounds one tool call to a server without a
+// call_timeout_seconds of its own. 0 or less keeps DefaultCallTimeout.
 func WithCallTimeout(timeout time.Duration) ManagerOption {
 	return func(m *Manager) {
 		if timeout > 0 {
@@ -939,6 +942,9 @@ func (m *Manager) CallTool(
 	defer m.wg.Done()
 
 	timeout := m.callTimeout
+	if seconds := conn.Config.CallTimeoutSeconds; seconds > 0 {
+		timeout = time.Duration(seconds) * time.Second
+	}
 	if timeout <= 0 {
 		timeout = DefaultCallTimeout
 	}

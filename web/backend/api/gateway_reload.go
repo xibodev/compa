@@ -10,9 +10,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xibodev/compa/pkg/config"
-	"github.com/xibodev/compa/pkg/logger"
-	ppid "github.com/xibodev/compa/pkg/pid"
+	"github.com/xibodev/compa/v2/pkg/config"
+	"github.com/xibodev/compa/v2/pkg/logger"
+	ppid "github.com/xibodev/compa/v2/pkg/pid"
 )
 
 // gatewayReloadTimeout bounds the wait for the gateway to apply a reloaded

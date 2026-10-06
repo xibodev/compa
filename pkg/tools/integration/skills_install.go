@@ -10,10 +10,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xibodev/compa/pkg/fileutil"
-	"github.com/xibodev/compa/pkg/logger"
-	"github.com/xibodev/compa/pkg/skills"
-	"github.com/xibodev/compa/pkg/utils"
+	"github.com/xibodev/compa/v2/pkg/fileutil"
+	"github.com/xibodev/compa/v2/pkg/logger"
+	"github.com/xibodev/compa/v2/pkg/skills"
+	"github.com/xibodev/compa/v2/pkg/utils"
 )
 
 const defaultSkillRegistryName = "github"

@@ -3,7 +3,7 @@ package module
 import (
 	"testing"
 
-	"github.com/xibodev/compa/pkg/modproto"
+	"github.com/xibodev/compa/v2/pkg/modproto"
 )
 
 func descriptorWith(p modproto.Permissions) *modproto.Descriptor {

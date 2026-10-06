@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/xibodev/compa/web/backend/launcherconfig"
+	"github.com/xibodev/compa/v2/web/backend/launcherconfig"
 )
 
 type launcherConfigPayload struct {

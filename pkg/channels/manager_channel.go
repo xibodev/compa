@@ -8,7 +8,7 @@ import (
 	"log"
 	"reflect"
 
-	"github.com/xibodev/compa/pkg/config"
+	"github.com/xibodev/compa/v2/pkg/config"
 )
 
 func toChannelHashes(cfg *config.Config) map[string]string {

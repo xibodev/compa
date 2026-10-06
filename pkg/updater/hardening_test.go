@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xibodev/compa/pkg/config"
-	"github.com/xibodev/compa/pkg/updater/updatertest"
+	"github.com/xibodev/compa/v2/pkg/config"
+	"github.com/xibodev/compa/v2/pkg/updater/updatertest"
 )
 
 // TestMain keeps tests from running the fake programs they install.

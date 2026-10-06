@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/xibodev/compa/pkg/bus"
-	"github.com/xibodev/compa/pkg/config"
+	"github.com/xibodev/compa/v2/pkg/bus"
+	"github.com/xibodev/compa/v2/pkg/config"
 )
 
 // A loop with no provider and no default model refuses the turn with the

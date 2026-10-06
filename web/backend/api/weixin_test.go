@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/pkg/config"
+	"github.com/xibodev/compa/v2/pkg/config"
 )
 
 func TestSaveWeixinBindingReturnsSuccessWhenRestartFails(t *testing.T) {
