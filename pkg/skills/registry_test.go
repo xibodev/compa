@@ -204,6 +204,7 @@ func TestIsSafeSlug(t *testing.T) {
 	assert.NoError(t, utils.ValidateSkillIdentifier("github"))
 	assert.NoError(t, utils.ValidateSkillIdentifier("docker-compose"))
 	assert.Error(t, utils.ValidateSkillIdentifier(""))
+	assert.Error(t, utils.ValidateSkillIdentifier("."))
 	assert.Error(t, utils.ValidateSkillIdentifier("../etc/passwd"))
 	assert.Error(t, utils.ValidateSkillIdentifier("path/traversal"))
 	assert.Error(t, utils.ValidateSkillIdentifier("path\\traversal"))

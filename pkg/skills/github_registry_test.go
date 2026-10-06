@@ -216,3 +216,20 @@ func TestGitHubRegistryResolveInstallDirNameSupportsFullURLs(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "repo", dirName)
 }
+
+// A URL's path can end in "." or "..", which would make the skills folder or
+// the workspace itself the skill's folder.
+func TestGitHubRegistryResolveInstallDirNameRefusesDotFolders(t *testing.T) {
+	registry := GitHubRegistryConfig{Enabled: true, BaseURL: "https://github.com"}.BuildRegistry()
+	require.NotNil(t, registry)
+
+	for _, target := range []string{
+		"https://github.com/org/repo/tree/main/skills/..",
+		"https://github.com/org/repo/tree/main/skills/.",
+		"https://github.com/org/repo/tree/main/%2e%2e",
+		"https://github.com/org/..",
+	} {
+		dirName, err := registry.ResolveInstallDirName(target)
+		assert.Error(t, err, "%s gave %q", target, dirName)
+	}
+}
