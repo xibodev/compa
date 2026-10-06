@@ -3,6 +3,7 @@ package matrix
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -144,11 +145,18 @@ func TestSplitForEvent_KeepsEventsUnderByteLimit(t *testing.T) {
 func TestSendFailingAfterADeliveredPartIsNotRetried(t *testing.T) {
 	var sends atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if sends.Add(1) == 1 {
+		body, _ := io.ReadAll(r.Body)
+		switch {
+		case strings.Contains(r.URL.Path, "/redact/"):
+			_, _ = w.Write([]byte(`{"event_id":"$redacted"}`))
+		case strings.Contains(string(body), "m.replace"):
+			// The progress message can't take the reply, so it's sent anew.
+			http.Error(w, `{"errcode":"M_UNKNOWN"}`, http.StatusInternalServerError)
+		case sends.Add(1) == 1:
 			_, _ = w.Write([]byte(`{"event_id":"$1"}`))
-			return
+		default:
+			http.Error(w, `{"errcode":"M_UNKNOWN"}`, http.StatusInternalServerError)
 		}
-		http.Error(w, `{"errcode":"M_UNKNOWN"}`, http.StatusInternalServerError)
 	}))
 	t.Cleanup(server.Close)
 	client, err := mautrix.NewClient(server.URL, id.UserID("@compa:matrix.test"), "")
@@ -159,8 +167,10 @@ func TestSendFailingAfterADeliveredPartIsNotRetried(t *testing.T) {
 		BaseChannel: channels.NewBaseChannel("matrix", nil, bus.NewMessageBus(), nil),
 		client:      client,
 		config:      &config.MatrixSettings{},
+		progress:    channels.NewToolFeedbackAnimator(nil),
 	}
 	ch.SetRunning(true)
+	ch.RecordToolFeedbackMessage("!room:matrix.test", "$feedback", "working")
 
 	_, err = ch.Send(context.Background(), bus.OutboundMessage{
 		ChatID:  "!room:matrix.test",
@@ -171,6 +181,9 @@ func TestSendFailingAfterADeliveredPartIsNotRetried(t *testing.T) {
 	}
 	if n := sends.Load(); n != 2 {
 		t.Fatalf("sent %d parts, want the delivered one and the failed one", n)
+	}
+	if _, tracked := ch.currentToolFeedbackMessage("!room:matrix.test"); tracked {
+		t.Error("the progress message is still tracked after part of the reply went out")
 	}
 }
 

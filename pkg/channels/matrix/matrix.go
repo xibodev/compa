@@ -442,8 +442,12 @@ func (c *MatrixChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]st
 		if err != nil {
 			// Sending the message again would repeat the parts delivered.
 			if len(msgIDs) > 0 {
-				return msgIDs, fmt.Errorf("matrix send: part %d of %d failed after the ones before it were delivered: %w",
-					len(msgIDs)+1, len(chunks), channels.ErrSendFailed)
+				// Part of the reply is out, so the progress message is done.
+				if !isToolFeedback && hasTrackedMsg {
+					c.dismissTrackedToolFeedbackMessage(ctx, msg.ChatID, trackedMsgID)
+				}
+				return msgIDs, channels.PartlyDelivered(fmt.Errorf("matrix send: part %d of %d: %w",
+					len(msgIDs)+1, len(chunks), err))
 			}
 			return msgIDs, fmt.Errorf("matrix send: %w", channels.ErrTemporary)
 		}
