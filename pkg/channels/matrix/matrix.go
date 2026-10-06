@@ -523,9 +523,18 @@ func (c *MatrixChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMess
 	}
 
 	var eventIDs []string
+	sent := false
+	// failed reports err, as one that isn't sent again once a part was
+	// delivered: the manager would repeat it.
+	failed := func(err error) ([]string, error) {
+		if sent {
+			return nil, channels.PartlyDelivered(err)
+		}
+		return nil, err
+	}
 	for _, part := range msg.Parts {
 		if err := sendCtx.Err(); err != nil {
-			return nil, err
+			return failed(err)
 		}
 
 		localPath, meta, err := store.ResolveWithMeta(part.Ref)
@@ -590,7 +599,7 @@ func (c *MatrixChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMess
 				"type":  part.Type,
 				"error": err.Error(),
 			})
-			return nil, fmt.Errorf("matrix upload media: %w", channels.ErrTemporary)
+			return failed(fmt.Errorf("matrix upload media: %w", channels.ErrTemporary))
 		}
 
 		msgType := matrixOutboundMsgType(part.Type, filename, contentType)
@@ -610,8 +619,9 @@ func (c *MatrixChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMess
 				"type":    msgType,
 				"error":   err.Error(),
 			})
-			return nil, fmt.Errorf("matrix send media: %w", channels.ErrTemporary)
+			return failed(fmt.Errorf("matrix send media: %w", channels.ErrTemporary))
 		}
+		sent = true
 		if sendResp != nil {
 			eventIDs = append(eventIDs, sendResp.EventID.String())
 		}

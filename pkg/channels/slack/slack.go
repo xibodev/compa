@@ -236,14 +236,18 @@ func (c *SlackChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMessa
 				"filename": filename,
 				"error":    err.Error(),
 			})
-			return nil, fmt.Errorf("slack send media: %w", classifySendError(err))
+			err = fmt.Errorf("slack send media: %w", classifySendError(err))
+			if sentAny {
+				return nil, channels.PartlyDelivered(err)
+			}
+			return nil, err
 		}
 		sentAny = true
 	}
 
 	if sentAny && caption != "" {
 		if err := c.postTextFn(ctx, channelID, threadTS, caption); err != nil {
-			return nil, fmt.Errorf("slack send media caption fallback: %w", channels.ErrTemporary)
+			return nil, channels.PartlyDelivered(fmt.Errorf("slack send media caption fallback: %w", err))
 		}
 	}
 

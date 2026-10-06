@@ -2,6 +2,7 @@ package slack
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -261,4 +262,57 @@ type slackUploadRecord struct {
 	File    string
 	Name    string
 	Title   string
+}
+
+// A send that fails after a file was uploaded is not sent again: that would
+// upload the delivered files again.
+func TestSendMedia_FailingAfterAnUploadIsNotRetried(t *testing.T) {
+	store := media.NewFileMediaStore()
+	ref := func(name string) string {
+		path := filepath.Join(t.TempDir(), name)
+		if err := os.WriteFile(path, []byte("data"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		r, err := store.Store(path, media.MediaMeta{Filename: name}, "test-scope")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	for name, tc := range map[string]struct {
+		parts       []bus.MediaPart
+		failUpload  int
+		failCaption bool
+	}{
+		"the second upload": {
+			parts:      []bus.MediaPart{{Ref: ref("a.txt"), Type: "file"}, {Ref: ref("b.txt"), Type: "file"}},
+			failUpload: 2,
+		},
+		"the caption": {
+			parts:       []bus.MediaPart{{Ref: ref("c.txt"), Type: "file", Caption: "look"}},
+			failCaption: true,
+		},
+	} {
+		ch := &SlackChannel{BaseChannel: channels.NewBaseChannel("slack", nil, nil, nil)}
+		ch.SetRunning(true)
+		ch.SetMediaStore(store)
+		uploads := 0
+		ch.uploadFileFn = func(context.Context, slacksdk.UploadFileParameters) error {
+			if uploads++; uploads == tc.failUpload {
+				return errors.New("upload exploded")
+			}
+			return nil
+		}
+		ch.postTextFn = func(context.Context, string, string, string) error {
+			if tc.failCaption {
+				return errors.New("post exploded")
+			}
+			return nil
+		}
+
+		_, err := ch.SendMedia(context.Background(), bus.OutboundMediaMessage{ChatID: "C123456", Parts: tc.parts})
+		if !errors.Is(err, channels.ErrSendFailed) || errors.Is(err, channels.ErrTemporary) {
+			t.Errorf("%s: SendMedia() error = %v, want a failure that is not retried", name, err)
+		}
+	}
 }

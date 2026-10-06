@@ -1891,3 +1891,69 @@ func testMediaGroupMessage(mediaGroupID string) telego.Message {
 		MediaGroupID: mediaGroupID,
 	}
 }
+
+// A message sent in parts that fails after a part was delivered is not sent
+// again: that would repeat the delivered parts.
+func TestSendMedia_FailingAfterADeliveredPartIsNotRetried(t *testing.T) {
+	store := media.NewFileMediaStore()
+	ref := func(name string) string {
+		path := filepath.Join(t.TempDir(), name)
+		require.NoError(t, os.WriteFile(path, []byte("data"), 0o644))
+		r, err := store.Store(path, media.MediaMeta{Filename: name}, "scope-1")
+		require.NoError(t, err)
+		return r
+	}
+	images := make([]bus.MediaPart, 12)
+	for i := range images {
+		images[i] = bus.MediaPart{Type: "image", Ref: ref(fmt.Sprintf("%d.png", i))}
+	}
+	for name, parts := range map[string][]bus.MediaPart{
+		"the caption's text, then the photo": {
+			{Type: "image", Ref: ref("a.png"), Caption: strings.Repeat("c", telegramCaptionLimit+1)},
+		},
+		"a file, then the next":   {{Type: "file", Ref: ref("a.txt")}, {Type: "file", Ref: ref("b.txt")}},
+		"an album, then the next": images,
+	} {
+		calls := 0
+		caller := &stubCaller{
+			callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+				calls++
+				switch {
+				case calls > 1:
+					return nil, errors.New("api: 500 \"server exploded\"")
+				case strings.Contains(url, "sendMediaGroup"):
+					return successMediaGroupResponse(t, 1, 2), nil
+				default:
+					return successResponseWithMessageID(t, 1), nil
+				}
+			},
+		}
+		ch := newTestChannelWithConstructor(t, caller, &multipartRecordingConstructor{})
+		ch.SetMediaStore(store)
+
+		_, err := ch.SendMedia(context.Background(), bus.OutboundMediaMessage{ChatID: "12345", Parts: parts})
+		assert.ErrorIs(t, err, channels.ErrSendFailed, name)
+		assert.NotErrorIs(t, err, channels.ErrTemporary, name)
+		assert.Equal(t, 2, calls, name)
+	}
+}
+
+// The same holds for text that HTML makes too long for one message.
+func TestSend_FailingAfterADeliveredChunkIsNotRetried(t *testing.T) {
+	calls := 0
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			if calls++; calls > 1 {
+				return nil, errors.New("api: 500 \"server exploded\"")
+			}
+			return successResponseWithMessageID(t, 1), nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+
+	// Each "<" becomes "&lt;", so this needs two messages.
+	_, err := ch.Send(context.Background(), bus.OutboundMessage{ChatID: "12345", Content: strings.Repeat("<", 1500)})
+	assert.ErrorIs(t, err, channels.ErrSendFailed)
+	assert.NotErrorIs(t, err, channels.ErrTemporary)
+	assert.Equal(t, 2, calls)
+}

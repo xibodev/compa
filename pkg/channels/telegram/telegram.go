@@ -280,6 +280,9 @@ func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]
 			useMarkdownV2: useMarkdownV2,
 		})
 		if err != nil {
+			if len(messageIDs) > 0 {
+				return nil, channels.PartlyDelivered(err)
+			}
 			return nil, err
 		}
 		messageIDs = append(messageIDs, msgID)
@@ -699,27 +702,35 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 	}
 
 	var messageIDs []string
+	// failed reports err, as one that isn't sent again once a part was
+	// delivered: the manager would repeat it.
+	failed := func(err error) ([]string, error) {
+		if len(messageIDs) > 0 {
+			return nil, channels.PartlyDelivered(err)
+		}
+		return nil, err
+	}
 	leadingCaption := telegramLeadingCaption(msg.Parts)
 	if len([]rune(leadingCaption)) > telegramCaptionLimit {
 		leadingIDs, leadingErr := c.sendCaptionText(ctx, chatID, threadID, leadingCaption)
-		if leadingErr != nil {
-			return nil, leadingErr
-		}
 		messageIDs = append(messageIDs, leadingIDs...)
+		if leadingErr != nil {
+			return failed(leadingErr)
+		}
 		msg = telegramClearMediaCaptions(msg)
 	}
 
 	if len(msg.Parts) > 1 && telegramCanSendMediaGroup(msg.Parts) {
 		groupIDs, err := c.sendImageMediaGroups(ctx, chatID, threadID, store, msg.Parts)
+		messageIDs = append(messageIDs, groupIDs...)
 		if err != nil {
 			logger.ErrorCF("telegram", "Failed to send media group", map[string]any{
 				"count": len(msg.Parts),
 				"error": c.redactToken(err.Error()),
 			})
-			return nil, fmt.Errorf("telegram send media group: %w", c.classifySendError(err))
+			return failed(fmt.Errorf("telegram send media group: %w", c.classifySendError(err)))
 		}
 		if len(groupIDs) > 0 {
-			messageIDs = append(messageIDs, groupIDs...)
 			if hasTrackedMsg {
 				c.dismissTrackedToolFeedbackMessage(ctx, trackedChatID, trackedMsgID)
 			}
@@ -759,7 +770,7 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 			if err != nil && strings.Contains(err.Error(), "PHOTO_INVALID_DIMENSIONS") {
 				if _, seekErr := file.Seek(0, io.SeekStart); seekErr != nil {
 					file.Close()
-					return nil, fmt.Errorf("telegram rewind media after photo failure: %w", channels.ErrTemporary)
+					return failed(fmt.Errorf("telegram rewind media after photo failure: %w", channels.ErrTemporary))
 				}
 
 				docParams := &telego.SendDocumentParams{
@@ -819,7 +830,7 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 				"type":  part.Type,
 				"error": c.redactToken(err.Error()),
 			})
-			return nil, fmt.Errorf("telegram send media: %w", c.classifySendError(err))
+			return failed(fmt.Errorf("telegram send media: %w", c.classifySendError(err)))
 		}
 	}
 
@@ -842,6 +853,8 @@ func telegramCanSendMediaGroup(parts []bus.MediaPart) bool {
 	return true
 }
 
+// sendImageMediaGroups sends parts as albums of up to ten. After an error it
+// returns the IDs of the albums already sent.
 func (c *TelegramChannel) sendImageMediaGroups(
 	ctx context.Context,
 	chatID int64,
@@ -859,7 +872,7 @@ func (c *TelegramChannel) sendImageMediaGroups(
 		}
 		groupIDs, err := c.sendSingleImageMediaGroup(ctx, chatID, threadID, store, parts[start:end])
 		if err != nil {
-			return nil, err
+			return messageIDs, err
 		}
 		messageIDs = append(messageIDs, groupIDs...)
 	}
@@ -927,6 +940,8 @@ func (c *TelegramChannel) sendSingleImageMediaGroup(
 	return messageIDs, nil
 }
 
+// sendCaptionText sends text in chunks. After an error it returns the IDs of
+// the chunks already sent.
 func (c *TelegramChannel) sendCaptionText(
 	ctx context.Context,
 	chatID int64,
@@ -952,7 +967,7 @@ func (c *TelegramChannel) sendCaptionText(
 			useMarkdownV2: false,
 		})
 		if err != nil {
-			return nil, err
+			return messageIDs, err
 		}
 		messageIDs = append(messageIDs, msgID)
 	}
