@@ -173,6 +173,9 @@ const (
 	// restarts of a server that keeps failing.
 	minReconnectBackoff = time.Second
 	maxReconnectBackoff = time.Minute
+	// reconnectWaitInterval is how often a call waiting for another call's
+	// reconnect checks whether it is done.
+	reconnectWaitInterval = 20 * time.Millisecond
 )
 
 // Manager manages multiple MCP server connections
@@ -1166,7 +1169,15 @@ func (m *Manager) reconnectServer(
 		return nil, fmt.Errorf("server %s not found", serverName)
 	}
 
-	staleConn.reconnectMu.Lock()
+	// Wait for a reconnect already under way no longer than this call may
+	// take.
+	for !staleConn.reconnectMu.TryLock() {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(reconnectWaitInterval):
+		}
+	}
 	defer staleConn.reconnectMu.Unlock()
 
 	if m.closed.Load() {

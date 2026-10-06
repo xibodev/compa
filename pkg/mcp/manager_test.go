@@ -751,6 +751,34 @@ func TestCallToolTimeouts(t *testing.T) {
 	}
 }
 
+// A call waiting for another call's reconnect waits no longer than its own
+// timeout.
+func TestCallWaitingForAReconnectKeepsToItsTimeout(t *testing.T) {
+	staleConn, _, err := newScriptedServerConnection("session-1", nil, nil)
+	if err != nil {
+		t.Fatalf("newScriptedServerConnection() error = %v", err)
+	}
+	staleConn.lost.Store(true)
+	staleConn.reconnectMu.Lock() // another call's reconnect, stuck
+	t.Cleanup(staleConn.reconnectMu.Unlock)
+	mgr := NewManager(WithCallTimeout(time.Second))
+	mgr.servers["flaky"] = staleConn
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := mgr.CallTool(context.Background(), "flaky", "echo", nil)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("CallTool() error = %v, want its deadline", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the call waited for the other reconnect past its timeout")
+	}
+}
+
 // A call that reconnects doesn't wait for the old session to close: closing
 // it waits for the calls still on it, which may run to their own timeouts.
 func TestReconnectDoesNotWaitForTheOldSessionToClose(t *testing.T) {
