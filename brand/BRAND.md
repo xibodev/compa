@@ -292,8 +292,8 @@ Motion should explain the relationship between the C and its core:
 | Public website header | `logos/mark.svg`, or `logos/lockup.svg` | Canvas or Surface | Adopted, with the palette and type |
 | Public website dark footer | `logos/lockup-inverse.svg` | Core Night | Planned |
 | Website metadata | `icons/favicon.svg`, `og/og-default.png` | Supplied | Adopted: the page draws the favicon tile, and `docs/og.png` is the social card |
-| Repository and package surfaces | `logos/lockup.svg`, `icons/app-icon.svg` | Surface | The README shows the lockup; the rest is planned |
-| Repository social preview | `og/og-default.png`, uploaded as `docs/og.png` | Core Night | Adopted |
+| Repository README and package surfaces | `logos/lockup.svg`, `icons/app-icon.svg` | Surface | The README shows the lockup; package surfaces are planned |
+| Repository social preview | `docs/og.png`, from `og/og-default.svg` | Core Night | Adopted; uploaded in the repository settings |
 | Release social cards | `og/og-default.png` | Core Night | Planned |
 | Single-color print or engraving | `logos/mono-black.svg` or `logos/mono-white.svg` | One ink | Ready artwork |
 
