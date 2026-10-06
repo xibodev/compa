@@ -31,8 +31,9 @@ compa [options] [config.json]
 When you name one and `COMPA_HOME` isn't set, Compa keeps its other state in
 that file's folder. `-port` and `-public` override the **Service Port** and
 **Enable LAN Access** settings on the Config page for that run. On Windows,
-`compa.exe` has no console window of its own, so PowerShell gives the prompt
-back at once: with `-console` or `-password`, Compa's output follows it.
+the released `compa.exe` has no console window of its own, so PowerShell gives
+the prompt back at once: with `-console` or `-password`, Compa's output
+follows it.
 
 ## compa-kernel
 
@@ -112,7 +113,7 @@ decides it.
 | `auth logout [-p <provider>]` | Remove stored credentials (OpenAI and Anthropic without `-p`). |
 | `auth status` | Show current auth status. |
 | `auth weixin` | Connect a WeChat personal account via QR code. |
-| `auth wecom` | Scan a WeCom QR code and configure `channels.wecom`. |
+| `auth wecom` | Scan a WeCom QR code and set up the WeCom channel. |
 
 ### gateway
 

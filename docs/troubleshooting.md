@@ -111,7 +111,7 @@ the running gateway at once, together with every other change saved before.
 A change to a tool, an MCP server, a channel, the workspace, `isolation`,
 `commands` or `hooks` shows **Gateway restart required**: choose **Restart
 gateway** in the status menu at the top. Other settings apply the next time
-the gateway starts.
+the gateway starts or reloads; its host and port only when it starts.
 
 ## Start over
 
@@ -148,7 +148,7 @@ Compa runs on your computer, but it isn't offline:
   extension app you add make their own connections.
 
 Before tool output goes to a model, Compa replaces the keys and tokens it has
-stored with `[FILTERED]`.
+stored with `[FILTERED]`, unless you turn off `tools.filter_sensitive_data`.
 
 ### Where your data and secrets are
 

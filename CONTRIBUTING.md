@@ -60,7 +60,7 @@ and `pnpm run format`, which checks the formatting with Prettier;
 
 - Keep a change to one concern, with a test for each behavior it changes.
 - Write commit messages like the existing ones: `fix: what changed`, with
-  `feat`, `fix` or `chore` first.
+  `feat`, `fix`, `docs` or `chore` first.
 - Add a line under **Unreleased** in [CHANGELOG.md](CHANGELOG.md) for a change
   users notice.
 - Update the docs in `docs/` when you change what they describe.

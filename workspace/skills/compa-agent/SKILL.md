@@ -34,4 +34,4 @@ Use `compa-kernel --help` and the relevant subcommand help before relying on com
 
 ## Workspace
 
-The state root is `~/.compa` (`COMPA_HOME` moves it): settings in `config.json`, secrets in `.security.yml` beside it, and provider keys in `auth.json`. The agent workspace is `~/.compa/workspace`. The web UI has Chat, Models (providers and their keys), Channels, Skill hub, Skills, Modules, Tools, Config, Voice and Logs. Verify changes through the narrowest relevant unit tests and an end-to-end user-visible check.
+The state root is `~/.compa` (`COMPA_HOME` moves it): settings in `config.json`, secrets in `.security.yml` beside it, and provider keys in `auth.json`. The agent workspace is `workspace` in the state root, unless `agents.defaults.workspace` names another. The web UI has Chat, Models (providers and their keys), Channels, Skill hub, Skills, Modules, Tools, Config, Voice and Logs. Verify changes through the narrowest relevant unit tests and an end-to-end user-visible check.
