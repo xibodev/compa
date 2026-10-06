@@ -5,6 +5,8 @@ Notable changes to Compa, newest first. Versions follow
 
 ## Unreleased
 
+## 2.1.1 - 2026-10-06
+
 ### Fixed
 
 - On Windows, `compa-kernel` looks names up through the system's DNS, so VPN
