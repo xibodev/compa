@@ -5,6 +5,8 @@ Notable changes to Compa, newest first. Versions follow
 
 ## Unreleased
 
+## 2.1.0 - 2026-10-05
+
 ### Fixed
 
 - Go programs can depend on Compa 2: the module path is
