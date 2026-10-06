@@ -216,3 +216,39 @@ func TestCanReadChannel(t *testing.T) {
 		t.Error("a member may not read a channel hidden from them")
 	}
 }
+
+// A <#id> mention gets the channel's name only for a channel of the same
+// guild that the author may read, as a message link does.
+func TestResolveDiscordRefsNamesOnlyReadableChannels(t *testing.T) {
+	session, err := discordgo.New("Bot test-token")
+	if err != nil {
+		t.Fatalf("discordgo.New() error: %v", err)
+	}
+	for _, guild := range []*discordgo.Guild{
+		{ID: "1", OwnerID: "owner", Roles: []*discordgo.Role{{ID: "1", Permissions: readPermissions}}},
+		{ID: "2", OwnerID: "owner", Roles: []*discordgo.Role{{ID: "2", Permissions: readPermissions}}},
+	} {
+		if err := session.State.GuildAdd(guild); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, channel := range []*discordgo.Channel{
+		{ID: "11", GuildID: "1", Name: "general"},
+		{ID: "12", GuildID: "1", Name: "staff", PermissionOverwrites: []*discordgo.PermissionOverwrite{
+			{ID: "1", Type: discordgo.PermissionOverwriteTypeRole, Deny: discordgo.PermissionViewChannel},
+		}},
+		{ID: "21", GuildID: "2", Name: "other-server"},
+	} {
+		if err := session.State.ChannelAdd(channel); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := session.State.MemberAdd(&discordgo.Member{GuildID: "1", User: &discordgo.User{ID: "u1"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := (&DiscordChannel{}).resolveDiscordRefs(session, "see <#11>, <#12> and <#21>", "1", "u1")
+	if want := "see #general, <#12> and <#21>"; got != want {
+		t.Errorf("resolveDiscordRefs() = %q, want %q", got, want)
+	}
+}

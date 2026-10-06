@@ -307,6 +307,11 @@ commands on your computer; turned off, chat apps and the browser chat can't
 run commands, only the terminal. To be asked first instead, add an `ask` rule
 for `exec` from `chat` (see [Approvals](#approvals)).
 
+The WhatsApp channel talks to a bridge program you run, and trusts it to say
+who sent each message. Compa connects to it without a password, so on a
+computer other people also sign in to, keep the bridge running: while it's
+stopped, another account could take its port and write in anyone's name.
+
 WhatsApp native, in builds made with the `whatsapp_native` tag, links your own
 WhatsApp account. Its **Chats** setting chooses what Compa reads: **Self**, the
 default, only your "message yourself" chat; **Allowed**, that chat and the

@@ -859,8 +859,8 @@ func applyDiscordProxy(session *discordgo.Session, proxyAddr string) error {
 
 // resolveDiscordRefs resolves channel references (<#id> → #channel-name) and
 // expands Discord message links to show the linked message content.
-// Only links pointing to the same guild, into channels the message's author
-// may read, are expanded: the bot fetches them with its own permissions.
+// Only channels and links of the same guild that the message's author may
+// read are resolved: the bot looks them up with its own permissions.
 func (c *DiscordChannel) resolveDiscordRefs(s *discordgo.Session, text, guildID, authorID string) string {
 	// 1. Resolve channel references: <#id> → #channel-name
 	text = channelRefRe.ReplaceAllStringFunc(text, func(match string) string {
@@ -869,13 +869,16 @@ func (c *DiscordChannel) resolveDiscordRefs(s *discordgo.Session, text, guildID,
 			return match
 		}
 		// Prefer session state cache to avoid API calls
-		if ch, err := s.State.Channel(parts[1]); err == nil {
-			return "#" + ch.Name
+		ch, err := s.State.Channel(parts[1])
+		if err != nil {
+			if ch, err = s.Channel(parts[1]); err != nil {
+				return match
+			}
 		}
-		if ch, err := s.Channel(parts[1]); err == nil {
-			return "#" + ch.Name
+		if guildID == "" || ch.GuildID != guildID || !canReadChannel(s, authorID, ch.ID) {
+			return match
 		}
-		return match
+		return "#" + ch.Name
 	})
 
 	// 2. Expand Discord message links (max 3, same guild only)

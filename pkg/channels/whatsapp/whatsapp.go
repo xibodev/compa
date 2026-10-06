@@ -433,11 +433,18 @@ func bridgeMediaPath(p string, maxBytes int64) (string, error) {
 	if p == "" || !filepath.IsAbs(p) {
 		return "", errors.New("not an absolute path")
 	}
-	resolved, err := filepath.EvalSymlinks(filepath.Clean(p))
+	clean := filepath.Clean(p)
+	tempDir := os.TempDir()
+	// A network or device path, such as \\host\share\x on Windows, is refused
+	// before it is resolved: resolving it would already reach that host.
+	if vol := filepath.VolumeName(clean); strings.HasPrefix(vol, `\\`) &&
+		!strings.EqualFold(vol, filepath.VolumeName(tempDir)) {
+		return "", errors.New("outside the temp directory")
+	}
+	resolved, err := filepath.EvalSymlinks(clean)
 	if err != nil {
 		return "", err
 	}
-	tempDir := os.TempDir()
 	if real, err := filepath.EvalSymlinks(tempDir); err == nil {
 		tempDir = real
 	}

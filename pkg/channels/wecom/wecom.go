@@ -139,6 +139,9 @@ func NewChannel(bc *config.Channel, cfg *config.WeComSettings, messageBus *bus.M
 
 func (c *WeComChannel) Start(ctx context.Context) error {
 	logger.InfoC("wecom", "Starting WeCom channel...")
+	if err := channels.CheckWebSocketURL(ctx, c.config.WebSocketURL, "WeCom websocket_url"); err != nil {
+		return err
+	}
 	c.ctx, c.cancel = context.WithCancel(ctx)
 	c.SetRunning(true)
 	go c.connectLoop()

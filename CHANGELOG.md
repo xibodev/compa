@@ -22,6 +22,16 @@ Notable changes to Compa, newest first. Versions follow
 - Installing a skill from a GitHub URL whose path ends in `.` or `..` is
   refused; it named the skills folder or the workspace itself as the skill's
   folder.
+- On Windows, a media path the WhatsApp bridge names on another computer or a
+  device, such as `\\host\share\x`, is refused before Compa looks it up;
+  looking it up already contacted that computer.
+- Discord turns a `<#id>` channel mention into the channel's name only for a
+  channel in the same server that the sender may read, as it already did for
+  message links.
+- WeCom saves media from a message whose ID contains `/`; the download
+  failed.
+- WeCom refuses an unencrypted `ws://` `websocket_url` to a host outside this
+  computer and its local network, as OneBot and the web client do.
 
 ## 2.1.0 - 2026-10-05
 

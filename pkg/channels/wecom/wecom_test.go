@@ -636,6 +636,19 @@ func newTestWeComChannel(t *testing.T, messageBus *bus.MessageBus) *WeComChannel
 	return ch
 }
 
+// Like OneBot and the web client, WeCom refuses unencrypted ws:// to a host
+// outside this computer and its local network.
+func TestStartRefusesUnencryptedRemoteWebSocket(t *testing.T) {
+	ch := newTestWeComChannel(t, bus.NewMessageBus())
+	ch.config.WebSocketURL = "ws://198.51.100.7/ws"
+
+	err := ch.Start(context.Background())
+	t.Cleanup(func() { _ = ch.Stop(context.Background()) })
+	if err == nil {
+		t.Fatal("Start() accepted ws:// to a host on the internet")
+	}
+}
+
 func wecomTestJPEGData(t *testing.T) []byte {
 	t.Helper()
 
