@@ -5,6 +5,13 @@ Notable changes to Compa, newest first. Versions follow
 
 ## Unreleased
 
+### Fixed
+
+- When a send to Telegram, Slack or Matrix fails after part of the message was
+  delivered, such as a long caption's text or the first of several files, the
+  message isn't sent again; the retries repeated the delivered parts up to
+  three times.
+
 ## 2.1.1 - 2026-10-06
 
 ### Fixed

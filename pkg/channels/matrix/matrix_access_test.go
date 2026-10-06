@@ -3,8 +3,11 @@ package matrix
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -17,6 +20,7 @@ import (
 	"github.com/xibodev/compa/v2/pkg/bus"
 	"github.com/xibodev/compa/v2/pkg/channels"
 	"github.com/xibodev/compa/v2/pkg/config"
+	"github.com/xibodev/compa/v2/pkg/media"
 	"github.com/xibodev/compa/v2/pkg/pairing"
 )
 
@@ -141,11 +145,18 @@ func TestSplitForEvent_KeepsEventsUnderByteLimit(t *testing.T) {
 func TestSendFailingAfterADeliveredPartIsNotRetried(t *testing.T) {
 	var sends atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if sends.Add(1) == 1 {
+		body, _ := io.ReadAll(r.Body)
+		switch {
+		case strings.Contains(r.URL.Path, "/redact/"):
+			_, _ = w.Write([]byte(`{"event_id":"$redacted"}`))
+		case strings.Contains(string(body), "m.replace"):
+			// The progress message can't take the reply, so it's sent anew.
+			http.Error(w, `{"errcode":"M_UNKNOWN"}`, http.StatusInternalServerError)
+		case sends.Add(1) == 1:
 			_, _ = w.Write([]byte(`{"event_id":"$1"}`))
-			return
+		default:
+			http.Error(w, `{"errcode":"M_UNKNOWN"}`, http.StatusInternalServerError)
 		}
-		http.Error(w, `{"errcode":"M_UNKNOWN"}`, http.StatusInternalServerError)
 	}))
 	t.Cleanup(server.Close)
 	client, err := mautrix.NewClient(server.URL, id.UserID("@compa:matrix.test"), "")
@@ -156,8 +167,10 @@ func TestSendFailingAfterADeliveredPartIsNotRetried(t *testing.T) {
 		BaseChannel: channels.NewBaseChannel("matrix", nil, bus.NewMessageBus(), nil),
 		client:      client,
 		config:      &config.MatrixSettings{},
+		progress:    channels.NewToolFeedbackAnimator(nil),
 	}
 	ch.SetRunning(true)
+	ch.RecordToolFeedbackMessage("!room:matrix.test", "$feedback", "working")
 
 	_, err = ch.Send(context.Background(), bus.OutboundMessage{
 		ChatID:  "!room:matrix.test",
@@ -168,6 +181,9 @@ func TestSendFailingAfterADeliveredPartIsNotRetried(t *testing.T) {
 	}
 	if n := sends.Load(); n != 2 {
 		t.Fatalf("sent %d parts, want the delivered one and the failed one", n)
+	}
+	if _, tracked := ch.currentToolFeedbackMessage("!room:matrix.test"); tracked {
+		t.Error("the progress message is still tracked after part of the reply went out")
 	}
 }
 
@@ -184,5 +200,60 @@ func TestDownloadMedia_RefusesDeclaredOversize(t *testing.T) {
 	}
 	if requests.Load() != 0 {
 		t.Error("an oversized file is not requested")
+	}
+}
+
+// Media that fails after a part was delivered is not sent again either.
+func TestSendMediaFailingAfterADeliveredPartIsNotRetried(t *testing.T) {
+	var uploads atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "/upload") {
+			_, _ = w.Write([]byte(`{"event_id":"$1"}`))
+			return
+		}
+		if uploads.Add(1) > 1 {
+			http.Error(w, `{"errcode":"M_UNKNOWN"}`, http.StatusInternalServerError)
+			return
+		}
+		_, _ = w.Write([]byte(`{"content_uri":"mxc://matrix.test/1"}`))
+	}))
+	t.Cleanup(server.Close)
+	client, err := mautrix.NewClient(server.URL, id.UserID("@compa:matrix.test"), "")
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	store := media.NewFileMediaStore()
+	ch := &MatrixChannel{
+		BaseChannel: channels.NewBaseChannel("matrix", nil, bus.NewMessageBus(), nil),
+		client:      client,
+		config:      &config.MatrixSettings{},
+		progress:    channels.NewToolFeedbackAnimator(nil),
+	}
+	ch.SetRunning(true)
+	ch.SetMediaStore(store)
+	// Part of the reply goes out, so the progress message is done.
+	ch.RecordToolFeedbackMessage("!room:matrix.test", "$feedback", "working")
+	var parts []bus.MediaPart
+	for _, name := range []string{"a.txt", "b.txt"} {
+		path := filepath.Join(t.TempDir(), name)
+		if err := os.WriteFile(path, []byte("data"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		ref, err := store.Store(path, media.MediaMeta{Filename: name, ContentType: "text/plain"}, "scope")
+		if err != nil {
+			t.Fatal(err)
+		}
+		parts = append(parts, bus.MediaPart{Ref: ref, Type: "file", Filename: name})
+	}
+
+	_, err = ch.SendMedia(context.Background(), bus.OutboundMediaMessage{ChatID: "!room:matrix.test", Parts: parts})
+	if !errors.Is(err, channels.ErrSendFailed) || errors.Is(err, channels.ErrTemporary) {
+		t.Fatalf("SendMedia() error = %v, want a failure that is not retried", err)
+	}
+	if n := uploads.Load(); n != 2 {
+		t.Fatalf("uploaded %d parts, want the delivered one and the failed one", n)
+	}
+	if _, tracked := ch.currentToolFeedbackMessage("!room:matrix.test"); tracked {
+		t.Error("the progress message is still tracked after part of the reply went out")
 	}
 }

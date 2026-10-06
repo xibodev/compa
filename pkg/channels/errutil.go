@@ -59,3 +59,10 @@ func ClassifyNetError(err error) error {
 	}
 	return fmt.Errorf("%w: %w", ErrTemporary, err)
 }
+
+// PartlyDelivered is the error for a send that failed after part of the
+// message was delivered. It is permanent: the manager would otherwise send the
+// whole message again and repeat the parts that were delivered.
+func PartlyDelivered(err error) error {
+	return fmt.Errorf("failed after part of the message was delivered: %v: %w", err, ErrSendFailed)
+}

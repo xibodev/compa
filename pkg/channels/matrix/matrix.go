@@ -442,8 +442,12 @@ func (c *MatrixChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]st
 		if err != nil {
 			// Sending the message again would repeat the parts delivered.
 			if len(msgIDs) > 0 {
-				return msgIDs, fmt.Errorf("matrix send: part %d of %d failed after the ones before it were delivered: %w",
-					len(msgIDs)+1, len(chunks), channels.ErrSendFailed)
+				// Part of the reply is out, so the progress message is done.
+				if !isToolFeedback && hasTrackedMsg {
+					c.dismissTrackedToolFeedbackMessage(ctx, msg.ChatID, trackedMsgID)
+				}
+				return msgIDs, channels.PartlyDelivered(fmt.Errorf("matrix send: part %d of %d: %w",
+					len(msgIDs)+1, len(chunks), err))
 			}
 			return msgIDs, fmt.Errorf("matrix send: %w", channels.ErrTemporary)
 		}
@@ -523,9 +527,22 @@ func (c *MatrixChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMess
 	}
 
 	var eventIDs []string
+	sent := false
+	// failed reports err, as one that isn't sent again once a part was
+	// delivered: the manager would repeat it. Part of the reply is out then,
+	// so the progress message is done.
+	failed := func(err error) ([]string, error) {
+		if !sent {
+			return nil, err
+		}
+		if hasTrackedMsg {
+			c.dismissTrackedToolFeedbackMessage(ctx, msg.ChatID, trackedMsgID)
+		}
+		return eventIDs, channels.PartlyDelivered(err)
+	}
 	for _, part := range msg.Parts {
 		if err := sendCtx.Err(); err != nil {
-			return nil, err
+			return failed(err)
 		}
 
 		localPath, meta, err := store.ResolveWithMeta(part.Ref)
@@ -590,7 +607,7 @@ func (c *MatrixChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMess
 				"type":  part.Type,
 				"error": err.Error(),
 			})
-			return nil, fmt.Errorf("matrix upload media: %w", channels.ErrTemporary)
+			return failed(fmt.Errorf("matrix upload media: %w", channels.ErrTemporary))
 		}
 
 		msgType := matrixOutboundMsgType(part.Type, filename, contentType)
@@ -610,8 +627,9 @@ func (c *MatrixChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMess
 				"type":    msgType,
 				"error":   err.Error(),
 			})
-			return nil, fmt.Errorf("matrix send media: %w", channels.ErrTemporary)
+			return failed(fmt.Errorf("matrix send media: %w", channels.ErrTemporary))
 		}
+		sent = true
 		if sendResp != nil {
 			eventIDs = append(eventIDs, sendResp.EventID.String())
 		}
