@@ -2,6 +2,7 @@ package toolshared
 
 import (
 	"context"
+	"time"
 
 	"github.com/xibodev/compa/v2/pkg/session"
 )
@@ -189,12 +190,13 @@ type AsyncExecutor interface {
 }
 
 // SelfTimed is implemented by a tool whose calls can end within a timeout of
-// its own, which can be longer than the agent's default limit on a tool
-// call. SelfTimed reports whether the call with args does; the agent then
-// leaves the call to that timeout.
+// their own, which can be longer than the agent's default limit on a tool
+// call. CallTimeout returns the timeout of the call with args, or 0 when it
+// has none. The agent waits for a call its own timeout on top of the default
+// limit, so the limit catches only a call stuck past its timeout.
 type SelfTimed interface {
 	Tool
-	SelfTimed(ctx context.Context, args map[string]any) bool
+	CallTimeout(ctx context.Context, args map[string]any) time.Duration
 }
 
 func ToolToSchema(tool Tool) map[string]any {

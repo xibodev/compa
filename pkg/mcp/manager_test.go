@@ -740,6 +740,9 @@ func TestCallToolTimeouts(t *testing.T) {
 			}); err != nil {
 				t.Fatalf("ConnectServer() error = %v", err)
 			}
+			if got := mgr.CallTimeout("slow"); got != time.Second {
+				t.Fatalf("CallTimeout() = %s, want 1s", got)
+			}
 			_, err := mgr.CallTool(context.Background(), "slow", "wait", nil)
 			if err == nil || !strings.Contains(err.Error(), "within 1s") {
 				t.Fatalf("CallTool() error = %v, want no answer within 1s", err)

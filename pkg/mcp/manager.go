@@ -273,6 +273,28 @@ func WithCallTimeout(timeout time.Duration) ManagerOption {
 	}
 }
 
+// CallTimeout returns how long a tool call to the named server may take: its
+// call_timeout_seconds, or else the manager's call timeout.
+func (m *Manager) CallTimeout(serverName string) time.Duration {
+	m.mu.RLock()
+	conn, ok := m.servers[serverName]
+	m.mu.RUnlock()
+	if !ok {
+		return m.callTimeoutFor(config.MCPServerConfig{})
+	}
+	return m.callTimeoutFor(conn.Config)
+}
+
+func (m *Manager) callTimeoutFor(server config.MCPServerConfig) time.Duration {
+	if server.CallTimeoutSeconds > 0 {
+		return time.Duration(server.CallTimeoutSeconds) * time.Second
+	}
+	if m.callTimeout > 0 {
+		return m.callTimeout
+	}
+	return DefaultCallTimeout
+}
+
 // ServerEventPayload describes MCP server connection events.
 type ServerEventPayload struct {
 	Server    string `json:"server"`
@@ -941,13 +963,7 @@ func (m *Manager) CallTool(
 	}
 	defer m.wg.Done()
 
-	timeout := m.callTimeout
-	if seconds := conn.Config.CallTimeoutSeconds; seconds > 0 {
-		timeout = time.Duration(seconds) * time.Second
-	}
-	if timeout <= 0 {
-		timeout = DefaultCallTimeout
-	}
+	timeout := m.callTimeoutFor(conn.Config)
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 

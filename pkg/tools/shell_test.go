@@ -1771,10 +1771,10 @@ func TestShellTool_Action_Run_Sync(t *testing.T) {
 	require.Contains(t, result.ForLLM, "hello")
 }
 
-// A foreground run with a timeout ends within it, so the agent leaves it to
-// that timeout; a run without one, a background run and the other actions
-// keep the agent's limit.
-func TestExecToolSelfTimed(t *testing.T) {
+// A foreground run's own timeout is its call timeout, which the agent adds to
+// its limit; a run without one, a background run and the other actions have
+// none.
+func TestExecToolCallTimeout(t *testing.T) {
 	tool, err := NewExecTool("", false)
 	require.NoError(t, err)
 	terminal := WithToolContext(context.Background(), "cli", "direct")
@@ -1783,17 +1783,17 @@ func TestExecToolSelfTimed(t *testing.T) {
 		name string
 		ctx  context.Context
 		args map[string]any
-		want bool
+		want time.Duration
 	}{
-		{"run in a chat, with the default timeout", chat, map[string]any{"action": "run", "command": "x"}, true},
-		{"run in the terminal, without a timeout", terminal, map[string]any{"action": "run", "command": "x"}, false},
+		{"run in a chat, with the default timeout", chat, map[string]any{"action": "run", "command": "x"}, time.Minute},
+		{"run in the terminal, without a timeout", terminal, map[string]any{"action": "run", "command": "x"}, 0},
 		{"run in the terminal, with a timeout", terminal,
-			map[string]any{"action": "run", "command": "x", "timeout": float64(30)}, true},
-		{"background run", chat, map[string]any{"action": "run", "command": "x", "background": "true"}, false},
-		{"write", chat, map[string]any{"action": "write", "sessionId": "s", "data": "y"}, false},
+			map[string]any{"action": "run", "command": "x", "timeout": float64(30)}, 30 * time.Second},
+		{"background run", chat, map[string]any{"action": "run", "command": "x", "background": "true"}, 0},
+		{"write", chat, map[string]any{"action": "write", "sessionId": "s", "data": "y"}, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			require.Equal(t, tc.want, tool.SelfTimed(tc.ctx, tc.args))
+			require.Equal(t, tc.want, tool.CallTimeout(tc.ctx, tc.args))
 		})
 	}
 }

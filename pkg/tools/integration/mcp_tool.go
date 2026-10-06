@@ -32,6 +32,9 @@ type MCPManager interface {
 		serverName, toolName string,
 		arguments map[string]any,
 	) (*mcp.CallToolResult, error)
+	// CallTimeout returns how long a call to the server may take; CallTool
+	// ends a call then.
+	CallTimeout(serverName string) time.Duration
 }
 
 // MCPTool wraps an MCP tool to implement the Tool interface
@@ -108,9 +111,10 @@ func (t *MCPTool) SetTrusted(trusted bool) {
 	t.trusted = trusted
 }
 
-// SelfTimed reports that every call ends within the tool's own timeout: the
-// manager ends a call after the server's call timeout (call_timeout_seconds).
-func (t *MCPTool) SelfTimed(context.Context, map[string]any) bool { return true }
+// CallTimeout returns the server's call timeout, which ends every call.
+func (t *MCPTool) CallTimeout(context.Context, map[string]any) time.Duration {
+	return t.manager.CallTimeout(t.serverName)
+}
 
 var _ toolshared.SelfTimed = (*MCPTool)(nil)
 

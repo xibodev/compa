@@ -46,6 +46,16 @@ func (m *MockMCPManager) CallTool(
 	}, nil
 }
 
+func (m *MockMCPManager) CallTimeout(string) time.Duration { return mcpclient.DefaultCallTimeout }
+
+// The tool's call timeout is its server's: the manager ends every call then.
+func TestMCPToolCallTimeoutIsTheServers(t *testing.T) {
+	tool := NewMCPTool(&MockMCPManager{}, "server", &mcp.Tool{Name: "tool"})
+	if got := tool.CallTimeout(context.Background(), nil); got != mcpclient.DefaultCallTimeout {
+		t.Fatalf("CallTimeout() = %s, want the server's %s", got, mcpclient.DefaultCallTimeout)
+	}
+}
+
 // TestNewMCPTool verifies MCP tool creation
 func TestNewMCPTool(t *testing.T) {
 	manager := &MockMCPManager{}
