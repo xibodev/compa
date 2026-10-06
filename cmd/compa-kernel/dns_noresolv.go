@@ -14,38 +14,21 @@ import (
 
 // On a Linux system without /etc/resolv.conf, such as Android, Go's resolver
 // asks a DNS server on localhost, which isn't there. compa-kernel asks the
-// servers in COMPA_DNS_SERVER instead, separated by ";", such as
-// "8.8.8.8:53;1.1.1.1:53" (the default), in turn. Elsewhere the system's
-// resolver stays in charge.
+// servers in COMPA_DNS_SERVER instead (see dnsServers), in turn. Elsewhere
+// the system's resolver stays in charge.
 func init() {
 	if _, err := os.Stat("/etc/resolv.conf"); err == nil {
 		return
 	}
 
-	dnsEnv := os.Getenv("COMPA_DNS_SERVER")
-	if dnsEnv == "" {
-		dnsEnv = "8.8.8.8:53;1.1.1.1:53"
-	}
-
-	var dnsServers []string
-	for _, s := range strings.Split(dnsEnv, ";") {
-		s = strings.TrimSpace(s)
-		if s != "" {
-			// A server without a port is on port 53.
-			if _, _, err := net.SplitHostPort(s); err != nil {
-				s = s + ":53"
-			}
-			dnsServers = append(dnsServers, s)
-		}
-	}
-
+	servers := dnsServers(os.Getenv("COMPA_DNS_SERVER"))
 	var idx uint64
 
 	customResolver := &net.Resolver{
 		PreferGo: true,
 		Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
 			d := net.Dialer{Timeout: 5 * time.Second}
-			server := dnsServers[atomic.AddUint64(&idx, 1)%uint64(len(dnsServers))]
+			server := servers[atomic.AddUint64(&idx, 1)%uint64(len(servers))]
 			return d.DialContext(ctx, "udp", server)
 		},
 	}
@@ -63,4 +46,25 @@ func init() {
 	if tr, ok := http.DefaultTransport.(*http.Transport); ok {
 		tr.DialContext = dialer.DialContext
 	}
+}
+
+// dnsServers reads the servers of value, separated by ";", such as
+// "9.9.9.9;1.1.1.1:53"; a server without a port is on port 53. A value that
+// names none gives 8.8.8.8 and 1.1.1.1.
+func dnsServers(value string) []string {
+	var servers []string
+	for _, s := range strings.Split(value, ";") {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		if _, _, err := net.SplitHostPort(s); err != nil {
+			s = net.JoinHostPort(s, "53")
+		}
+		servers = append(servers, s)
+	}
+	if len(servers) == 0 {
+		return []string{"8.8.8.8:53", "1.1.1.1:53"}
+	}
+	return servers
 }

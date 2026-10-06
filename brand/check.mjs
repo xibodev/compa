@@ -212,7 +212,6 @@ for (const path of references) {
 }
 assert.match(preview, /Public website header and hero/i);
 assert.match(preview, /App header and sidebar, light and dark/i);
-assert.match(preview, /website page not restyled/i);
 assert.match(preview, /app color theme not restyled/i);
 
 // Adopted consumers outside brand/, as provenance.json lists them.

@@ -119,30 +119,22 @@
       "note": "Windows embeds icon.ico and other systems embed icon.png. web/backend/winres/winres.json names the same icon.ico for a Windows executable resource; no build step generates that resource yet."
     },
     {
-      "target": "public website mark and lockup files",
-      "files": [
-        "docs/compa-mark.svg",
-        "docs/compa-logo.svg"
-      ],
-      "sources": [
-        "logos/mark.svg",
-        "logos/lockup.svg"
-      ],
-      "status": "applied",
-      "note": "The website page itself and its colors are not restyled."
-    },
-    {
-      "target": "public website icon and social card",
+      "target": "public website: palette, type, mark, lockup, icon and social card",
       "files": [
         "docs/index.html",
+        "docs/compa-mark.svg",
+        "docs/compa-logo.svg",
         "docs/og.png"
       ],
       "sources": [
+        "tokens.json",
+        "logos/mark.svg",
+        "logos/lockup.svg",
         "icons/favicon.svg",
         "og/og-default.svg"
       ],
       "status": "applied",
-      "note": "The page draws the favicon tile inline as its icon; export.mjs renders docs/og.png from the same master as og/og-default.png."
+      "note": "The page sets the palette and type itself and draws the favicon tile inline; export.mjs writes the mark and lockup copies and renders docs/og.png from the same master as og/og-default.png."
     },
     {
       "target": "repository, package, release, and social presentation",
@@ -151,7 +143,8 @@
         "icons/app-icon.svg",
         "og/og-default.png"
       ],
-      "status": "planned-not-applied"
+      "status": "planned-not-applied",
+      "note": "The repository README shows docs/compa-logo.svg."
     }
   ]
 }

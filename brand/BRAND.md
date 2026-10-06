@@ -289,19 +289,19 @@ Motion should explain the relationship between the C and its core:
 | App install icons and manifest | `icons/icon-192.svg`, `icons/icon-512.svg`, `icons/maskable.svg` | Core Night tile | Adopted; the maskable entry reuses the 512 tile |
 | App color theme | `tokens.json`, `tokens.css` | Match application theme | Planned; the app keeps its own accent |
 | Desktop tray icon | `icons/favicon.svg` for small sizes, `icons/app-icon.svg` for large | Core Night tile | Adopted |
-| Public website header | `logos/mark.svg`, or `logos/lockup.svg` | Canvas or Surface | Mark file adopted; page not restyled |
+| Public website header | `logos/mark.svg`, or `logos/lockup.svg` | Canvas or Surface | Adopted, with the palette and type |
 | Public website dark footer | `logos/lockup-inverse.svg` | Core Night | Planned |
 | Website metadata | `icons/favicon.svg`, `og/og-default.png` | Supplied | Adopted: the page draws the favicon tile, and `docs/og.png` is the social card |
-| Repository and package surfaces | `logos/lockup.svg`, `icons/app-icon.svg` | Surface | Planned |
+| Repository and package surfaces | `logos/lockup.svg`, `icons/app-icon.svg` | Surface | The README shows the lockup; the rest is planned |
 | Release and social cards | `og/og-default.png` | Core Night | Planned |
 | Single-color print or engraving | `logos/mono-black.svg` or `logos/mono-white.svg` | One ink | Ready artwork |
 
 ## Adoption
 
 `provenance.json` records every file that uses the kit. The app header,
-browser and install icons, tray icon, manifest colors, and the website's mark
-files, icon and social card use it. The app's color theme, the website page
-itself, and the repository and release surfaces don't yet. Map each of those
+browser and install icons, tray icon, manifest colors, the public website and
+the repository README use it. The app's color theme and the other repository,
+release and social surfaces don't yet. Map each of those
 deliberately, through its normal review path, and verify the result in the
 product rather than treating this kit as runtime evidence. The mockups in
 `preview.html` remain illustrative.

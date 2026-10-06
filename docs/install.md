@@ -30,12 +30,13 @@ PowerShell won't run a downloaded `install.ps1`. Run such a copy with
 curl -fsSL https://github.com/xibodev/compa/releases/latest/download/install.sh | sh
 ```
 
-This installs `compa` and `compa-kernel` in `~/.local/bin`. In a terminal on
-your desktop it then starts Compa in the background, with its output in
-`~/.compa/logs/launcher.out`; in a script, a container or over SSH it prints
-how to start Compa instead. The installer doesn't edit your shell startup
-files: if `~/.local/bin` isn't on your `PATH`, it prints the line to add. It
-needs `curl` or `wget`, and `sha256sum` or `shasum`.
+This installs `compa` and `compa-kernel` in `~/.local/bin`. When it runs in a
+terminal on your desktop, it then starts Compa in the background, with its
+output in `~/.compa/logs/launcher.out`; without a terminal, over SSH, under CI
+or on Linux without a display, it prints how to start Compa instead. The
+installer doesn't edit your shell startup files: if `~/.local/bin` isn't on
+your `PATH`, it prints the line to add. It needs `curl` or `wget`, and
+`sha256sum` or `shasum`.
 
 ## First run
 

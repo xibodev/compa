@@ -286,12 +286,12 @@ who else gets an answer:
   on the channel's page (**Mention Only** on Discord), or, for a channel
   without that switch, set `group_trigger.mention_only` to `false`.
 
-Slash commands such as `/reload` work only for you (`commands.owner_only`):
-in a chat app that means a sender listed by ID in **Allow From**, and in the
-browser and the terminal it's always you. `/help` lists the commands.
-Everyone listed by ID counts as you, so approving a pairing request lets that
-person run commands and answer approval requests, which Compa may then post
-in their chat.
+Slash commands such as `/reload` work only for you while `commands.owner_only`
+is on, the default: in a chat app that means a sender listed by ID in **Allow
+From**, and in the browser and the terminal it's always you. `/help` lists the
+commands. Everyone listed by ID counts as you, so approving a pairing request
+lets that person run commands and answer approval requests, which Compa may
+then post in their chat.
 
 A channel without `dm_policy` or `group_policy` in `config.json` takes them
 from **Allow From**: with `*` both are **Open**; otherwise groups are
