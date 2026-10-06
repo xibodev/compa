@@ -1067,6 +1067,40 @@ func TestConfigSignatureTracksModelSelections(t *testing.T) {
 	}
 }
 
+// A change to a tool's settings or to the guards around the tools asks for a
+// restart: the gateway applies it when it starts. Model parameters don't.
+func TestConfigSignatureTracksToolSettingsAndGuards(t *testing.T) {
+	boot := computeConfigSignature(config.DefaultConfig())
+
+	changes := map[string]func(cfg *config.Config){
+		"allow remote commands": func(cfg *config.Config) { cfg.Tools.Exec.AllowRemote = !cfg.Tools.Exec.AllowRemote },
+		"command timeout":       func(cfg *config.Config) { cfg.Tools.Exec.TimeoutSeconds = 30 },
+		"read paths":            func(cfg *config.Config) { cfg.Tools.AllowReadPaths = []string{"^/srv/notes/"} },
+		"MCP server": func(cfg *config.Config) {
+			cfg.Tools.MCP.Servers = map[string]config.MCPServerConfig{"git": {Enabled: true, Command: "git-mcp"}}
+		},
+		"workspace restriction": func(cfg *config.Config) {
+			cfg.Agents.Defaults.RestrictToWorkspace = !cfg.Agents.Defaults.RestrictToWorkspace
+		},
+		"isolation":        func(cfg *config.Config) { cfg.Isolation.Enabled = true },
+		"owner-only rules": func(cfg *config.Config) { cfg.Commands.OwnerOnly = !cfg.Commands.OwnerOnly },
+	}
+	for name, change := range changes {
+		cfg := config.DefaultConfig()
+		change(cfg)
+		if signature := computeConfigSignature(cfg); signature.equalBesidesLive(boot) {
+			t.Errorf("changing the %s asked for no restart", name)
+		}
+	}
+
+	tuned := config.DefaultConfig()
+	tuned.Agents.Defaults.MaxTokens = 4096
+	tuned.Tools.Approval.Default = "ask"
+	if signature := computeConfigSignature(tuned); !signature.equalBesidesLive(boot) {
+		t.Error("a model parameter or the approval policy asked for a restart")
+	}
+}
+
 // A channel's secrets are in its signature; its access lists and policies
 // are its live part, and nothing else.
 func TestConfigSignatureTracksChannelSecretsAndAccess(t *testing.T) {

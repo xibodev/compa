@@ -442,7 +442,7 @@ func main() {
 	host := flag.String("host", "", "Host to listen on (overrides -public when set)")
 	public := flag.Bool("public", false, "Listen on all interfaces (dual-stack) instead of localhost only")
 	noBrowser = flag.Bool("no-browser", false, "Do not auto-open browser on startup")
-	lang := flag.String("lang", "", "Language: en (English) or zh (Chinese). Default: auto-detect from system locale")
+	lang := flag.String("lang", "", "Language of the tray menu: en (English) or zh (Chinese). Default: from LANG, else English")
 	console := flag.Bool("console", false, "Console mode, no GUI")
 	setPassword := flag.String("password", "", "Set dashboard password (min 8 characters) and exit; - reads it from standard input")
 

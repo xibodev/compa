@@ -107,10 +107,10 @@ argument. It then answers the default selection directly, without resolution.
 ## Where the config comes from
 
 `config.LoadConfig(path)` reads `config.json`, the secrets in `.security.yml`
-beside it, and `COMPA_*` environment overrides; when the file doesn't exist, it
-returns `config.DefaultConfig()` as is. `config.GetHome()` is `$COMPA_HOME`, or
-`~/.compa`. You can also build the config in code: start from
-`config.DefaultConfig()` and change its fields.
+beside it, and `COMPA_*` environment overrides; when the file doesn't exist,
+it starts from `config.DefaultConfig()` and adds the other two.
+`config.GetHome()` is `$COMPA_HOME`, or `~/.compa`. You can also build the
+config in code: start from `config.DefaultConfig()` and change its fields.
 
 The loop creates the workspace folder, `cfg.Agents.Defaults.Workspace`
 (`~/.compa/workspace` by default), if it's missing, keeps sessions and memory
@@ -118,6 +118,12 @@ there, and runs file tools in it. The built-in tools follow `cfg.Tools` and
 `cfg.Agents.Defaults.RestrictToWorkspace`, the same settings Compa uses.
 Messages the agent sends on its own, with the `message` tool, go to the bus;
 read `msgBus.OutboundChan()` if your program should show them.
+
+Tool calls follow the approval policy, `cfg.Tools.Approval`, with the origin
+`cli`. A call the policy asks about, by default installing a skill or a module
+capability with an unknown cost, network access or external writes, goes to
+the `agent.ToolApprover` hooks you mount with
+`loop.MountHook(agent.NamedHook(name, hook))`; with none, it is refused.
 
 ## Your own tools
 

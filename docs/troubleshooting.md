@@ -9,8 +9,8 @@ scheduled jobs. Compa starts it for you. When it isn't running, Chat says so
 and the status menu at the top of the page shows **Gateway: Stopped** or
 **Gateway: Error**.
 
-1. Open the status menu and choose **Start gateway** or **Restart gateway**.
-   The tray icon's **Restart Service** does the same.
+1. Open the status menu and choose **Start gateway**. The tray icon's
+   **Restart Service** does the same.
 2. If it stops again, open **Logs**, or read `~/.compa/logs/gateway.log` and
    `~/.compa/logs/launcher.log`. Common causes:
    - `compa-kernel` is missing. Compa runs the `compa-kernel` in its own
@@ -28,8 +28,8 @@ and the status menu at the top of the page shows **Gateway: Stopped** or
 - **18800, the web UI.** Compa exits right after it starts, and
   `launcher.log` says `Failed to open launcher listener(s)`. Often Compa is
   already running: look for its tray icon and choose **Open Console**.
-  Otherwise start Compa on another port, `compa -port 18801`, or change
-  **Service Port** under **Config** → **Compa app**.
+  Otherwise start Compa on another port, `compa -port 18801`; to keep that
+  port, set **Service Port** under **Config** → **Compa app**.
 - **18790, the gateway.** The gateway stops soon after it starts, and **Logs**
   or `gateway.log` shows the port error. Close the program using the port, or
   give the gateway another one in `~/.compa/config.json` (or **Config** →
@@ -41,17 +41,11 @@ and the status menu at the top of the page shows **Gateway: Stopped** or
 
 ## Forgot the password
 
-Quit Compa (tray icon → **Quit**), then run:
+Quit Compa (tray icon → **Quit**), delete `~/.compa/launcher-auth.db` and
+start Compa again: it opens the setup page, where you set a new password.
 
-```sh
-compa -password -
-```
-
-This asks for the new password (at least 8 characters), sets it and exits.
-Start Compa and sign in with it. If `compa` isn't on your `PATH`, use its full
-path: `& "$env:LOCALAPPDATA\Programs\Compa\compa.exe"` in PowerShell, or
-`~/.local/bin/compa` on macOS and Linux. `compa -password "your-new-password"`
-works too, but your shell may keep that command in its history.
+On macOS and Linux, `compa -password -` instead asks for the new password,
+sets it and exits (`~/.local/bin/compa` if `compa` isn't on your `PATH`).
 
 ## Where the logs are
 
@@ -59,7 +53,7 @@ In `~/.compa/logs`:
 
 | File | What's in it |
 |---|---|
-| `launcher.log` | `compa`: the web UI and how it runs the gateway. Not written with `-console` unless you also pass `-d`. |
+| `launcher.log` | `compa`: the web UI and how it runs the gateway. |
 | `gateway.log` | The gateway: chats, tools, channels and provider errors. |
 | `launcher_panic.log`, `gateway_panic.log` | Crash reports, if there were any. |
 | `launcher.out` | macOS and Linux: output of the Compa the installer started. |
@@ -104,17 +98,20 @@ When [`tools.approval`](use.md#approvals) asks about a call:
   already answered, or 10 minutes passed, which refuses it. Ask again.
 - Only you can answer. In a chat app that means a sender listed by ID in the
   channel's **Allow From**.
-- A call refused without any request was denied or hidden by the policy. The
-  Modules page and `module-invoke` don't post requests either: there,
-  **Approve and run** or `--approve` is the approval.
+- A call refused without any request was denied or hidden by the policy, or
+  was too long (over 3000 characters) to show you. The Modules page and
+  `module-invoke` don't post requests either: there, **Approve and run** or
+  `--approve` is the approval.
 
 ## A saved change doesn't take effect
 
 Saving the model selections, `tools.approval`, or a channel's **Allow From**,
 **DM Policy** or **Group Policy**, and approving a pairing request, applies to
 the running gateway at once, together with every other change saved before.
-Other changes show **Gateway restart required**: choose **Restart gateway** in
-the status menu at the top.
+A change to a tool, an MCP server, a channel, the workspace, `isolation`,
+`commands` or `hooks` shows **Gateway restart required**: choose **Restart
+gateway** in the status menu at the top. Other settings apply the next time
+the gateway starts.
 
 ## Start over
 
@@ -168,66 +165,45 @@ Everything is in `~/.compa`:
 | `pairing.json` | Pairing requests from chat apps waiting for your answer. |
 | `modules/`, `logs/` | Installed modules and log files. |
 
-Secrets are stored in plain text in `.security.yml`, or in a file beside it
-that a `file://` reference there names; Compa has no option to encrypt them.
-`config.json` shows `[NOT_HERE]` in place of a secret that is set.
-`config.json`, `.security.yml` and `auth.json` are created readable only by
-your account (file mode 600 on macOS and Linux), but anyone who can read your
-user files can read them.
+Secrets are stored in plain text in `.security.yml` and `auth.json`; a secret
+in `.security.yml` can instead be a `file://` reference to a file beside it.
+Compa has no option to encrypt them. `config.json` shows `[NOT_HERE]` in place
+of a secret that is set. `config.json`, `.security.yml` and `auth.json` are
+created readable only by your account (file mode 600 on macOS and Linux), but
+anyone who can read your user files can read them.
 
 ### The dashboard password
 
 The password protects the web UI. Compa stores only its bcrypt hash and allows
 10 sign-in attempts per minute from each address. A sign-in lasts until you
-sign out or Compa restarts, at most 31 days; **Sign out everywhere** ends every
-browser's sign-in at once. Changing the password asks for the current one.
-When Compa opens your browser itself, a one-time link that works for 2 minutes
-signs you in. The first password can only be set through the setup link Compa
-opens or prints when it starts. The password doesn't encrypt your files.
+sign out or Compa restarts, at most 31 days; the one-time link Compa opens on
+this computer works for 2 minutes. The password doesn't encrypt your files.
 
 ### LAN access is off by default
 
 The web UI listens only on this computer unless you start Compa with `-public`
-or `-host`, or turn on **Enable LAN Access**. If you turn it on, set the
-password first: Compa doesn't start in LAN mode without one, unless **Allow
-LAN Without Password** (`allow_lan_without_password` in `launcher-config.json`)
-is on. Compa serves plain HTTP, so the password and your chats cross the
-network unencrypted. The gateway, port 18790, stays on this computer either
-way, unless you set `gateway.host` in `config.json`. **Allowed Network CIDRs**
-limits which addresses can reach the web UI, and **Allowed Hosts** adds names,
-such as a reverse proxy's, that it answers to.
-
-To use Compa from another computer without LAN access, forward the port over
-SSH from that computer, then open http://127.0.0.1:18800 there:
-
-```sh
-ssh -L 18800:127.0.0.1:18800 you@the-computer-running-compa
-```
+or `-host`, or turn on **Enable LAN Access**, and the gateway stays on this
+computer unless you set `gateway.host`. Read [LAN access](install.md#lan-access)
+before you turn it on.
 
 ### Tools run as you
 
-- Tools and commands run with your user account's permissions. By default the
-  operating system doesn't sandbox them.
-- **Restrict to Workspace** is on by default: file tools refuse paths outside
-  the workspace, except Compa's attachment folder and paths you allow in
-  `config.json`; commands start in the workspace and are blocked when they
-  name paths outside it. Commands that match the command blacklist are blocked
-  too. These checks look at what the agent asks for; a program it starts can
-  still reach anything your account can.
-- Turn tools off on the **Tools** page. **Config** → **Run Commands** →
-  **Allow Commands** turns commands off entirely.
-- **Allow Remote Commands** is on by default. It lets chats other than the
-  terminal run commands, which includes the browser chat and every chat app
-  you connect. A channel answers only the IDs in **Allow From** and the people
-  you approve from their pairing requests, unless **Allow From** has `*` or
-  its `dm_policy` or `group_policy` is `open`: then anyone who can message
-  that bot can run commands on your computer. List only your own IDs in
-  **Allow From** (see [Channels](use.md#channels)), or turn **Allow Remote
-  Commands** off.
-  A `tools.approval` rule can make Compa ask you before it runs commands from
-  chat apps and scheduled jobs (see [Approvals](use.md#approvals)).
+- Tools and commands run with your user account's permissions. **Restrict to
+  Workspace** (on by default) and the command blacklist check what the agent
+  asks for, not what a program it starts does; see
+  [Tools and the workspace](use.md#tools-and-the-workspace). With
+  `isolation.enabled` in `config.json`, commands, process hooks and stdio MCP
+  servers start isolated: on Linux with bubblewrap (`bwrap`), which shows them
+  system folders read-only, `~/.compa` and the folders in
+  `isolation.expose_paths`; on Windows with a restricted token. It isn't
+  available on macOS.
+- Turn tools off on the **Tools** page; **Config** → **Run Commands** →
+  **Allow Commands** turns commands off.
+- **Allow Remote Commands** is on by default, so the browser chat and every
+  chat app you connect can run commands. If a channel's **Allow From** has `*`,
+  or its `dm_policy` or `group_policy` is `open`, anyone who can message that
+  bot can run commands on your computer. List only your own IDs in **Allow
+  From** ([Channels](use.md#channels)), turn **Allow Remote Commands** off, or
+  add an `ask` rule for `exec` ([Approvals](use.md#approvals)).
 - Skills and modules are third-party content; install only ones you trust.
-  Modules run as separate programs under your account. A module capability
-  that `tools.approval` asks about, by default one with an unknown cost,
-  network access or writes outside your computer, runs only with your
-  approval, such as **Approve and run** on the Modules page.
+  Modules run as separate programs under your account.

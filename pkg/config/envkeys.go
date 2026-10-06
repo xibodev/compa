@@ -30,7 +30,7 @@ const (
 
 	// EnvBuiltinSkills overrides the directory from which built-in
 	// skills are loaded.
-	// Default: <cwd>/skills
+	// Default: a skills folder beside the executable, if there is one.
 	EnvBuiltinSkills = "COMPA_BUILTIN_SKILLS"
 
 	// EnvBinary overrides the path to the compa-kernel executable.

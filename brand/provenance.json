@@ -146,7 +146,20 @@
         "logos/lockup.svg"
       ],
       "status": "applied",
-      "note": "The website page itself, its colors, and its metadata are not restyled."
+      "note": "The website page itself and its colors are not restyled."
+    },
+    {
+      "target": "public website icon and social card",
+      "files": [
+        "docs/index.html",
+        "docs/og.png"
+      ],
+      "sources": [
+        "icons/favicon.svg",
+        "og/og-default.svg"
+      ],
+      "status": "applied",
+      "note": "The page draws the favicon tile inline as its icon; export.mjs renders docs/og.png from the same master as og/og-default.png."
     },
     {
       "target": "repository, package, release, and social presentation",

@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/xibodev/compa/v2/pkg/approval"
 	"github.com/xibodev/compa/v2/pkg/config"
 	"github.com/xibodev/compa/v2/pkg/health"
 	"github.com/xibodev/compa/v2/pkg/logger"
@@ -449,9 +450,10 @@ func (h *Handler) logDefaultModelState(cfg *config.Config) {
 }
 
 // configSignature is the part of a config the restart indicator compares,
-// keyed by what it covers: the model selections, the approval policy, the
-// tools, the web tool settings, and per channel its access and the rest of
-// its config, secrets included.
+// keyed by what it covers: the model selections, the approval policy, every
+// tool setting, the guards around the tools, and per channel its access and
+// the rest of its config, secrets included. Other settings, such as model
+// parameters, apply the next time the gateway starts without asking for it.
 type configSignature map[string]string
 
 // Keys of a configSignature. The channel keys are followed by the channel's
@@ -459,8 +461,12 @@ type configSignature map[string]string
 const (
 	signatureModels   = "models"
 	signatureApproval = "approval"
-	signatureTools    = "tools"
-	signatureWeb      = "web"
+	// signatureTools: every tool setting but the approval policy, MCP
+	// servers included.
+	signatureTools = "tools"
+	// signatureGuards: the workspace and its restriction, isolation, and who
+	// may run commands or approve tool calls (commands, hooks).
+	signatureGuards = "guards"
 	// signatureAccess: a channel's allow_from, dm_policy and group_policy.
 	signatureAccess = "access:"
 	// signatureChannel: the rest of a channel's config, secrets included.
@@ -471,76 +477,26 @@ func computeConfigSignature(cfg *config.Config) configSignature {
 	if cfg == nil {
 		return nil
 	}
+	tools := cfg.Tools
+	tools.Approval = approval.Policy{}
 	signature := configSignature{
 		signatureModels:   modelSelectionSignature(cfg),
 		signatureApproval: signatureJSON(cfg.Tools.Approval),
+		signatureTools:    signatureJSON(tools),
+		signatureGuards: signatureJSON(struct {
+			Workspace           string                 `json:"workspace"`
+			RestrictToWorkspace bool                   `json:"restrict_to_workspace"`
+			Isolation           config.IsolationConfig `json:"isolation"`
+			Commands            config.CommandsConfig  `json:"commands"`
+			Hooks               config.HooksConfig     `json:"hooks"`
+		}{
+			Workspace:           cfg.Agents.Defaults.Workspace,
+			RestrictToWorkspace: cfg.Agents.Defaults.RestrictToWorkspace,
+			Isolation:           cfg.Isolation,
+			Commands:            cfg.Commands,
+			Hooks:               cfg.Hooks,
+		}),
 	}
-	toolSignatures := []string{}
-	if cfg.Tools.ReadFile.Enabled {
-		toolSignatures = append(toolSignatures, "read_file")
-	}
-	if cfg.Tools.WriteFile.Enabled {
-		toolSignatures = append(toolSignatures, "write_file")
-	}
-	if cfg.Tools.ListDir.Enabled {
-		toolSignatures = append(toolSignatures, "list_dir")
-	}
-	if cfg.Tools.EditFile.Enabled {
-		toolSignatures = append(toolSignatures, "edit_file")
-	}
-	if cfg.Tools.AppendFile.Enabled {
-		toolSignatures = append(toolSignatures, "append_file")
-	}
-	if cfg.Tools.Exec.Enabled {
-		toolSignatures = append(toolSignatures, "exec")
-	}
-	if cfg.Tools.Cron.Enabled {
-		toolSignatures = append(toolSignatures, "cron")
-	}
-	if cfg.Tools.Web.Enabled {
-		toolSignatures = append(toolSignatures, "web")
-		signature[signatureWeb] = signatureJSON(cfg.Tools.Web)
-	}
-	if cfg.Tools.WebFetch.Enabled {
-		toolSignatures = append(toolSignatures, "web_fetch")
-	}
-	if cfg.Tools.Message.Enabled {
-		toolSignatures = append(toolSignatures, "message")
-	}
-	if cfg.Tools.SendFile.Enabled {
-		toolSignatures = append(toolSignatures, "send_file")
-	}
-	if cfg.Tools.FindSkills.Enabled {
-		toolSignatures = append(toolSignatures, "find_skills")
-	}
-	if cfg.Tools.InstallSkill.Enabled {
-		toolSignatures = append(toolSignatures, "install_skill")
-	}
-	if cfg.Tools.Spawn.Enabled {
-		toolSignatures = append(toolSignatures, "spawn")
-	}
-	if cfg.Tools.SpawnStatus.Enabled {
-		toolSignatures = append(toolSignatures, "spawn_status")
-	}
-	if cfg.Tools.I2C.Enabled {
-		toolSignatures = append(toolSignatures, "i2c")
-	}
-	if cfg.Tools.SPI.Enabled {
-		toolSignatures = append(toolSignatures, "spi")
-	}
-	if cfg.Tools.MCP.Enabled {
-		toolSignatures = append(toolSignatures, "mcp")
-	}
-	if cfg.Tools.MCP.Discovery.Enabled {
-		toolSignatures = append(toolSignatures, "mcp_discovery")
-	}
-	if cfg.Tools.MCP.Discovery.UseRegex {
-		toolSignatures = append(toolSignatures, "mcp_discovery_regex")
-	}
-	if cfg.Tools.MCP.Discovery.UseBM25 {
-		toolSignatures = append(toolSignatures, "mcp_discovery_bm25")
-	}
-	signature[signatureTools] = strings.Join(toolSignatures, ",")
 	for name, channel := range cfg.Channels {
 		addChannelSignature(signature, name, channel)
 	}

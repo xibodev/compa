@@ -11,12 +11,12 @@ Use this skill for work on Compa itself. Treat the repository, current CLI help,
 ## Operating Rules
 
 - Prefer Compa names, commands, paths, and configuration keys.
-- Inspect current code before proposing changes; do not assume donor-project behavior still applies.
+- Inspect the current code before proposing changes.
 - Keep credentials out of logs, reports, screenshots, commits, and chat output.
-- Use temporary state roots and loopback-only services for destructive or automated testing.
+- Test with a temporary `COMPA_HOME` and services bound to localhost.
 - Distinguish configured, reachable, authenticated, and inference-verified provider states.
-- A successful HTTP response is not sufficient UAT evidence; verify the user-visible outcome and persisted state.
-- Preserve existing user configuration unless a requested migration explicitly changes it.
+- A successful HTTP response proves little: check what the user sees and what was saved.
+- Keep the user's configuration unless they ask to change it.
 
 ## Common Commands
 
@@ -34,4 +34,4 @@ Use `compa-kernel --help` and the relevant subcommand help before relying on com
 
 ## Workspace
 
-The default state root is `~/.compa` and the default agent workspace is `~/.compa/workspace`. The dashboard exposes chat, models, credentials, channels, skills, modules, tools, configuration, and logs. Verify changes through the narrowest relevant unit tests and an end-to-end user-visible check.
+The state root is `~/.compa` (`COMPA_HOME` moves it): settings in `config.json`, secrets in `.security.yml` beside it, and provider keys in `auth.json`. The agent workspace is `~/.compa/workspace`. The web UI has Chat, Models (providers and their keys), Channels, Skill hub, Skills, Modules, Tools, Config, Voice and Logs. Verify changes through the narrowest relevant unit tests and an end-to-end user-visible check.

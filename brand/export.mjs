@@ -31,6 +31,8 @@ export const svgCopies = [
 /** PNG rasters. `transparent` keeps the corners outside a rounded tile clear. */
 export const pngExports = [
   { source: "og/og-default.svg", target: "brand/og/og-default.png", width: 1200, height: 630, transparent: false },
+  // The website's social card.
+  { source: "og/og-default.svg", target: "docs/og.png", width: 1200, height: 630, transparent: false },
   { source: "icons/favicon.svg", target: "web/frontend/public/favicon-96x96.png", width: 96, height: 96, transparent: true },
   // iOS rounds a touch icon itself and paints transparency black, so this one
   // is the full-bleed maskable tile.
