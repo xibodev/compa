@@ -59,8 +59,10 @@ and `pnpm run format`, which checks the formatting with Prettier;
 ## Pull requests
 
 - Keep a change to one concern, with a test for each behavior it changes.
-- Write commit messages like the existing ones: `fix: what changed`, with
-  `feat`, `fix`, `docs` or `chore` first.
+- Title the pull request like the existing commits, `fix: what changed`, with
+  `feat`, `fix`, `docs` or `chore` first: it becomes the title of the squashed
+  commit.
+- Name the issue it fixes, as `Fixes #12`, so merging closes the issue.
 - Add a line under **Unreleased** in [CHANGELOG.md](CHANGELOG.md) for a change
   users notice.
 - Update the docs in `docs/` when you change what they describe.
