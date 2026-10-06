@@ -857,25 +857,37 @@ func applyDiscordProxy(session *discordgo.Session, proxyAddr string) error {
 	return nil
 }
 
+// maxChannelRefs bounds the <#id> mentions of one message that are looked up.
+const maxChannelRefs = 10
+
 // resolveDiscordRefs resolves channel references (<#id> → #channel-name) and
 // expands Discord message links to show the linked message content.
-// Only links pointing to the same guild, into channels the message's author
-// may read, are expanded: the bot fetches them with its own permissions.
+// Only channels and links of the same guild that the message's author may
+// read are resolved: the bot looks them up with its own permissions.
 func (c *DiscordChannel) resolveDiscordRefs(s *discordgo.Session, text, guildID, authorID string) string {
+	if guildID == "" {
+		return text
+	}
+
 	// 1. Resolve channel references: <#id> → #channel-name
+	names := map[string]string{} // channel ID → "#name", or "" to leave as is
 	text = channelRefRe.ReplaceAllStringFunc(text, func(match string) string {
 		parts := channelRefRe.FindStringSubmatch(match)
 		if len(parts) < 2 {
 			return match
 		}
-		// Prefer session state cache to avoid API calls
-		if ch, err := s.State.Channel(parts[1]); err == nil {
-			return "#" + ch.Name
+		name, seen := names[parts[1]]
+		if !seen && len(names) < maxChannelRefs {
+			if ch, err := lookupChannel(s, parts[1]); err == nil && ch.GuildID == guildID &&
+				canReadChannel(s, authorID, ch) {
+				name = "#" + ch.Name
+			}
+			names[parts[1]] = name
 		}
-		if ch, err := s.Channel(parts[1]); err == nil {
-			return "#" + ch.Name
+		if name == "" {
+			return match
 		}
-		return match
+		return name
 	})
 
 	// 2. Expand Discord message links (max 3, same guild only)
@@ -889,7 +901,8 @@ func (c *DiscordChannel) resolveDiscordRefs(s *discordgo.Session, text, guildID,
 		if linkGuildID != guildID {
 			continue
 		}
-		if !canReadChannel(s, authorID, channelID) {
+		ch, err := lookupChannel(s, channelID)
+		if err != nil || ch.GuildID != guildID || !canReadChannel(s, authorID, ch) {
 			continue
 		}
 		msg, err := s.ChannelMessage(channelID, messageID)
@@ -909,13 +922,33 @@ func (c *DiscordChannel) resolveDiscordRefs(s *discordgo.Session, text, guildID,
 // readPermissions are what a member needs to read a channel's messages.
 const readPermissions = discordgo.PermissionViewChannel | discordgo.PermissionReadMessageHistory
 
-// canReadChannel reports whether userID may read channelID's history, so that
-// a linked message is shown only to someone who could open it. The cached
-// state answers when it has the member; otherwise the API is asked. Any
-// error counts as no.
-func canReadChannel(s *discordgo.Session, userID, channelID string) bool {
-	if userID == "" {
+// lookupChannel returns channelID's channel from the cached state, or else
+// from the API.
+func lookupChannel(s *discordgo.Session, channelID string) (*discordgo.Channel, error) {
+	if s.State != nil {
+		if ch, err := s.State.Channel(channelID); err == nil {
+			return ch, nil
+		}
+	}
+	return s.Channel(channelID)
+}
+
+// canReadChannel reports whether userID may read ch's history, so that a
+// linked message or a channel's name is shown only to someone who could open
+// it. A thread is as readable as its parent channel; a private thread depends
+// on who joined it, which isn't checked, so it counts as unreadable. The
+// cached state answers when it has the member; otherwise the API is asked.
+// Any error counts as no.
+func canReadChannel(s *discordgo.Session, userID string, ch *discordgo.Channel) bool {
+	if userID == "" || ch == nil {
 		return false
+	}
+	channelID := ch.ID
+	if ch.IsThread() {
+		if ch.Type == discordgo.ChannelTypeGuildPrivateThread {
+			return false
+		}
+		channelID = ch.ParentID
 	}
 	perms, err := int64(0), error(nil)
 	if s.State != nil {

@@ -2,6 +2,7 @@ package discord
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -209,10 +210,114 @@ func TestCanReadChannel(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if !canReadChannel(session, "u1", "public") {
+	public, _ := session.State.Channel("public")
+	secret, _ := session.State.Channel("secret")
+	if !canReadChannel(session, "u1", public) {
 		t.Error("a member may read a channel open to everyone")
 	}
-	if canReadChannel(session, "u1", "secret") {
+	if canReadChannel(session, "u1", secret) {
 		t.Error("a member may not read a channel hidden from them")
 	}
+
+	// A thread is as readable as its parent; a private thread never counts.
+	thread := func(parent string, kind discordgo.ChannelType) *discordgo.Channel {
+		ch := &discordgo.Channel{ID: "t-" + parent + "-" + fmt.Sprint(kind), GuildID: "g1", ParentID: parent, Type: kind}
+		if err := session.State.ChannelAdd(ch); err != nil {
+			t.Fatal(err)
+		}
+		return ch
+	}
+	if !canReadChannel(session, "u1", thread("public", discordgo.ChannelTypeGuildPublicThread)) {
+		t.Error("a member may read a thread of a channel open to everyone")
+	}
+	if canReadChannel(session, "u1", thread("secret", discordgo.ChannelTypeGuildPublicThread)) {
+		t.Error("a member may not read a thread of a channel hidden from them")
+	}
+	if canReadChannel(session, "u1", thread("public", discordgo.ChannelTypeGuildPrivateThread)) {
+		t.Error("a private thread counts as unreadable")
+	}
+}
+
+// A <#id> mention gets the channel's name only for a channel of the same
+// guild that the author may read, as a message link does.
+func TestResolveDiscordRefsNamesOnlyReadableChannels(t *testing.T) {
+	session, err := discordgo.New("Bot test-token")
+	if err != nil {
+		t.Fatalf("discordgo.New() error: %v", err)
+	}
+	for _, guild := range []*discordgo.Guild{
+		{ID: "1", OwnerID: "owner", Roles: []*discordgo.Role{{ID: "1", Permissions: readPermissions}}},
+		{ID: "2", OwnerID: "owner", Roles: []*discordgo.Role{{ID: "2", Permissions: readPermissions}}},
+	} {
+		if err := session.State.GuildAdd(guild); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, channel := range []*discordgo.Channel{
+		{ID: "11", GuildID: "1", Name: "general"},
+		{ID: "12", GuildID: "1", Name: "staff", PermissionOverwrites: []*discordgo.PermissionOverwrite{
+			{ID: "1", Type: discordgo.PermissionOverwriteTypeRole, Deny: discordgo.PermissionViewChannel},
+		}},
+		{ID: "21", GuildID: "2", Name: "other-server"},
+	} {
+		if err := session.State.ChannelAdd(channel); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := session.State.MemberAdd(&discordgo.Member{GuildID: "1", User: &discordgo.User{ID: "u1"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := (&DiscordChannel{}).resolveDiscordRefs(session, "see <#11>, <#12> and <#21>", "1", "u1")
+	if want := "see #general, <#12> and <#21>"; got != want {
+		t.Errorf("resolveDiscordRefs() = %q, want %q", got, want)
+	}
+	// A channel missing from the cache is asked of Discord; count those asks.
+	transport := &countingTransport{}
+	session.Client = &http.Client{Transport: transport}
+	// A direct message has no server, so nothing is looked up.
+	if got := (&DiscordChannel{}).resolveDiscordRefs(session, "see <#999>", "", "u1"); got != "see <#999>" {
+		t.Errorf("resolveDiscordRefs() in a direct message = %q, want it unchanged", got)
+	}
+	if transport.requests != 0 {
+		t.Errorf("a direct message made %d requests, want none", transport.requests)
+	}
+	// A channel mentioned twice is looked up once.
+	if got := (&DiscordChannel{}).resolveDiscordRefs(session, "<#999> and <#999>", "1", "u1"); got != "<#999> and <#999>" {
+		t.Errorf("resolveDiscordRefs() = %q, want it unchanged", got)
+	}
+	if transport.requests != 1 {
+		t.Errorf("a channel mentioned twice made %d requests, want 1", transport.requests)
+	}
+
+	// At most maxChannelRefs mentions of one message are looked up.
+	var text, want strings.Builder
+	for i := range maxChannelRefs + 1 {
+		id := fmt.Sprint(100 + i)
+		if err := session.State.ChannelAdd(&discordgo.Channel{ID: id, GuildID: "1", Name: "c" + id}); err != nil {
+			t.Fatal(err)
+		}
+		text.WriteString(" <#" + id + ">")
+		if i < maxChannelRefs {
+			want.WriteString(" #c" + id)
+		} else {
+			want.WriteString(" <#" + id + ">")
+		}
+	}
+	if got := (&DiscordChannel{}).resolveDiscordRefs(session, text.String(), "1", "u1"); got != want.String() {
+		t.Errorf("resolveDiscordRefs() = %q, want %q", got, want.String())
+	}
+}
+
+// countingTransport answers every Discord API request with 404 Unknown
+// Channel and counts them.
+type countingTransport struct{ requests int }
+
+func (c *countingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	c.requests++
+	return &http.Response{
+		StatusCode: http.StatusNotFound,
+		Header:     http.Header{"Content-Type": {"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"message":"Unknown Channel","code":10003}`)),
+	}, nil
 }

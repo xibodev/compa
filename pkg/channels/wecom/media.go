@@ -328,7 +328,7 @@ func (c *WeComChannel) storeRemoteMedia(
 	if mkdirErr := os.MkdirAll(mediaDir, 0o700); mkdirErr != nil {
 		return "", fmt.Errorf("mkdir media dir: %w", mkdirErr)
 	}
-	tmpFile, err := os.CreateTemp(mediaDir, msgID+"-*"+ext)
+	tmpFile, err := os.CreateTemp(mediaDir, tempNamePart(msgID)+"-*"+ext)
 	if err != nil {
 		return "", fmt.Errorf("create temp file: %w", err)
 	}
@@ -387,6 +387,19 @@ func detectLocalWeComContentType(localPath, hint string) string {
 		return contentType
 	}
 	return normalizeWeComContentType(http.DetectContentType(buf[:n]))
+}
+
+// tempNamePart makes s fit in a temp file's name: a WeCom message ID is
+// base64 and can hold a "/".
+func tempNamePart(s string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
+			r == '-', r == '_', r == '.', r == '+', r == '=':
+			return r
+		}
+		return '_'
+	}, s)
 }
 
 func writeWeComTempFile(prefix, filename string, data []byte) (string, error) {

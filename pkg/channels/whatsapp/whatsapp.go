@@ -425,6 +425,13 @@ func (c *WhatsAppChannel) handleIncomingMessage(msg map[string]any) {
 	c.HandleInboundContext(c.ctx, chatID, content, mediaPaths, inboundCtx, sender)
 }
 
+// inDir reports whether p lies inside dir, both clean.
+func inDir(dir, p string) bool {
+	rel, err := filepath.Rel(dir, p)
+	return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) &&
+		!filepath.IsAbs(rel)
+}
+
 // bridgeMediaPath accepts a media file the bridge names only when it is a
 // regular file, within the size limit, in the system temp directory, where
 // bridges put the media they download. Anything else would let the bridge,
@@ -433,17 +440,22 @@ func bridgeMediaPath(p string, maxBytes int64) (string, error) {
 	if p == "" || !filepath.IsAbs(p) {
 		return "", errors.New("not an absolute path")
 	}
-	resolved, err := filepath.EvalSymlinks(filepath.Clean(p))
+	clean := filepath.Clean(p)
+	tempDir := filepath.Clean(os.TempDir())
+	realTempDir := tempDir
+	if real, err := filepath.EvalSymlinks(tempDir); err == nil {
+		realTempDir = real
+	}
+	// Checked as written before it is resolved: resolving a path elsewhere,
+	// such as \\host\share\x on Windows, would already reach that host.
+	if !inDir(tempDir, clean) && !inDir(realTempDir, clean) {
+		return "", errors.New("outside the temp directory")
+	}
+	resolved, err := filepath.EvalSymlinks(clean)
 	if err != nil {
 		return "", err
 	}
-	tempDir := os.TempDir()
-	if real, err := filepath.EvalSymlinks(tempDir); err == nil {
-		tempDir = real
-	}
-	rel, err := filepath.Rel(tempDir, resolved)
-	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) ||
-		filepath.IsAbs(rel) {
+	if !inDir(realTempDir, resolved) {
 		return "", errors.New("outside the temp directory")
 	}
 	info, err := os.Stat(resolved)

@@ -56,6 +56,40 @@ func TestStoreRemoteMedia_DetectsJPEGContentTypeFromBody(t *testing.T) {
 	}
 }
 
+// A WeCom message ID is base64 and can hold a "/", which a temp file's name
+// can't.
+func TestStoreRemoteMedia_AcceptsMessageIDWithSlash(t *testing.T) {
+	t.Parallel()
+
+	jpegData := wecomTestJPEGData(t)
+	store := media.NewFileMediaStore()
+	ch := &WeComChannel{
+		BaseChannel: basechannels.NewBaseChannel("wecom", nil, nil, nil),
+		mediaClient: &http.Client{
+			Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"image/jpeg"}},
+					Body:       io.NopCloser(bytes.NewReader(jpegData)),
+				}, nil
+			}),
+		},
+	}
+	ch.SetMediaStore(store)
+
+	ref, err := ch.storeRemoteMedia(context.Background(), "slash-scope", "CAIQz7/MjQYY/NGagIOAgAMgl8jK/gI=-0",
+		"https://wecom.example/media", "", ".jpg")
+	if err != nil {
+		t.Fatalf("storeRemoteMedia returned error: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.ReleaseAll("slash-scope")
+	})
+	if _, err := store.Resolve(ref); err != nil {
+		t.Fatalf("resolve media ref: %v", err)
+	}
+}
+
 func TestDetectWeComMediaMetadata_UsesFallbackExtensionWhenBodyUnknown(t *testing.T) {
 	t.Parallel()
 
