@@ -272,9 +272,22 @@ func TestResolveDiscordRefsNamesOnlyReadableChannels(t *testing.T) {
 	if want := "see #general, <#12> and <#21>"; got != want {
 		t.Errorf("resolveDiscordRefs() = %q, want %q", got, want)
 	}
+	// A channel missing from the cache is asked of Discord; count those asks.
+	transport := &countingTransport{}
+	session.Client = &http.Client{Transport: transport}
 	// A direct message has no server, so nothing is looked up.
-	if got := (&DiscordChannel{}).resolveDiscordRefs(session, "see <#11>", "", "u1"); got != "see <#11>" {
+	if got := (&DiscordChannel{}).resolveDiscordRefs(session, "see <#999>", "", "u1"); got != "see <#999>" {
 		t.Errorf("resolveDiscordRefs() in a direct message = %q, want it unchanged", got)
+	}
+	if transport.requests != 0 {
+		t.Errorf("a direct message made %d requests, want none", transport.requests)
+	}
+	// A channel mentioned twice is looked up once.
+	if got := (&DiscordChannel{}).resolveDiscordRefs(session, "<#999> and <#999>", "1", "u1"); got != "<#999> and <#999>" {
+		t.Errorf("resolveDiscordRefs() = %q, want it unchanged", got)
+	}
+	if transport.requests != 1 {
+		t.Errorf("a channel mentioned twice made %d requests, want 1", transport.requests)
 	}
 
 	// At most maxChannelRefs mentions of one message are looked up.
@@ -294,4 +307,17 @@ func TestResolveDiscordRefsNamesOnlyReadableChannels(t *testing.T) {
 	if got := (&DiscordChannel{}).resolveDiscordRefs(session, text.String(), "1", "u1"); got != want.String() {
 		t.Errorf("resolveDiscordRefs() = %q, want %q", got, want.String())
 	}
+}
+
+// countingTransport answers every Discord API request with 404 Unknown
+// Channel and counts them.
+type countingTransport struct{ requests int }
+
+func (c *countingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	c.requests++
+	return &http.Response{
+		StatusCode: http.StatusNotFound,
+		Header:     http.Header{"Content-Type": {"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"message":"Unknown Channel","code":10003}`)),
+	}, nil
 }
