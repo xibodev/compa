@@ -205,7 +205,7 @@ keeps its task and pattern records for 30 days.
 | `COMPA_LAUNCHER_HOST` | Address the web UI listens on, as `-host` sets it; `-host` wins when you give both. It overrides `-public` and **Enable LAN Access**, so an address other than localhost opens the web UI to the network; read [LAN access](install.md#lan-access) first. |
 | `COMPA_BINARY` | The `compa-kernel` that `compa` runs, instead of the one beside it. |
 | `COMPA_GATEWAY_HOST`, `COMPA_GATEWAY_PORT` | Address and port of the gateway, instead of `gateway.host` and `gateway.port`. |
-| `COMPA_LOG_LEVEL` | Log level, instead of `gateway.log_level`: `debug`, `info`, `warn` (the default) or `error`. |
+| `COMPA_LOG_LEVEL` | Log level, instead of `gateway.log_level`: `debug`, `info`, `warn` (the default), `error` or `fatal`. |
 | `COMPA_LOG_FILE` | `compa-kernel agent` writes its log to this file instead of the terminal. |
 | `COMPA_SUBPROCESS_ALLOW` | Program names, separated by commas, that modules may run, out of those each module declares. Unset, every declared program is allowed. |
 | `COMPA_DNS_SERVER` | On Linux without `/etc/resolv.conf`, the DNS servers `compa-kernel` asks, separated by `;` (default `8.8.8.8:53;1.1.1.1:53`). |

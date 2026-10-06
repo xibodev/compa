@@ -293,7 +293,7 @@ Motion should explain the relationship between the C and its core:
 | Public website dark footer | `logos/lockup-inverse.svg` | Core Night | Planned |
 | Website metadata | `icons/favicon.svg`, `og/og-default.png` | Supplied | Adopted: the page draws the favicon tile, and `docs/og.png` is the social card |
 | Repository and package surfaces | `logos/lockup.svg`, `icons/app-icon.svg` | Surface | The README shows the lockup; the rest is planned |
-| Release and social cards | `og/og-default.png` | Core Night | Planned |
+| Repository and release social cards | `og/og-default.png` | Core Night | Planned |
 | Single-color print or engraving | `logos/mono-black.svg` or `logos/mono-white.svg` | One ink | Ready artwork |
 
 ## Adoption

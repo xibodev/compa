@@ -29,8 +29,8 @@ UI there isn't reported. `make product` builds both programs into `build/`;
 go test -tags goolm,stdjson -p 1 ./...
 ```
 
-Run the Go tests one package at a time (`-p 1`), as CI does. CI also runs
-them with `-race` on Linux (`CGO_ENABLED=1`), and on Windows and macOS.
+Run the Go tests one package at a time (`-p 1`), as CI does. CI runs them on
+Linux, Windows and macOS, and again with `-race` on Linux (`CGO_ENABLED=1`).
 
 The web UI, in `web/frontend`:
 
