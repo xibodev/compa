@@ -298,13 +298,13 @@ Motion should explain the relationship between the C and its core:
 
 ## Adoption
 
-`provenance.json` records every file that uses the kit. The app header,
-browser and install icons, tray icon, manifest colors, the public website and
-the repository README use it. The app's color theme and the other repository,
-release and social surfaces don't yet. Map each of those
-deliberately, through its normal review path, and verify the result in the
-product rather than treating this kit as runtime evidence. The mockups in
-`preview.html` remain illustrative.
+`provenance.json` records the kit's consumer files. The app header, browser
+and install icons, tray icon, manifest colors, the public website and the
+repository README use it. The app's color theme and the other repository,
+release and social surfaces don't yet. Map each of those deliberately, through
+its normal review path, and verify the result in the product rather than
+treating this kit as runtime evidence. The mockups in `preview.html` remain
+illustrative.
 
 Rebuild every raster and consumer copy with `node brand/export.mjs`, then run
 `node brand/check.mjs`; `README.md` describes both.

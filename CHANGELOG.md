@@ -10,11 +10,15 @@ Notable changes to Compa, newest first. Versions follow
 - On Windows, `compa-kernel` looks names up through the system's DNS, so VPN
   and company DNS and local host names work; it asked 8.8.8.8 and 1.1.1.1
   instead.
-- **Gateway restart required** shows after a change to any tool setting, such
-  as **Allow Remote Commands** or an MCP server, and to the workspaces, the
-  restriction to them, `isolation`, `commands` or `hooks`, which the running
-  gateway takes up only when it restarts or reloads. It showed only when a
-  tool was turned on or off.
+- On Linux without `/etc/resolv.conf`, a `COMPA_DNS_SERVER` that names no
+  server, such as `;`, gives the default servers, and a bracketed IPv6 address
+  without a port gets port 53; `compa-kernel` crashed at its first lookup, or
+  couldn't use the address.
+- **Gateway restart required** shows after a change to any tool setting other
+  than `tools.approval`, such as **Allow Remote Commands** or an MCP server,
+  and to the workspaces, the restriction to them, `isolation`, `commands` or
+  `hooks`, which the running gateway takes up only when it restarts or
+  reloads. It showed only when a tool was turned on or off.
 
 ## 2.1.0 - 2026-10-05
 

@@ -1079,6 +1079,7 @@ func TestConfigSignatureTracksToolSettingsAndGuards(t *testing.T) {
 		"MCP server": func(cfg *config.Config) {
 			cfg.Tools.MCP.Servers = map[string]config.MCPServerConfig{"git": {Enabled: true, Command: "git-mcp"}}
 		},
+		"workspace": func(cfg *config.Config) { cfg.Agents.Defaults.Workspace = "/srv/compa" },
 		"workspace restriction": func(cfg *config.Config) {
 			cfg.Agents.Defaults.RestrictToWorkspace = !cfg.Agents.Defaults.RestrictToWorkspace
 		},
@@ -1090,6 +1091,7 @@ func TestConfigSignatureTracksToolSettingsAndGuards(t *testing.T) {
 		},
 		"isolation":        func(cfg *config.Config) { cfg.Isolation.Enabled = true },
 		"owner-only rules": func(cfg *config.Config) { cfg.Commands.OwnerOnly = !cfg.Commands.OwnerOnly },
+		"hooks":            func(cfg *config.Config) { cfg.Hooks.Enabled = !cfg.Hooks.Enabled },
 	}
 	for name, change := range changes {
 		cfg := config.DefaultConfig()
@@ -1134,10 +1136,16 @@ func TestConfigSignatureTracksChannelSecretsAndAccess(t *testing.T) {
 		t.Error("changing a channel's secret left the config signature unchanged")
 	}
 
-	access := withToken("old-token")
-	access.Channels["web"].AllowFrom = config.FlexibleStringSlice{"web:1"}
-	if signature := computeConfigSignature(access); signature.liveEqual(boot) || !signature.equalBesidesLive(boot) {
-		t.Error("changing a channel's allow_from changed other than the live part of the config signature")
+	for name, change := range map[string]func(channel *config.Channel){
+		"allow_from":   func(channel *config.Channel) { channel.AllowFrom = config.FlexibleStringSlice{"web:1"} },
+		"dm_policy":    func(channel *config.Channel) { channel.DMPolicy = config.DMPolicyPairing },
+		"group_policy": func(channel *config.Channel) { channel.GroupPolicy = config.GroupPolicyAllowlist },
+	} {
+		access := withToken("old-token")
+		change(access.Channels["web"])
+		if signature := computeConfigSignature(access); signature.liveEqual(boot) || !signature.equalBesidesLive(boot) {
+			t.Errorf("changing a channel's %s changed other than the live part of the config signature", name)
+		}
 	}
 }
 

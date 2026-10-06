@@ -137,14 +137,24 @@
       "note": "The page sets the palette and type itself and draws the favicon tile inline; export.mjs writes the mark and lockup copies and renders docs/og.png from the same master as og/og-default.png."
     },
     {
-      "target": "repository, package, release, and social presentation",
+      "target": "repository README: lockup",
+      "files": [
+        "README.md"
+      ],
+      "sources": [
+        "logos/lockup.svg"
+      ],
+      "status": "applied",
+      "note": "README.md shows docs/compa-logo.svg, the website's copy of the lockup."
+    },
+    {
+      "target": "other repository, package, release, and social presentation",
       "sources": [
         "logos/lockup.svg",
         "icons/app-icon.svg",
         "og/og-default.png"
       ],
-      "status": "planned-not-applied",
-      "note": "The repository README shows docs/compa-logo.svg."
+      "status": "planned-not-applied"
     }
   ]
 }

@@ -59,7 +59,7 @@ func dnsServers(value string) []string {
 			continue
 		}
 		if _, _, err := net.SplitHostPort(s); err != nil {
-			s = net.JoinHostPort(s, "53")
+			s = net.JoinHostPort(strings.Trim(s, "[]"), "53")
 		}
 		servers = append(servers, s)
 	}
