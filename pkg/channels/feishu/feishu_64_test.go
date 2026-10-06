@@ -9,9 +9,9 @@ import (
 
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 
-	"github.com/xibodev/compa/pkg/bus"
-	"github.com/xibodev/compa/pkg/channels"
-	"github.com/xibodev/compa/pkg/media"
+	"github.com/xibodev/compa/v2/pkg/bus"
+	"github.com/xibodev/compa/v2/pkg/channels"
+	"github.com/xibodev/compa/v2/pkg/media"
 )
 
 func TestExtractContent(t *testing.T) {

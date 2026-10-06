@@ -10,8 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/xibodev/compa/pkg/config"
-	"github.com/xibodev/compa/pkg/logger"
+	"github.com/xibodev/compa/v2/pkg/config"
+	"github.com/xibodev/compa/v2/pkg/logger"
 )
 
 func applyPlatformIsolation(cmd *exec.Cmd, isolation config.IsolationConfig, root string) error {

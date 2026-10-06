@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xibodev/compa/pkg/modproto"
-	"github.com/xibodev/compa/pkg/view"
+	"github.com/xibodev/compa/v2/pkg/modproto"
+	"github.com/xibodev/compa/v2/pkg/view"
 )
 
 // The bug this exists for: how an artefact renders was decided twice -- once by

@@ -1,8 +1,8 @@
 package moduletools
 
 import (
-	"github.com/xibodev/compa/pkg/approval"
-	"github.com/xibodev/compa/pkg/modproto"
+	"github.com/xibodev/compa/v2/pkg/approval"
+	"github.com/xibodev/compa/v2/pkg/modproto"
 )
 
 // ApprovalInfo tells the approval policy (tools.approval) what this tool is: a

@@ -23,7 +23,7 @@ import (
 // the kernel, "distribute them separately" is a packaging claim with nothing
 // underneath it.
 func TestTheShellDoesNotLinkTheAgentKernel(t *testing.T) {
-	const kernel = "github.com/xibodev/compa/pkg/agent"
+	const kernel = "github.com/xibodev/compa/v2/pkg/agent"
 
 	out, err := exec.Command("go", "list", "-deps",
 		"-tags", "goolm,stdjson", ".").Output()

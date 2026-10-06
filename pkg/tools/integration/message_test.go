@@ -8,9 +8,9 @@ import (
 	"regexp"
 	"testing"
 
-	"github.com/xibodev/compa/pkg/bus"
-	"github.com/xibodev/compa/pkg/media"
-	"github.com/xibodev/compa/pkg/session"
+	"github.com/xibodev/compa/v2/pkg/bus"
+	"github.com/xibodev/compa/v2/pkg/media"
+	"github.com/xibodev/compa/v2/pkg/session"
 )
 
 func TestMessageTool_Execute_Success(t *testing.T) {

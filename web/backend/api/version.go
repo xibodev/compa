@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xibodev/compa/pkg/config"
-	"github.com/xibodev/compa/web/backend/utils"
+	"github.com/xibodev/compa/v2/pkg/config"
+	"github.com/xibodev/compa/v2/web/backend/utils"
 )
 
 type systemVersionResponse struct {

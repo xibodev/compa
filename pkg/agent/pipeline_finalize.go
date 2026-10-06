@@ -5,8 +5,8 @@ package agent
 import (
 	"context"
 
-	runtimeevents "github.com/xibodev/compa/pkg/events"
-	"github.com/xibodev/compa/pkg/providers"
+	runtimeevents "github.com/xibodev/compa/v2/pkg/events"
+	"github.com/xibodev/compa/v2/pkg/providers"
 )
 
 // Finalize handles turn finalization, either:

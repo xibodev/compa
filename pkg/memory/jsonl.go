@@ -16,9 +16,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xibodev/compa/pkg/fileutil"
-	"github.com/xibodev/compa/pkg/providers"
-	"github.com/xibodev/compa/pkg/providers/messageutil"
+	"github.com/xibodev/compa/v2/pkg/fileutil"
+	"github.com/xibodev/compa/v2/pkg/providers"
+	"github.com/xibodev/compa/v2/pkg/providers/messageutil"
 )
 
 const (

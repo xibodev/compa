@@ -8,11 +8,11 @@ import (
 	"strings"
 	"unicode"
 
-	"github.com/xibodev/compa/pkg/bus"
-	"github.com/xibodev/compa/pkg/logger"
-	"github.com/xibodev/compa/pkg/routing"
-	"github.com/xibodev/compa/pkg/session"
-	"github.com/xibodev/compa/pkg/utils"
+	"github.com/xibodev/compa/v2/pkg/bus"
+	"github.com/xibodev/compa/v2/pkg/logger"
+	"github.com/xibodev/compa/v2/pkg/routing"
+	"github.com/xibodev/compa/v2/pkg/session"
+	"github.com/xibodev/compa/v2/pkg/utils"
 )
 
 func (al *AgentLoop) buildContinuationTarget(msg bus.InboundMessage) (*continuationTarget, error) {

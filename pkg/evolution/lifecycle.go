@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/xibodev/compa/pkg/skills"
+	"github.com/xibodev/compa/v2/pkg/skills"
 )
 
 type LifecycleRunSummary struct {

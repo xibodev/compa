@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/pkg/config"
-	"github.com/xibodev/compa/pkg/media"
-	"github.com/xibodev/compa/pkg/providers"
-	"github.com/xibodev/compa/pkg/tools"
+	"github.com/xibodev/compa/v2/pkg/config"
+	"github.com/xibodev/compa/v2/pkg/media"
+	"github.com/xibodev/compa/v2/pkg/providers"
+	"github.com/xibodev/compa/v2/pkg/tools"
 )
 
 type countingStatefulProvider struct {

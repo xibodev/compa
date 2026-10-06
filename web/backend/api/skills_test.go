@@ -17,7 +17,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/xibodev/compa/pkg/config"
+	"github.com/xibodev/compa/v2/pkg/config"
 )
 
 func setClawHubBaseURL(cfg *config.Config, baseURL string) {

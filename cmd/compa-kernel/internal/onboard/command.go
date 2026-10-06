@@ -3,7 +3,7 @@ package onboard
 import (
 	"github.com/spf13/cobra"
 
-	"github.com/xibodev/compa"
+	"github.com/xibodev/compa/v2"
 )
 
 var embeddedFiles = compa.OnboardWorkspace

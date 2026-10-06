@@ -23,10 +23,10 @@ import (
 	core "github.com/xibodev/llmgw-core"
 	"github.com/xibodev/llmgw-core/translation"
 
-	"github.com/xibodev/compa/pkg/config"
-	"github.com/xibodev/compa/pkg/modelservice"
-	"github.com/xibodev/compa/pkg/providers"
-	"github.com/xibodev/compa/pkg/providers/coretransport"
+	"github.com/xibodev/compa/v2/pkg/config"
+	"github.com/xibodev/compa/v2/pkg/modelservice"
+	"github.com/xibodev/compa/v2/pkg/providers"
+	"github.com/xibodev/compa/v2/pkg/providers/coretransport"
 )
 
 // Role is what a voice target does.

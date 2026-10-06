@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xibodev/compa/internal/module"
+	"github.com/xibodev/compa/v2/internal/module"
 )
 
 // The bug this exists for: DELETE /api/modules/%2E%2E reached module.Remove

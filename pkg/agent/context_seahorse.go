@@ -8,12 +8,12 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/xibodev/compa/pkg/logger"
-	"github.com/xibodev/compa/pkg/providers"
-	"github.com/xibodev/compa/pkg/providers/protocoltypes"
-	"github.com/xibodev/compa/pkg/seahorse"
-	"github.com/xibodev/compa/pkg/session"
-	"github.com/xibodev/compa/pkg/tokenizer"
+	"github.com/xibodev/compa/v2/pkg/logger"
+	"github.com/xibodev/compa/v2/pkg/providers"
+	"github.com/xibodev/compa/v2/pkg/providers/protocoltypes"
+	"github.com/xibodev/compa/v2/pkg/seahorse"
+	"github.com/xibodev/compa/v2/pkg/session"
+	"github.com/xibodev/compa/v2/pkg/tokenizer"
 )
 
 // seahorseContextManager adapts seahorse.Engine to agent.ContextManager.

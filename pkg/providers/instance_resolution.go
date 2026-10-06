@@ -5,7 +5,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/xibodev/compa/pkg/config"
+	"github.com/xibodev/compa/v2/pkg/config"
 )
 
 // InstanceCatalog is the model identity snapshot owned by one configured

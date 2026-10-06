@@ -9,12 +9,12 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/xibodev/compa/pkg/approval"
-	"github.com/xibodev/compa/pkg/bus"
-	"github.com/xibodev/compa/pkg/config"
-	runtimeevents "github.com/xibodev/compa/pkg/events"
-	"github.com/xibodev/compa/pkg/providers"
-	"github.com/xibodev/compa/pkg/tools"
+	"github.com/xibodev/compa/v2/pkg/approval"
+	"github.com/xibodev/compa/v2/pkg/bus"
+	"github.com/xibodev/compa/v2/pkg/config"
+	runtimeevents "github.com/xibodev/compa/v2/pkg/events"
+	"github.com/xibodev/compa/v2/pkg/providers"
+	"github.com/xibodev/compa/v2/pkg/tools"
 )
 
 // The approval policy (tools.approval) decides every tool call: it runs, is

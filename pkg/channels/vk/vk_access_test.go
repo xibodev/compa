@@ -12,10 +12,10 @@ import (
 	"github.com/SevereCloud/vksdk/v3/api"
 	"github.com/SevereCloud/vksdk/v3/object"
 
-	"github.com/xibodev/compa/pkg/bus"
-	"github.com/xibodev/compa/pkg/channels"
-	"github.com/xibodev/compa/pkg/config"
-	"github.com/xibodev/compa/pkg/pairing"
+	"github.com/xibodev/compa/v2/pkg/bus"
+	"github.com/xibodev/compa/v2/pkg/channels"
+	"github.com/xibodev/compa/v2/pkg/config"
+	"github.com/xibodev/compa/v2/pkg/pairing"
 )
 
 func TestIsMentioned(t *testing.T) {

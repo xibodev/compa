@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/xibodev/compa/pkg/utils"
+	"github.com/xibodev/compa/v2/pkg/utils"
 )
 
 func ValidateSkillName(name string) error {

@@ -3,7 +3,7 @@ package moduletools
 import (
 	"fmt"
 
-	"github.com/xibodev/compa/pkg/modprotov2"
+	"github.com/xibodev/compa/v2/pkg/modprotov2"
 )
 
 // HostConformance is the host's verdict on ONE described module, and it is the

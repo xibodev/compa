@@ -3,7 +3,7 @@ package agent
 import (
 	"context"
 
-	"github.com/xibodev/compa/pkg/providers"
+	"github.com/xibodev/compa/v2/pkg/providers"
 )
 
 type mockProvider struct{}

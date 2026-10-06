@@ -10,9 +10,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/xibodev/compa/pkg/logger"
-	"github.com/xibodev/compa/pkg/media"
-	"github.com/xibodev/compa/pkg/providers"
+	"github.com/xibodev/compa/v2/pkg/logger"
+	"github.com/xibodev/compa/v2/pkg/media"
+	"github.com/xibodev/compa/v2/pkg/providers"
 )
 
 type ToolEntry struct {

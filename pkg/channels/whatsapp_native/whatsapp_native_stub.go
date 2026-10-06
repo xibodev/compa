@@ -5,9 +5,9 @@ package whatsapp
 import (
 	"fmt"
 
-	"github.com/xibodev/compa/pkg/bus"
-	"github.com/xibodev/compa/pkg/channels"
-	"github.com/xibodev/compa/pkg/config"
+	"github.com/xibodev/compa/v2/pkg/bus"
+	"github.com/xibodev/compa/v2/pkg/channels"
+	"github.com/xibodev/compa/v2/pkg/config"
 )
 
 // NewWhatsAppNativeChannel returns an error when the binary was not built with -tags whatsapp_native.

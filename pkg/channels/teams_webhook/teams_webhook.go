@@ -14,10 +14,10 @@ import (
 	goteamsnotify "github.com/atc0005/go-teams-notify/v2"
 	"github.com/atc0005/go-teams-notify/v2/adaptivecard"
 
-	"github.com/xibodev/compa/pkg/bus"
-	"github.com/xibodev/compa/pkg/channels"
-	"github.com/xibodev/compa/pkg/config"
-	"github.com/xibodev/compa/pkg/logger"
+	"github.com/xibodev/compa/v2/pkg/bus"
+	"github.com/xibodev/compa/v2/pkg/channels"
+	"github.com/xibodev/compa/v2/pkg/config"
+	"github.com/xibodev/compa/v2/pkg/logger"
 )
 
 // statusCodeRe extracts HTTP status codes from error messages like "401 Unauthorized".

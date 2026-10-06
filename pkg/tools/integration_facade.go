@@ -3,11 +3,11 @@ package tools
 import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/xibodev/compa/pkg/audio/tts"
-	"github.com/xibodev/compa/pkg/config"
-	"github.com/xibodev/compa/pkg/media"
-	"github.com/xibodev/compa/pkg/skills"
-	integrationtools "github.com/xibodev/compa/pkg/tools/integration"
+	"github.com/xibodev/compa/v2/pkg/audio/tts"
+	"github.com/xibodev/compa/v2/pkg/config"
+	"github.com/xibodev/compa/v2/pkg/media"
+	"github.com/xibodev/compa/v2/pkg/skills"
+	integrationtools "github.com/xibodev/compa/v2/pkg/tools/integration"
 )
 
 type (

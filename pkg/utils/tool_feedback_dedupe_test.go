@@ -3,7 +3,7 @@ package utils
 import (
 	"testing"
 
-	"github.com/xibodev/compa/pkg/providers"
+	"github.com/xibodev/compa/v2/pkg/providers"
 )
 
 func TestToolCallExplanationDuplicatesContent(t *testing.T) {

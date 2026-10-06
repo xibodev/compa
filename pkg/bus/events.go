@@ -3,7 +3,7 @@ package bus
 import (
 	"time"
 
-	runtimeevents "github.com/xibodev/compa/pkg/events"
+	runtimeevents "github.com/xibodev/compa/v2/pkg/events"
 )
 
 type busPublishFailedPayload struct {

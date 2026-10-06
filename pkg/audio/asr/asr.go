@@ -8,11 +8,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/xibodev/compa/pkg/audio/voice"
-	"github.com/xibodev/compa/pkg/config"
-	"github.com/xibodev/compa/pkg/logger"
-	"github.com/xibodev/compa/pkg/modelservice"
-	"github.com/xibodev/compa/pkg/utils"
+	"github.com/xibodev/compa/v2/pkg/audio/voice"
+	"github.com/xibodev/compa/v2/pkg/config"
+	"github.com/xibodev/compa/v2/pkg/logger"
+	"github.com/xibodev/compa/v2/pkg/modelservice"
+	"github.com/xibodev/compa/v2/pkg/utils"
 )
 
 // Transcriber turns recorded speech into text.

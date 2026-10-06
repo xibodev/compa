@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/xibodev/compa/pkg/logger"
+	"github.com/xibodev/compa/v2/pkg/logger"
 )
 
 // botGoLogger preserves useful SDK info logs while demoting noisy heartbeat

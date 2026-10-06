@@ -6,9 +6,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xibodev/compa/pkg/approval"
-	"github.com/xibodev/compa/pkg/config"
-	"github.com/xibodev/compa/pkg/modproto"
+	"github.com/xibodev/compa/v2/pkg/approval"
+	"github.com/xibodev/compa/v2/pkg/config"
+	"github.com/xibodev/compa/v2/pkg/modproto"
 )
 
 func approvalModule() *modproto.Descriptor {

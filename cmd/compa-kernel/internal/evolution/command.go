@@ -10,8 +10,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/xibodev/compa/cmd/compa-kernel/internal"
-	"github.com/xibodev/compa/pkg/evolution"
+	"github.com/xibodev/compa/v2/cmd/compa-kernel/internal"
+	"github.com/xibodev/compa/v2/pkg/evolution"
 )
 
 // target is the workspace and evolution state the commands work on.

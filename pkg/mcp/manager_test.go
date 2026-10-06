@@ -18,8 +18,8 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/xibodev/compa/pkg/config"
-	runtimeevents "github.com/xibodev/compa/pkg/events"
+	"github.com/xibodev/compa/v2/pkg/config"
+	runtimeevents "github.com/xibodev/compa/v2/pkg/events"
 )
 
 func TestLoadEnvFile(t *testing.T) {
@@ -709,6 +709,115 @@ func TestCallToolReturnsAToolErrorThatMentionsASession(t *testing.T) {
 	}
 }
 
+// A call ends after the server's call_timeout_seconds, or without one after
+// the manager's call timeout.
+func TestCallToolTimeouts(t *testing.T) {
+	server := sdkmcp.NewServer(&sdkmcp.Implementation{Name: "slow", Version: "1.0.0"}, nil)
+	sdkmcp.AddTool(server, &sdkmcp.Tool{Name: "wait", Description: "waits until it is cancelled"},
+		func(ctx context.Context, _ *sdkmcp.CallToolRequest, _ map[string]any) (*sdkmcp.CallToolResult, any, error) {
+			<-ctx.Done()
+			return nil, nil, ctx.Err()
+		})
+	httpServer := httptest.NewServer(sdkmcp.NewStreamableHTTPHandler(func(*http.Request) *sdkmcp.Server { return server }, nil))
+	defer httpServer.Close()
+
+	for _, tc := range []struct {
+		name          string
+		managerLimit  time.Duration
+		serverSeconds int
+	}{
+		{name: "the server's setting wins", managerLimit: 10 * time.Second, serverSeconds: 1},
+		{name: "the manager's setting", managerLimit: time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mgr := NewManager(WithCallTimeout(tc.managerLimit))
+			defer mgr.Close()
+			if err := mgr.ConnectServer(context.Background(), "slow", config.MCPServerConfig{
+				Enabled:            true,
+				Type:               "http",
+				URL:                httpServer.URL,
+				CallTimeoutSeconds: tc.serverSeconds,
+			}); err != nil {
+				t.Fatalf("ConnectServer() error = %v", err)
+			}
+			if got := mgr.CallTimeout("slow"); got != time.Second {
+				t.Fatalf("CallTimeout() = %s, want 1s", got)
+			}
+			_, err := mgr.CallTool(context.Background(), "slow", "wait", nil)
+			if err == nil || !strings.Contains(err.Error(), "within 1s") {
+				t.Fatalf("CallTool() error = %v, want no answer within 1s", err)
+			}
+		})
+	}
+}
+
+// A call waiting for another call's reconnect waits no longer than its own
+// timeout.
+func TestCallWaitingForAReconnectKeepsToItsTimeout(t *testing.T) {
+	staleConn, _, err := newScriptedServerConnection("session-1", nil, nil)
+	if err != nil {
+		t.Fatalf("newScriptedServerConnection() error = %v", err)
+	}
+	staleConn.lost.Store(true)
+	staleConn.reconnectMu.Lock() // another call's reconnect, stuck
+	t.Cleanup(staleConn.reconnectMu.Unlock)
+	mgr := NewManager(WithCallTimeout(time.Second))
+	mgr.servers["flaky"] = staleConn
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := mgr.CallTool(context.Background(), "flaky", "echo", nil)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("CallTool() error = %v, want its deadline", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the call waited for the other reconnect past its timeout")
+	}
+}
+
+// A call that reconnects doesn't wait for the old session to close: closing
+// it waits for the calls still on it, which may run to their own timeouts.
+func TestReconnectDoesNotWaitForTheOldSessionToClose(t *testing.T) {
+	originalConnectServerFunc := connectServerFunc
+	t.Cleanup(func() { connectServerFunc = originalConnectServerFunc })
+
+	staleConn, staleTransport, err := newScriptedServerConnection("session-1", nil, nil)
+	if err != nil {
+		t.Fatalf("newScriptedServerConnection(stale) error = %v", err)
+	}
+	staleTransport.closeGate = make(chan struct{})
+	t.Cleanup(func() { close(staleTransport.closeGate) })
+	staleConn.lost.Store(true)
+	freshConn, _, err := newScriptedServerConnection("session-2",
+		&sdkmcp.CallToolResult{Content: []sdkmcp.Content{&sdkmcp.TextContent{Text: "ok"}}}, nil)
+	if err != nil {
+		t.Fatalf("newScriptedServerConnection(fresh) error = %v", err)
+	}
+	connectServerFunc = func(context.Context, string, config.MCPServerConfig, connectOptions) (*ServerConnection, error) {
+		return freshConn, nil
+	}
+	mgr := NewManager()
+	mgr.servers["flaky"] = staleConn
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := mgr.CallTool(context.Background(), "flaky", "echo", nil)
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("CallTool() error = %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the call waited for the old session to close")
+	}
+}
+
 func TestClose_IdempotentOnEmptyManager(t *testing.T) {
 	mgr := NewManager()
 
@@ -814,6 +923,9 @@ type scriptedTransport struct {
 	// toolCallRPCErr, when set, is the server's JSON-RPC error answer to
 	// tools/call.
 	toolCallRPCErr *jsonrpc.Error
+	// closeGate, when set, holds Close until it is closed, as closing a
+	// session with calls still on it waits for them.
+	closeGate chan struct{}
 
 	mu            sync.Mutex
 	toolCallCalls int
@@ -904,6 +1016,9 @@ func (t *scriptedTransport) Write(ctx context.Context, msg jsonrpc.Message) erro
 }
 
 func (t *scriptedTransport) Close() error {
+	if t.closeGate != nil {
+		<-t.closeGate
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.closed {

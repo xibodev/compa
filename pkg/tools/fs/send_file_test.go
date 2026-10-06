@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xibodev/compa/pkg/config"
-	"github.com/xibodev/compa/pkg/media"
+	"github.com/xibodev/compa/v2/pkg/config"
+	"github.com/xibodev/compa/v2/pkg/media"
 )
 
 func TestSendFileTool_MissingPath(t *testing.T) {

@@ -3,8 +3,8 @@ package tools
 import (
 	"regexp"
 
-	"github.com/xibodev/compa/pkg/media"
-	fstools "github.com/xibodev/compa/pkg/tools/fs"
+	"github.com/xibodev/compa/v2/pkg/media"
+	fstools "github.com/xibodev/compa/v2/pkg/tools/fs"
 )
 
 type (

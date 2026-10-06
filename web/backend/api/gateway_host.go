@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/xibodev/compa/pkg/config"
-	"github.com/xibodev/compa/pkg/netbind"
+	"github.com/xibodev/compa/v2/pkg/config"
+	"github.com/xibodev/compa/v2/pkg/netbind"
 )
 
 // effectiveGatewayBindHost is the host the kernel binds: its own config's

@@ -12,12 +12,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/pkg/approval"
-	"github.com/xibodev/compa/pkg/bus"
-	"github.com/xibodev/compa/pkg/config"
-	runtimeevents "github.com/xibodev/compa/pkg/events"
-	"github.com/xibodev/compa/pkg/isolation"
-	"github.com/xibodev/compa/pkg/providers"
+	"github.com/xibodev/compa/v2/pkg/approval"
+	"github.com/xibodev/compa/v2/pkg/bus"
+	"github.com/xibodev/compa/v2/pkg/config"
+	runtimeevents "github.com/xibodev/compa/v2/pkg/events"
+	"github.com/xibodev/compa/v2/pkg/isolation"
+	"github.com/xibodev/compa/v2/pkg/providers"
 )
 
 func TestProcessHook_HelperProcess(t *testing.T) {

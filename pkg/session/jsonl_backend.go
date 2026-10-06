@@ -6,8 +6,8 @@ import (
 	"log"
 	"strings"
 
-	"github.com/xibodev/compa/pkg/memory"
-	"github.com/xibodev/compa/pkg/providers"
+	"github.com/xibodev/compa/v2/pkg/memory"
+	"github.com/xibodev/compa/v2/pkg/providers"
 )
 
 // JSONLBackend adapts a memory.Store into the SessionStore interface.

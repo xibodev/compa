@@ -19,9 +19,9 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/xibodev/compa/pkg/config"
-	runtimeevents "github.com/xibodev/compa/pkg/events"
-	"github.com/xibodev/compa/pkg/logger"
+	"github.com/xibodev/compa/v2/pkg/config"
+	runtimeevents "github.com/xibodev/compa/v2/pkg/events"
+	"github.com/xibodev/compa/v2/pkg/logger"
 )
 
 // ErrSessionLost is the error of a tool call during which the server lost
@@ -162,7 +162,9 @@ const (
 	// handshake and listing its tools, so a server that never answers cannot
 	// hold up its caller.
 	DefaultConnectTimeout = 30 * time.Second
-	// DefaultCallTimeout bounds one tool call.
+	// DefaultCallTimeout bounds one tool call to a server, unless the
+	// manager (WithCallTimeout) or the server (call_timeout_seconds) sets
+	// another bound.
 	DefaultCallTimeout = 5 * time.Minute
 	// defaultCloseTimeout bounds each step of Close: waiting for in-flight
 	// calls, then closing the sessions.
@@ -171,6 +173,9 @@ const (
 	// restarts of a server that keeps failing.
 	minReconnectBackoff = time.Second
 	maxReconnectBackoff = time.Minute
+	// reconnectWaitInterval is how often a call waiting for another call's
+	// reconnect checks whether it is done.
+	reconnectWaitInterval = 20 * time.Millisecond
 )
 
 // Manager manages multiple MCP server connections
@@ -261,13 +266,36 @@ func WithConnectTimeout(timeout time.Duration) ManagerOption {
 	}
 }
 
-// WithCallTimeout bounds one tool call. 0 or less keeps DefaultCallTimeout.
+// WithCallTimeout bounds one tool call to a server without a
+// call_timeout_seconds of its own. 0 or less keeps DefaultCallTimeout.
 func WithCallTimeout(timeout time.Duration) ManagerOption {
 	return func(m *Manager) {
 		if timeout > 0 {
 			m.callTimeout = timeout
 		}
 	}
+}
+
+// CallTimeout returns how long a tool call to the named server may take: its
+// call_timeout_seconds, or else the manager's call timeout.
+func (m *Manager) CallTimeout(serverName string) time.Duration {
+	m.mu.RLock()
+	conn, ok := m.servers[serverName]
+	m.mu.RUnlock()
+	if !ok {
+		return m.callTimeoutFor(config.MCPServerConfig{})
+	}
+	return m.callTimeoutFor(conn.Config)
+}
+
+func (m *Manager) callTimeoutFor(server config.MCPServerConfig) time.Duration {
+	if server.CallTimeoutSeconds > 0 {
+		return time.Duration(server.CallTimeoutSeconds) * time.Second
+	}
+	if m.callTimeout > 0 {
+		return m.callTimeout
+	}
+	return DefaultCallTimeout
 }
 
 // ServerEventPayload describes MCP server connection events.
@@ -938,10 +966,7 @@ func (m *Manager) CallTool(
 	}
 	defer m.wg.Done()
 
-	timeout := m.callTimeout
-	if timeout <= 0 {
-		timeout = DefaultCallTimeout
-	}
+	timeout := m.callTimeoutFor(conn.Config)
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -1144,7 +1169,15 @@ func (m *Manager) reconnectServer(
 		return nil, fmt.Errorf("server %s not found", serverName)
 	}
 
-	staleConn.reconnectMu.Lock()
+	// Wait for a reconnect already under way no longer than this call may
+	// take.
+	for !staleConn.reconnectMu.TryLock() {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(reconnectWaitInterval):
+		}
+	}
 	defer staleConn.reconnectMu.Unlock()
 
 	if m.closed.Load() {
@@ -1196,7 +1229,9 @@ func (m *Manager) reconnectServer(
 		staleToClose := staleConn
 		handler, tools := m.toolsChanged, freshConn.Tools
 		m.mu.Unlock()
-		_ = closeConnection(staleToClose)
+		// Closing a session waits for the calls still on it, which may run to
+		// their own timeouts; this call and the reconnect lock don't wait.
+		go func() { _ = closeConnection(staleToClose) }()
 		// The server started again may list other tools. The handler
 		// registers them; not on this call's goroutine, whose tool runs.
 		if handler != nil {

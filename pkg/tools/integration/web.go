@@ -19,9 +19,9 @@ import (
 
 	kagiopenapi "github.com/kagisearch/kagi-openapi-golang"
 
-	"github.com/xibodev/compa/pkg/config"
-	"github.com/xibodev/compa/pkg/logger"
-	"github.com/xibodev/compa/pkg/utils"
+	"github.com/xibodev/compa/v2/pkg/config"
+	"github.com/xibodev/compa/v2/pkg/logger"
+	"github.com/xibodev/compa/v2/pkg/utils"
 )
 
 const (

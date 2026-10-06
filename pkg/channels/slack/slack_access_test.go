@@ -11,9 +11,9 @@ import (
 	"github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
 
-	"github.com/xibodev/compa/pkg/bus"
-	"github.com/xibodev/compa/pkg/config"
-	"github.com/xibodev/compa/pkg/pairing"
+	"github.com/xibodev/compa/v2/pkg/bus"
+	"github.com/xibodev/compa/v2/pkg/config"
+	"github.com/xibodev/compa/v2/pkg/pairing"
 )
 
 func newAccessTestChannel(t *testing.T, allowFrom ...string) (*SlackChannel, *bus.MessageBus, *int) {

@@ -1,8 +1,8 @@
 package agent
 
 import (
-	runtimeevents "github.com/xibodev/compa/pkg/events"
-	"github.com/xibodev/compa/pkg/tools"
+	runtimeevents "github.com/xibodev/compa/v2/pkg/events"
+	"github.com/xibodev/compa/v2/pkg/tools"
 )
 
 // Tool is the kernel's public tool contract, re-exported so an embedder does

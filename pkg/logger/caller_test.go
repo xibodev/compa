@@ -32,9 +32,9 @@ func TestCallerPathIsRelativeToTheModule(t *testing.T) {
 // module path; they read the same.
 func TestCallerPathUnderTrimpath(t *testing.T) {
 	original := modulePrefix
-	modulePrefix = "github.com/xibodev/compa/"
+	modulePrefix = "github.com/xibodev/compa/v2/"
 	t.Cleanup(func() { modulePrefix = original })
-	if got := callerPath("github.com/xibodev/compa/pkg/agent/instance.go"); got != "pkg/agent/instance.go" {
+	if got := callerPath("github.com/xibodev/compa/v2/pkg/agent/instance.go"); got != "pkg/agent/instance.go" {
 		t.Fatalf("callerPath() = %q, want pkg/agent/instance.go", got)
 	}
 	if got := callerPath("github.com/rs/zerolog@v1.35.1/log.go"); got != "github.com/rs/zerolog@v1.35.1/log.go" {

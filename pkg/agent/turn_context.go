@@ -1,9 +1,9 @@
 package agent
 
 import (
-	"github.com/xibodev/compa/pkg/bus"
-	"github.com/xibodev/compa/pkg/routing"
-	"github.com/xibodev/compa/pkg/session"
+	"github.com/xibodev/compa/v2/pkg/bus"
+	"github.com/xibodev/compa/v2/pkg/routing"
+	"github.com/xibodev/compa/v2/pkg/session"
 )
 
 // TurnContext carries normalized turn-scoped facts that can be shared across

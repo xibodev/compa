@@ -10,8 +10,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/xibodev/compa/pkg/logger"
-	"github.com/xibodev/compa/web/backend/middleware"
+	"github.com/xibodev/compa/v2/pkg/logger"
+	"github.com/xibodev/compa/v2/web/backend/middleware"
 )
 
 const (

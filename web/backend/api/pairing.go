@@ -6,9 +6,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/xibodev/compa/pkg/config"
-	"github.com/xibodev/compa/pkg/logger"
-	"github.com/xibodev/compa/pkg/pairing"
+	"github.com/xibodev/compa/v2/pkg/config"
+	"github.com/xibodev/compa/v2/pkg/logger"
+	"github.com/xibodev/compa/v2/pkg/pairing"
 )
 
 // pairingRequestView is one pending pairing request as the dashboard reads

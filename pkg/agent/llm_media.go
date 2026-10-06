@@ -5,8 +5,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/xibodev/compa/pkg/logger"
-	"github.com/xibodev/compa/pkg/providers"
+	"github.com/xibodev/compa/v2/pkg/logger"
+	"github.com/xibodev/compa/v2/pkg/providers"
 )
 
 var resolvedImagePathTagRegex = regexp.MustCompile(`\[image:[^\s\]][^\]]*\]`)

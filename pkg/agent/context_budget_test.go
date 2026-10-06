@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xibodev/compa/pkg/providers"
+	"github.com/xibodev/compa/v2/pkg/providers"
 )
 
 // msgUser creates a user message.

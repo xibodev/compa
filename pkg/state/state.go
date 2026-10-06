@@ -8,8 +8,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xibodev/compa/pkg/fileutil"
-	"github.com/xibodev/compa/pkg/logger"
+	"github.com/xibodev/compa/v2/pkg/fileutil"
+	"github.com/xibodev/compa/v2/pkg/logger"
 )
 
 // State represents the persistent state for a workspace.

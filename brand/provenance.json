@@ -25,7 +25,7 @@
   },
   "compatibilityIdentifiers": {
     "repository": "compa",
-    "goModule": "github.com/xibodev/compa",
+    "goModule": "github.com/xibodev/compa/v2",
     "binaries": [
       "compa",
       "compa-kernel"

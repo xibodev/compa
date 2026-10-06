@@ -22,11 +22,11 @@ import (
 
 	"github.com/creack/pty"
 
-	"github.com/xibodev/compa/pkg/config"
-	"github.com/xibodev/compa/pkg/constants"
-	"github.com/xibodev/compa/pkg/isolation"
-	"github.com/xibodev/compa/pkg/logger"
-	"github.com/xibodev/compa/pkg/pathlink"
+	"github.com/xibodev/compa/v2/pkg/config"
+	"github.com/xibodev/compa/v2/pkg/constants"
+	"github.com/xibodev/compa/v2/pkg/isolation"
+	"github.com/xibodev/compa/v2/pkg/logger"
+	"github.com/xibodev/compa/v2/pkg/pathlink"
 )
 
 var (
@@ -365,6 +365,23 @@ func (t *ExecTool) timeoutDescription() string {
 		int(defaultExecTimeout/time.Second),
 	)
 }
+
+// CallTimeout returns the timeout of a foreground run, which ends it; it can
+// be longer than the agent's default limit on a tool call. A run without a
+// timeout and the other actions have none of their own: 0.
+func (t *ExecTool) CallTimeout(ctx context.Context, args map[string]any) time.Duration {
+	action, _ := args["action"].(string)
+	background, _ := args["background"].(bool)
+	if s, ok := args["background"].(string); ok {
+		background = s == "true"
+	}
+	if action != "run" || background {
+		return 0
+	}
+	return t.commandTimeout(ctx, args)
+}
+
+var _ SelfTimed = (*ExecTool)(nil)
 
 // commandTimeout returns the timeout of one foreground run: the timeout
 // argument, capped at execTimeoutCapFactor times the configured timeout, or

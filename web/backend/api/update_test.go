@@ -12,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xibodev/compa/pkg/updater"
-	"github.com/xibodev/compa/pkg/updater/updatertest"
+	"github.com/xibodev/compa/v2/pkg/updater"
+	"github.com/xibodev/compa/v2/pkg/updater/updatertest"
 )
 
 // useUpdater replaces what /api/update runs for the rest of the test.

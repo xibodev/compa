@@ -7,9 +7,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/xibodev/compa/cmd/compa-kernel/internal"
-	"github.com/xibodev/compa/pkg/channels/weixin"
-	"github.com/xibodev/compa/pkg/config"
+	"github.com/xibodev/compa/v2/cmd/compa-kernel/internal"
+	"github.com/xibodev/compa/v2/pkg/channels/weixin"
+	"github.com/xibodev/compa/v2/pkg/config"
 )
 
 func newWeixinCommand() *cobra.Command {

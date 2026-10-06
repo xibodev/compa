@@ -8,8 +8,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/xibodev/compa/pkg/config"
-	"github.com/xibodev/compa/pkg/media"
+	"github.com/xibodev/compa/v2/pkg/config"
+	"github.com/xibodev/compa/v2/pkg/media"
 )
 
 // LoadImageTool loads a local image file into the MediaStore and returns a

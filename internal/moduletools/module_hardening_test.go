@@ -10,10 +10,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xibodev/compa/internal/module"
-	"github.com/xibodev/compa/pkg/approval"
-	"github.com/xibodev/compa/pkg/modproto"
-	toolshared "github.com/xibodev/compa/pkg/tools/shared"
+	"github.com/xibodev/compa/v2/internal/module"
+	"github.com/xibodev/compa/v2/pkg/approval"
+	"github.com/xibodev/compa/v2/pkg/modproto"
+	toolshared "github.com/xibodev/compa/v2/pkg/tools/shared"
 )
 
 // Disabling a module took effect for the agent only after a restart: the tools

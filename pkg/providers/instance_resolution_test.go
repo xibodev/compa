@@ -14,7 +14,7 @@ import (
 
 	core "github.com/xibodev/llmgw-core"
 
-	"github.com/xibodev/compa/pkg/config"
+	"github.com/xibodev/compa/v2/pkg/config"
 )
 
 type instanceResolutionProvider struct {

@@ -8,7 +8,7 @@ import (
 
 	"github.com/mdp/qrterminal/v3"
 
-	"github.com/xibodev/compa/pkg/logger"
+	"github.com/xibodev/compa/v2/pkg/logger"
 )
 
 // AuthFlowOpts configures the interactive QR login flow.

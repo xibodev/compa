@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xibodev/compa/pkg/modproto"
+	"github.com/xibodev/compa/v2/pkg/modproto"
 )
 
 // The Modules page reads the SAME config file the launcher was started with,

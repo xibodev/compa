@@ -7,8 +7,8 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/xibodev/compa/pkg"
-	"github.com/xibodev/compa/pkg/config"
+	"github.com/xibodev/compa/v2/pkg"
+	"github.com/xibodev/compa/v2/pkg/config"
 )
 
 func TestResolveInstanceRoot_UsesCompaHome(t *testing.T) {

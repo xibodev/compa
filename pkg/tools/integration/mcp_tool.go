@@ -14,12 +14,12 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/xibodev/compa/pkg/approval"
-	runtimeevents "github.com/xibodev/compa/pkg/events"
-	"github.com/xibodev/compa/pkg/logger"
-	mcpclient "github.com/xibodev/compa/pkg/mcp"
-	"github.com/xibodev/compa/pkg/media"
-	toolshared "github.com/xibodev/compa/pkg/tools/shared"
+	"github.com/xibodev/compa/v2/pkg/approval"
+	runtimeevents "github.com/xibodev/compa/v2/pkg/events"
+	"github.com/xibodev/compa/v2/pkg/logger"
+	mcpclient "github.com/xibodev/compa/v2/pkg/mcp"
+	"github.com/xibodev/compa/v2/pkg/media"
+	toolshared "github.com/xibodev/compa/v2/pkg/tools/shared"
 )
 
 // MCPManager defines the interface for MCP manager operations
@@ -32,6 +32,9 @@ type MCPManager interface {
 		serverName, toolName string,
 		arguments map[string]any,
 	) (*mcp.CallToolResult, error)
+	// CallTimeout returns how long a call to the server may take; CallTool
+	// ends a call then.
+	CallTimeout(serverName string) time.Duration
 }
 
 // MCPTool wraps an MCP tool to implement the Tool interface
@@ -107,6 +110,13 @@ func (t *MCPTool) SetEventPublisher(eventBus runtimeevents.Bus) {
 func (t *MCPTool) SetTrusted(trusted bool) {
 	t.trusted = trusted
 }
+
+// CallTimeout returns the server's call timeout, which ends every call.
+func (t *MCPTool) CallTimeout(context.Context, map[string]any) time.Duration {
+	return t.manager.CallTimeout(t.serverName)
+}
+
+var _ toolshared.SelfTimed = (*MCPTool)(nil)
 
 // ApprovalInfo tells the approval policy the tool's server, its name there
 // and its annotations, which are its hints only when the server is trusted.

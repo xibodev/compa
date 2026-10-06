@@ -11,8 +11,8 @@ import (
 
 	core "github.com/xibodev/llmgw-core"
 
-	"github.com/xibodev/compa/pkg/config"
-	"github.com/xibodev/compa/pkg/providers/protocoltypes"
+	"github.com/xibodev/compa/v2/pkg/config"
+	"github.com/xibodev/compa/v2/pkg/providers/protocoltypes"
 )
 
 // The agent marks its cache breakpoints on the system message's parts; an

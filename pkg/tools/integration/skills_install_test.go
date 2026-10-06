@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/xibodev/compa/pkg/skills"
+	"github.com/xibodev/compa/v2/pkg/skills"
 )
 
 type mockInstallRegistry struct{}

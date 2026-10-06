@@ -55,7 +55,7 @@ directories.
 | Repository, release, and social surfaces | Lockup, app icon, OG PNG, descriptors | Planned |
 
 The compatibility identifiers already are compa: the repository is `compa`,
-the Go module is `github.com/xibodev/compa`, the binaries are `compa` and
+the Go module is `github.com/xibodev/compa/v2`, the binaries are `compa` and
 `compa-kernel`, and the state directory is `~/.compa`. They match the name, so
 adopting the kit migrates nothing; keep them verbatim.
 

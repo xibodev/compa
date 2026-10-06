@@ -17,12 +17,12 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/xibodev/compa/pkg/approval"
-	"github.com/xibodev/compa/pkg/config"
-	runtimeevents "github.com/xibodev/compa/pkg/events"
-	mcpclient "github.com/xibodev/compa/pkg/mcp"
-	"github.com/xibodev/compa/pkg/media"
-	toolshared "github.com/xibodev/compa/pkg/tools/shared"
+	"github.com/xibodev/compa/v2/pkg/approval"
+	"github.com/xibodev/compa/v2/pkg/config"
+	runtimeevents "github.com/xibodev/compa/v2/pkg/events"
+	mcpclient "github.com/xibodev/compa/v2/pkg/mcp"
+	"github.com/xibodev/compa/v2/pkg/media"
+	toolshared "github.com/xibodev/compa/v2/pkg/tools/shared"
 )
 
 // MockMCPManager is a mock implementation of MCPManager interface for testing
@@ -44,6 +44,16 @@ func (m *MockMCPManager) CallTool(
 		},
 		IsError: false,
 	}, nil
+}
+
+func (m *MockMCPManager) CallTimeout(string) time.Duration { return mcpclient.DefaultCallTimeout }
+
+// The tool's call timeout is its server's: the manager ends every call then.
+func TestMCPToolCallTimeoutIsTheServers(t *testing.T) {
+	tool := NewMCPTool(&MockMCPManager{}, "server", &mcp.Tool{Name: "tool"})
+	if got := tool.CallTimeout(context.Background(), nil); got != mcpclient.DefaultCallTimeout {
+		t.Fatalf("CallTimeout() = %s, want the server's %s", got, mcpclient.DefaultCallTimeout)
+	}
 }
 
 // TestNewMCPTool verifies MCP tool creation

@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/xibodev/compa/internal/moduletools"
+	"github.com/xibodev/compa/v2/internal/moduletools"
 )
 
 // The bug this exists for: `compa-kernel modules-remove ..` passed the

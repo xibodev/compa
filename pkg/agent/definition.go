@@ -9,7 +9,7 @@ import (
 	"github.com/gomarkdown/markdown/parser"
 	"gopkg.in/yaml.v3"
 
-	"github.com/xibodev/compa/pkg/logger"
+	"github.com/xibodev/compa/v2/pkg/logger"
 )
 
 // Workspace files that define an agent. AGENT.md carries YAML frontmatter

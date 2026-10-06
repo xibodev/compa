@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"gopkg.in/yaml.v3"
 
-	"github.com/xibodev/compa/pkg/approval"
+	"github.com/xibodev/compa/v2/pkg/approval"
 )
 
 func TestAgentConfig_FullParse(t *testing.T) {
@@ -561,6 +561,36 @@ func TestLoadConfig_MCPMaxInlineTextChars(t *testing.T) {
 	}
 	if got := cfg.Tools.MCP.GetMaxInlineTextChars(); got != 2048 {
 		t.Fatalf("cfg.Tools.MCP.GetMaxInlineTextChars() = %d, want 2048", got)
+	}
+}
+
+// The MCP call timeout is set for every server and for one server.
+func TestLoadConfig_MCPCallTimeouts(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	raw := `{
+		"tools": {
+			"mcp": {
+				"enabled": true,
+				"call_timeout_seconds": 900,
+				"servers": {
+					"render": {"enabled": true, "command": "render-server", "call_timeout_seconds": 3600}
+				}
+			}
+		}
+	}`
+	if err := os.WriteFile(configPath, []byte(raw), 0o644); err != nil {
+		t.Fatalf("WriteFile(configPath): %v", err)
+	}
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig() error: %v", err)
+	}
+	if got := cfg.Tools.MCP.CallTimeoutSeconds; got != 900 {
+		t.Fatalf("tools.mcp.call_timeout_seconds = %d, want 900", got)
+	}
+	if got := cfg.Tools.MCP.Servers["render"].CallTimeoutSeconds; got != 3600 {
+		t.Fatalf("the render server's call_timeout_seconds = %d, want 3600", got)
 	}
 }
 

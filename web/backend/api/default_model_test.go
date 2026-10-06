@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xibodev/compa/pkg/config"
-	"github.com/xibodev/compa/pkg/modelservice"
+	"github.com/xibodev/compa/v2/pkg/config"
+	"github.com/xibodev/compa/v2/pkg/modelservice"
 )
 
 // defaultModelTestHandler serves a config whose provider instance "owned"

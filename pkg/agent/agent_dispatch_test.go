@@ -11,12 +11,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/pkg/audio/asr"
-	"github.com/xibodev/compa/pkg/bus"
-	"github.com/xibodev/compa/pkg/config"
-	"github.com/xibodev/compa/pkg/media"
-	"github.com/xibodev/compa/pkg/providers"
-	"github.com/xibodev/compa/pkg/tools"
+	"github.com/xibodev/compa/v2/pkg/audio/asr"
+	"github.com/xibodev/compa/v2/pkg/bus"
+	"github.com/xibodev/compa/v2/pkg/config"
+	"github.com/xibodev/compa/v2/pkg/media"
+	"github.com/xibodev/compa/v2/pkg/providers"
+	"github.com/xibodev/compa/v2/pkg/tools"
 )
 
 func newDispatchTestLoop(t *testing.T, provider providers.LLMProvider) (*AgentLoop, *bus.MessageBus) {
@@ -211,6 +211,64 @@ func TestToolCallsHaveADefaultTimeout(t *testing.T) {
 				t.Fatalf("result = %+v, want an error mentioning %q", result, tc.want)
 			}
 		})
+	}
+}
+
+// slowSelfTimedTool finishes on its own after delay, or, when stuck, never.
+// A call's own timeout is its "timeout" argument, as MCP calls and exec runs
+// have one.
+type slowSelfTimedTool struct {
+	delay time.Duration
+	stuck bool
+}
+
+func (s *slowSelfTimedTool) Name() string               { return "slow" }
+func (s *slowSelfTimedTool) Description() string        { return "finishes on its own" }
+func (s *slowSelfTimedTool) Parameters() map[string]any { return map[string]any{"type": "object"} }
+func (s *slowSelfTimedTool) CallTimeout(_ context.Context, args map[string]any) time.Duration {
+	timeout, _ := args["timeout"].(time.Duration)
+	return timeout
+}
+func (s *slowSelfTimedTool) Execute(ctx context.Context, _ map[string]any) *tools.ToolResult {
+	if s.stuck {
+		select {}
+	}
+	select {
+	case <-time.After(s.delay):
+		return tools.NewToolResult("done")
+	case <-ctx.Done():
+		return tools.ErrorResult("stopped: " + ctx.Err().Error())
+	}
+}
+
+// A call with a timeout of its own gets it on top of the default limit: it
+// runs past the limit, a call without one doesn't, and a call stuck past its
+// own timeout is still abandoned.
+func TestSelfTimedToolsGetTheirOwnTimeout(t *testing.T) {
+	previousTimeout, previousGrace := defaultToolTimeout, toolStopGrace
+	defaultToolTimeout, toolStopGrace = 50*time.Millisecond, 50*time.Millisecond
+	defer func() { defaultToolTimeout, toolStopGrace = previousTimeout, previousGrace }()
+
+	slow := tools.NewToolRegistry()
+	slow.Register(&slowSelfTimedTool{delay: 300 * time.Millisecond})
+	result := executeToolWithTimeout(context.Background(), slow, "slow", map[string]any{"timeout": time.Second}, "cli", "direct", nil)
+	if result == nil || result.IsError || result.ForLLM != "done" {
+		t.Fatalf("result = %+v, want the tool's own result", result)
+	}
+	result = executeToolWithTimeout(context.Background(), slow, "slow", map[string]any{}, "cli", "direct", nil)
+	if result == nil || !result.IsError || !strings.Contains(result.ForLLM, "context deadline exceeded") {
+		t.Fatalf("result = %+v, want the default limit to stop a call without a timeout", result)
+	}
+
+	stuck := tools.NewToolRegistry()
+	stuck.Register(&slowSelfTimedTool{stuck: true})
+	start := time.Now()
+	result = executeToolWithTimeout(context.Background(), stuck, "slow", map[string]any{"timeout": 100 * time.Millisecond}, "cli", "direct", nil)
+	if result == nil || !result.IsError || !strings.Contains(result.ForLLM, "may still complete") {
+		t.Fatalf("result = %+v, want a stuck call abandoned", result)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("the stuck call was abandoned after %s", elapsed)
 	}
 }
 

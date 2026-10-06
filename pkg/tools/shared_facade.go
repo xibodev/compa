@@ -3,8 +3,8 @@ package tools
 import (
 	"context"
 
-	"github.com/xibodev/compa/pkg/session"
-	toolshared "github.com/xibodev/compa/pkg/tools/shared"
+	"github.com/xibodev/compa/v2/pkg/session"
+	toolshared "github.com/xibodev/compa/v2/pkg/tools/shared"
 )
 
 type (
@@ -22,6 +22,7 @@ type (
 	Tool                   = toolshared.Tool
 	AsyncCallback          = toolshared.AsyncCallback
 	AsyncExecutor          = toolshared.AsyncExecutor
+	SelfTimed              = toolshared.SelfTimed
 	PromptMetadata         = toolshared.PromptMetadata
 	PromptMetadataProvider = toolshared.PromptMetadataProvider
 	ToolResult             = toolshared.ToolResult

@@ -12,10 +12,10 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 
-	"github.com/xibodev/compa/pkg/bus"
-	"github.com/xibodev/compa/pkg/channels"
-	"github.com/xibodev/compa/pkg/config"
-	"github.com/xibodev/compa/pkg/pairing"
+	"github.com/xibodev/compa/v2/pkg/bus"
+	"github.com/xibodev/compa/v2/pkg/channels"
+	"github.com/xibodev/compa/v2/pkg/config"
+	"github.com/xibodev/compa/v2/pkg/pairing"
 )
 
 func newAccessTestChannel(t *testing.T, allowFrom ...string) (*DiscordChannel, *discordgo.Session, *bus.MessageBus, *int) {

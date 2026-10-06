@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xibodev/compa/pkg/modproto"
+	"github.com/xibodev/compa/v2/pkg/modproto"
 )
 
 // fixtureRoot is relative to this package; fixtures live at the repo root so

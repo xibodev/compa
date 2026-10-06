@@ -1,6 +1,6 @@
 package agent
 
-import runtimeevents "github.com/xibodev/compa/pkg/events"
+import runtimeevents "github.com/xibodev/compa/v2/pkg/events"
 
 func (al *AgentLoop) publishRuntimeEvent(evt runtimeevents.Event) {
 	if al == nil || al.runtimeEvents == nil {

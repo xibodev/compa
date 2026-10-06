@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/xibodev/compa/pkg/config"
+	"github.com/xibodev/compa/v2/pkg/config"
 )
 
 func TestBuiltinDirNeverUsesWorkingDirectory(t *testing.T) {

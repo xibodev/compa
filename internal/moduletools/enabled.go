@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/xibodev/compa/internal/module"
+	"github.com/xibodev/compa/v2/internal/module"
 )
 
 // disabledMarker is the file that makes an installed module inert.

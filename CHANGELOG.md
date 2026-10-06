@@ -5,6 +5,18 @@ Notable changes to Compa, newest first. Versions follow
 
 ## Unreleased
 
+### Fixed
+
+- Go programs can depend on Compa 2: the module path is
+  `github.com/xibodev/compa/v2`. The 2.0.0 tag couldn't be fetched as a Go
+  module.
+- An MCP tool call fails when the server hasn't answered within 5 minutes, a
+  limit 2.0.0 added. `tools.mcp.call_timeout_seconds` sets it for every server,
+  and a server's `call_timeout_seconds` for that server.
+- The 10-minute limit 2.0.0 put on every tool call no longer cuts short a
+  call with a timeout of its own: MCP calls and `exec` runs with a timeout
+  last as long as their timeouts allow.
+
 ## 2.0.0 - 2026-10-05
 
 Settings below are keys in `~/.compa/config.json` unless noted.

@@ -18,10 +18,10 @@ import (
 
 	"github.com/caarlos0/env/v11"
 
-	"github.com/xibodev/compa/pkg"
-	"github.com/xibodev/compa/pkg/approval"
-	"github.com/xibodev/compa/pkg/fileutil"
-	"github.com/xibodev/compa/pkg/logger"
+	"github.com/xibodev/compa/v2/pkg"
+	"github.com/xibodev/compa/v2/pkg/approval"
+	"github.com/xibodev/compa/v2/pkg/fileutil"
+	"github.com/xibodev/compa/v2/pkg/logger"
 )
 
 func init() {
@@ -1160,6 +1160,9 @@ type MCPServerConfig struct {
 	// Cwd is the working folder of a stdio server; empty means the agent
 	// workspace.
 	Cwd string `json:"cwd,omitempty"`
+	// CallTimeoutSeconds bounds one tool call to this server; 0 means the
+	// MCP default (MCPConfig.CallTimeoutSeconds).
+	CallTimeoutSeconds int `json:"call_timeout_seconds,omitempty"`
 }
 
 // MCPConfig defines configuration for all MCP servers
@@ -1168,6 +1171,9 @@ type MCPConfig struct {
 	Discovery  ToolDiscoveryConfig `                                json:"discovery"`
 	// MaxInlineTextChars controls how much MCP text stays inline before it is saved as an artifact.
 	MaxInlineTextChars int `json:"max_inline_text_chars,omitempty" env:"COMPA_TOOLS_MCP_MAX_INLINE_TEXT_CHARS"`
+	// CallTimeoutSeconds bounds one tool call to a server without its own
+	// call_timeout_seconds; 0 means 300 (mcp.DefaultCallTimeout).
+	CallTimeoutSeconds int `json:"call_timeout_seconds,omitempty" env:"COMPA_TOOLS_MCP_CALL_TIMEOUT_SECONDS"`
 	// Servers is a map of server name to server configuration
 	Servers map[string]MCPServerConfig `json:"servers,omitempty"`
 }

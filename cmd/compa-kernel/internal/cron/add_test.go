@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/xibodev/compa/pkg/cron"
+	"github.com/xibodev/compa/v2/pkg/cron"
 )
 
 // testStore opens a store in a temp directory, like the CLI does.

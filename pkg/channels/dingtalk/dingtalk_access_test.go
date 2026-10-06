@@ -8,8 +8,8 @@ import (
 
 	"github.com/open-dingtalk/dingtalk-stream-sdk-go/chatbot"
 
-	"github.com/xibodev/compa/pkg/config"
-	"github.com/xibodev/compa/pkg/pairing"
+	"github.com/xibodev/compa/v2/pkg/config"
+	"github.com/xibodev/compa/v2/pkg/pairing"
 )
 
 func TestOnChatBotMessageReceived_UnpairedSenderKeepsNoWebhook(t *testing.T) {

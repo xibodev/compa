@@ -16,9 +16,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/pkg/config"
-	ppid "github.com/xibodev/compa/pkg/pid"
-	"github.com/xibodev/compa/web/backend/utils"
+	"github.com/xibodev/compa/v2/pkg/config"
+	ppid "github.com/xibodev/compa/v2/pkg/pid"
+	"github.com/xibodev/compa/v2/web/backend/utils"
 )
 
 func startLongRunningProcess(t *testing.T) *exec.Cmd {

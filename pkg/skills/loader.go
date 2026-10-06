@@ -18,7 +18,7 @@ import (
 	"github.com/gomarkdown/markdown/parser"
 	"gopkg.in/yaml.v3"
 
-	"github.com/xibodev/compa/pkg/logger"
+	"github.com/xibodev/compa/v2/pkg/logger"
 )
 
 var namePattern = regexp.MustCompile(`^[a-zA-Z0-9]+(-[a-zA-Z0-9]+)*$`)
