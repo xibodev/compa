@@ -425,6 +425,14 @@ func (c *WhatsAppChannel) handleIncomingMessage(msg map[string]any) {
 	c.HandleInboundContext(c.ctx, chatID, content, mediaPaths, inboundCtx, sender)
 }
 
+// otherNetworkVolume reports whether p is on a network or device volume, such
+// as \\host\share or \\.\pipe on Windows, other than tempDir's. Such a path is
+// refused before it is resolved: resolving it would already reach that host.
+func otherNetworkVolume(p, tempDir string) bool {
+	vol := filepath.VolumeName(p)
+	return strings.HasPrefix(vol, `\\`) && !strings.EqualFold(vol, filepath.VolumeName(tempDir))
+}
+
 // bridgeMediaPath accepts a media file the bridge names only when it is a
 // regular file, within the size limit, in the system temp directory, where
 // bridges put the media they download. Anything else would let the bridge,
@@ -435,10 +443,7 @@ func bridgeMediaPath(p string, maxBytes int64) (string, error) {
 	}
 	clean := filepath.Clean(p)
 	tempDir := os.TempDir()
-	// A network or device path, such as \\host\share\x on Windows, is refused
-	// before it is resolved: resolving it would already reach that host.
-	if vol := filepath.VolumeName(clean); strings.HasPrefix(vol, `\\`) &&
-		!strings.EqualFold(vol, filepath.VolumeName(tempDir)) {
+	if otherNetworkVolume(clean, tempDir) {
 		return "", errors.New("outside the temp directory")
 	}
 	resolved, err := filepath.EvalSymlinks(clean)

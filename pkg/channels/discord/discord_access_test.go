@@ -2,6 +2,7 @@ package discord
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -209,11 +210,31 @@ func TestCanReadChannel(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if !canReadChannel(session, "u1", "public") {
+	public, _ := session.State.Channel("public")
+	secret, _ := session.State.Channel("secret")
+	if !canReadChannel(session, "u1", public) {
 		t.Error("a member may read a channel open to everyone")
 	}
-	if canReadChannel(session, "u1", "secret") {
+	if canReadChannel(session, "u1", secret) {
 		t.Error("a member may not read a channel hidden from them")
+	}
+
+	// A thread is as readable as its parent; a private thread never counts.
+	thread := func(parent string, kind discordgo.ChannelType) *discordgo.Channel {
+		ch := &discordgo.Channel{ID: "t-" + parent + "-" + fmt.Sprint(kind), GuildID: "g1", ParentID: parent, Type: kind}
+		if err := session.State.ChannelAdd(ch); err != nil {
+			t.Fatal(err)
+		}
+		return ch
+	}
+	if !canReadChannel(session, "u1", thread("public", discordgo.ChannelTypeGuildPublicThread)) {
+		t.Error("a member may read a thread of a channel open to everyone")
+	}
+	if canReadChannel(session, "u1", thread("secret", discordgo.ChannelTypeGuildPublicThread)) {
+		t.Error("a member may not read a thread of a channel hidden from them")
+	}
+	if canReadChannel(session, "u1", thread("public", discordgo.ChannelTypeGuildPrivateThread)) {
+		t.Error("a private thread counts as unreadable")
 	}
 }
 
@@ -250,5 +271,27 @@ func TestResolveDiscordRefsNamesOnlyReadableChannels(t *testing.T) {
 	got := (&DiscordChannel{}).resolveDiscordRefs(session, "see <#11>, <#12> and <#21>", "1", "u1")
 	if want := "see #general, <#12> and <#21>"; got != want {
 		t.Errorf("resolveDiscordRefs() = %q, want %q", got, want)
+	}
+	// A direct message has no server, so nothing is looked up.
+	if got := (&DiscordChannel{}).resolveDiscordRefs(session, "see <#11>", "", "u1"); got != "see <#11>" {
+		t.Errorf("resolveDiscordRefs() in a direct message = %q, want it unchanged", got)
+	}
+
+	// At most maxChannelRefs mentions of one message are looked up.
+	var text, want strings.Builder
+	for i := range maxChannelRefs + 1 {
+		id := fmt.Sprint(100 + i)
+		if err := session.State.ChannelAdd(&discordgo.Channel{ID: id, GuildID: "1", Name: "c" + id}); err != nil {
+			t.Fatal(err)
+		}
+		text.WriteString(" <#" + id + ">")
+		if i < maxChannelRefs {
+			want.WriteString(" #c" + id)
+		} else {
+			want.WriteString(" <#" + id + ">")
+		}
+	}
+	if got := (&DiscordChannel{}).resolveDiscordRefs(session, text.String(), "1", "u1"); got != want.String() {
+		t.Errorf("resolveDiscordRefs() = %q, want %q", got, want.String())
 	}
 }
