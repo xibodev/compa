@@ -214,9 +214,12 @@ func TestSendMediaFailingAfterADeliveredPartIsNotRetried(t *testing.T) {
 		BaseChannel: channels.NewBaseChannel("matrix", nil, bus.NewMessageBus(), nil),
 		client:      client,
 		config:      &config.MatrixSettings{},
+		progress:    channels.NewToolFeedbackAnimator(nil),
 	}
 	ch.SetRunning(true)
 	ch.SetMediaStore(store)
+	// Part of the reply goes out, so the progress message is done.
+	ch.RecordToolFeedbackMessage("!room:matrix.test", "$feedback", "working")
 	var parts []bus.MediaPart
 	for _, name := range []string{"a.txt", "b.txt"} {
 		path := filepath.Join(t.TempDir(), name)
@@ -236,5 +239,8 @@ func TestSendMediaFailingAfterADeliveredPartIsNotRetried(t *testing.T) {
 	}
 	if n := uploads.Load(); n != 2 {
 		t.Fatalf("uploaded %d parts, want the delivered one and the failed one", n)
+	}
+	if _, tracked := ch.currentToolFeedbackMessage("!room:matrix.test"); tracked {
+		t.Error("the progress message is still tracked after part of the reply went out")
 	}
 }

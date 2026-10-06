@@ -281,7 +281,11 @@ func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]
 		})
 		if err != nil {
 			if len(messageIDs) > 0 {
-				return nil, channels.PartlyDelivered(err)
+				// Part of the reply is out, so the progress message is done.
+				if !isToolFeedback && hasTrackedMsg {
+					c.dismissTrackedToolFeedbackMessage(ctx, trackedChatID, trackedMsgID)
+				}
+				return messageIDs, channels.PartlyDelivered(err)
 			}
 			return nil, err
 		}
@@ -703,12 +707,16 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 
 	var messageIDs []string
 	// failed reports err, as one that isn't sent again once a part was
-	// delivered: the manager would repeat it.
+	// delivered: the manager would repeat it. Part of the reply is out then,
+	// so the progress message is done.
 	failed := func(err error) ([]string, error) {
-		if len(messageIDs) > 0 {
-			return nil, channels.PartlyDelivered(err)
+		if len(messageIDs) == 0 {
+			return nil, err
 		}
-		return nil, err
+		if hasTrackedMsg {
+			c.dismissTrackedToolFeedbackMessage(ctx, trackedChatID, trackedMsgID)
+		}
+		return messageIDs, channels.PartlyDelivered(err)
 	}
 	leadingCaption := telegramLeadingCaption(msg.Parts)
 	if len([]rune(leadingCaption)) > telegramCaptionLimit {

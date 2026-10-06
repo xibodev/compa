@@ -1957,3 +1957,57 @@ func TestSend_FailingAfterADeliveredChunkIsNotRetried(t *testing.T) {
 	assert.NotErrorIs(t, err, channels.ErrTemporary)
 	assert.Equal(t, 2, calls)
 }
+
+// Once part of the reply is out, the progress message is done: it is deleted
+// and no longer tracked.
+func TestPartlyDeliveredReplyClearsToolFeedback(t *testing.T) {
+	newChannel := func(t *testing.T) (*TelegramChannel, *bool) {
+		deleted := new(bool)
+		sends := 0
+		caller := &stubCaller{
+			callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+				switch {
+				case strings.Contains(url, "deleteMessage"):
+					*deleted = true
+					return &ta.Response{Ok: true, Result: []byte("true")}, nil
+				case strings.Contains(url, "editMessageText"):
+					return nil, errors.New("api: 500 \"server exploded\"")
+				}
+				if sends++; sends > 1 {
+					return nil, errors.New("api: 500 \"server exploded\"")
+				}
+				return successResponseWithMessageID(t, 1), nil
+			},
+		}
+		ch := newTestChannelWithConstructor(t, caller, &multipartRecordingConstructor{})
+		ch.RecordToolFeedbackMessage("12345", "99", "working")
+		return ch, deleted
+	}
+
+	t.Run("text", func(t *testing.T) {
+		ch, deleted := newChannel(t)
+		_, err := ch.Send(context.Background(), bus.OutboundMessage{ChatID: "12345", Content: strings.Repeat("<", 1500)})
+		assert.ErrorIs(t, err, channels.ErrSendFailed)
+		_, tracked := ch.currentToolFeedbackMessage("12345")
+		assert.False(t, tracked)
+		assert.True(t, *deleted)
+	})
+	t.Run("media", func(t *testing.T) {
+		ch, deleted := newChannel(t)
+		store := media.NewFileMediaStore()
+		ch.SetMediaStore(store)
+		var parts []bus.MediaPart
+		for _, name := range []string{"a.txt", "b.txt"} {
+			path := filepath.Join(t.TempDir(), name)
+			require.NoError(t, os.WriteFile(path, []byte("data"), 0o644))
+			ref, err := store.Store(path, media.MediaMeta{Filename: name}, "scope-1")
+			require.NoError(t, err)
+			parts = append(parts, bus.MediaPart{Type: "file", Ref: ref})
+		}
+		_, err := ch.SendMedia(context.Background(), bus.OutboundMediaMessage{ChatID: "12345", Parts: parts})
+		assert.ErrorIs(t, err, channels.ErrSendFailed)
+		_, tracked := ch.currentToolFeedbackMessage("12345")
+		assert.False(t, tracked)
+		assert.True(t, *deleted)
+	})
+}

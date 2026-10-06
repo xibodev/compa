@@ -525,12 +525,16 @@ func (c *MatrixChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMess
 	var eventIDs []string
 	sent := false
 	// failed reports err, as one that isn't sent again once a part was
-	// delivered: the manager would repeat it.
+	// delivered: the manager would repeat it. Part of the reply is out then,
+	// so the progress message is done.
 	failed := func(err error) ([]string, error) {
-		if sent {
-			return nil, channels.PartlyDelivered(err)
+		if !sent {
+			return nil, err
 		}
-		return nil, err
+		if hasTrackedMsg {
+			c.dismissTrackedToolFeedbackMessage(ctx, msg.ChatID, trackedMsgID)
+		}
+		return eventIDs, channels.PartlyDelivered(err)
 	}
 	for _, part := range msg.Parts {
 		if err := sendCtx.Err(); err != nil {
