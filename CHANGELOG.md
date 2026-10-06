@@ -19,6 +19,9 @@ Notable changes to Compa, newest first. Versions follow
   and to the workspaces, the restriction to them, `isolation`, `commands` or
   `hooks`, which the running gateway takes up only when it restarts or
   reloads. It missed most of these changes.
+- Installing a skill from a GitHub URL whose path ends in `.` or `..` is
+  refused; it named the skills folder or the workspace itself as the skill's
+  folder.
 
 ## 2.1.0 - 2026-10-05
 

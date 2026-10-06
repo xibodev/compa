@@ -394,17 +394,22 @@ func githubInstallDirNameWithBaseURL(repo, githubBaseURL string) (string, error)
 	if err != nil {
 		return "", err
 	}
+	name := ref.RepoName
 	if ref.SubPath != "" {
 		if isSkillMarkdownPath(ref.SubPath) {
-			skillDir := path.Dir(strings.Trim(ref.SubPath, "/"))
-			if skillDir == "." || skillDir == "" {
-				return ref.RepoName, nil
+			if skillDir := path.Dir(strings.Trim(ref.SubPath, "/")); skillDir != "." && skillDir != "" {
+				name = path.Base(skillDir)
 			}
-			return path.Base(skillDir), nil
+		} else {
+			name = filepath.Base(ref.SubPath)
 		}
-		return filepath.Base(ref.SubPath), nil
 	}
-	return ref.RepoName, nil
+	// The name is a folder in the workspace's skills folder, and a URL's path
+	// can end in "." or "..".
+	if err := utils.ValidateSkillIdentifier(name); err != nil {
+		return "", fmt.Errorf("invalid skill folder name %q: %w", name, err)
+	}
+	return name, nil
 }
 
 func (si *SkillInstaller) InstallFromGitHub(ctx context.Context, repo string) error {
