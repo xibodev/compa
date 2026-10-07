@@ -11,6 +11,8 @@ Notable changes to Compa, newest first. Versions follow
   delivered, such as a long caption's text or the first of several files, the
   message isn't sent again; the retries repeated the delivered parts up to
   three times.
+- A Slack channel message that mentions the bot keeps its files, and one with
+  only a file is answered; the files were dropped.
 
 ## 2.1.1 - 2026-10-06
 
