@@ -3,6 +3,7 @@ package channels
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -141,4 +142,37 @@ func TestToolFeedbackAnimatorStopsAfterMaxLifetime(t *testing.T) {
 		t.Fatalf("Current() = %q, %v; the message should stay tracked", id, ok)
 	}
 	animator.Clear("chat")
+}
+
+// An edit refused or rate limited ends the animation; the message stays
+// tracked.
+func TestToolFeedbackAnimatorStopsAfterARefusedEdit(t *testing.T) {
+	old := toolFeedbackAnimationInterval
+	toolFeedbackAnimationInterval = 5 * time.Millisecond
+	t.Cleanup(func() { toolFeedbackAnimationInterval = old })
+
+	for _, refusal := range []error{ErrSendFailed, NewRateLimitError(time.Minute, errors.New("429"))} {
+		var edits atomic.Int32
+		animator := NewToolFeedbackAnimator(func(context.Context, string, string, string) error {
+			edits.Add(1)
+			return refusal
+		})
+		animator.Record("chat", "msg-1", "running a tool")
+		animator.mu.Lock()
+		entry := animator.entries["chat"]
+		animator.mu.Unlock()
+
+		select {
+		case <-entry.done:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("%v: the animation went on after an edit was refused", refusal)
+		}
+		if n := edits.Load(); n != 1 {
+			t.Fatalf("%v: %d edits, want 1", refusal, n)
+		}
+		if id, ok := animator.Current("chat"); !ok || id != "msg-1" {
+			t.Fatalf("%v: Current() = %q, %v; the message should stay tracked", refusal, id, ok)
+		}
+		animator.Clear("chat")
+	}
 }

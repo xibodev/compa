@@ -2,12 +2,13 @@ package channels
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"time"
 )
 
-const toolFeedbackAnimationInterval = 3 * time.Second
+var toolFeedbackAnimationInterval = 3 * time.Second
 
 // toolFeedbackAnimationMaxLifetime ends an animation whose turn never cleared
 // it, so an orphaned progress message is not edited forever. The message
@@ -188,8 +189,14 @@ func (a *ToolFeedbackAnimator) run(chatID string, entry *toolFeedbackAnimationSt
 			frame := toolFeedbackAnimationFrames[frameIdx%len(toolFeedbackAnimationFrames)]
 			content := formatAnimatedToolFeedbackContent(entry.baseContent, frame)
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			_ = a.editFn(ctx, chatID, entry.messageID, content)
+			err := a.editFn(ctx, chatID, entry.messageID, content)
 			cancel()
+			// The frames are cosmetic: an edit refused or rate limited ends
+			// the animation rather than repeating every interval. The
+			// message stays tracked.
+			if errors.Is(err, ErrSendFailed) || errors.Is(err, ErrRateLimit) {
+				return
+			}
 			frameIdx++
 		}
 	}
