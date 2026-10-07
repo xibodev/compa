@@ -22,6 +22,10 @@ Notable changes to Compa, newest first. Versions follow
 - On Windows computers whose processor has AMX, such as recent Intel Xeon,
   `compa-kernel` could crash a while after Telegram connected, with
   `fatal error: found pointer to free object`.
+- On Telegram, a placeholder that Telegram refuses to edit into the reply is
+  deleted when the reply is sent as a new message; it stayed in the chat. A
+  tool progress message Telegram refuses to edit stops animating, where it
+  was edited again every three seconds.
 
 ## 3.0.0 - 2026-10-06
 
