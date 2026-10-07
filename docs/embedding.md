@@ -164,6 +164,36 @@ loop := agent.NewAgentLoop(cfg, msgBus, nil, agent.WithToolProviders(hostTools{}
 
 `tools` is `github.com/xibodev/compa/v3/pkg/tools`.
 
+## Agent definition keys for embedders
+
+The agent reads `AGENT.md` in its workspace: YAML frontmatter, then the prompt
+body. These frontmatter keys let a host program replace Compa's own identity
+and kernel instructions. Without them, nothing changes.
+
+| Key | Type, default | Effect |
+|---|---|---|
+| `name` | string | The identity at the top of the system prompt becomes `# <name> (powered by Compa <version>)` and `You are <name>, <description>. Compa is the agent runtime that powers you.` It mentions spoken replies only when voice is enabled with a text-to-speech target. Without `name`, or with `name: compa`, the agent keeps Compa's own identity. |
+| `description` | string | Completes the identity sentence. |
+| `memory` | bool, `true` | `false` leaves out the memory rule, the memory and daily-notes paths, and the memory context. |
+| `privateWorkspace` | bool, `false` | `true` leaves out the `## Workspace` section with the workspace paths. Describe your own tool workspace with a prompt contributor (`ContextBuilder.RegisterPromptContributor`). |
+| `requireTools` | bool, `false` | `true`: when the model rejects tool calls, the turn fails with `agent.ErrToolsRequired` instead of retrying without tools. On a model route, a target that rejects tools passes the turn to the next target, with the same tools; the turn fails only when no target accepts them. |
+
+```yaml
+---
+name: Ledger
+description: a bookkeeping assistant for small shops
+memory: false
+privateWorkspace: true
+requireTools: true
+---
+Instructions for the agent.
+```
+
+Check for `agent.ErrToolsRequired` with `errors.Is` on the error
+`ProcessDirect` returns. The system prompt is cached and rebuilt when
+`AGENT.md` changes; `requireTools`, like `tools` and `model`, is read when the
+loop creates the agent.
+
 ## More
 
 - [`pkg/agent/example_embed_test.go`](../pkg/agent/example_embed_test.go): the

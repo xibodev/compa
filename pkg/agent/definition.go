@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -19,6 +20,14 @@ const (
 	agentDefinitionFile = "AGENT.md"
 	soulDefinitionFile  = "SOUL.md"
 	userDefinitionFile  = "USER.md"
+)
+
+// Boolean AGENT.md frontmatter keys an embedding host sets, read from
+// AgentFrontmatter.Fields. name and description are the typed fields.
+const (
+	frontmatterMemory           = "memory"
+	frontmatterPrivateWorkspace = "privateWorkspace"
+	frontmatterRequireTools     = "requireTools"
 )
 
 // AgentFrontmatter holds machine-readable AGENT.md configuration.
@@ -88,6 +97,95 @@ func loadAgentDefinition(workspace string) AgentContextDefinition {
 		}
 	}
 	return definition
+}
+
+// agentIdentity is what AGENT.md frontmatter asks of the kernel identity at
+// the top of the system prompt.
+type agentIdentity struct {
+	// name and description replace Compa's own identity when name is set.
+	name        string
+	description string
+	// memory keeps the memory rule, the memory paths and the memory context.
+	memory bool
+	// privateWorkspace leaves out the workspace paths; the host describes
+	// its own tool workspace.
+	privateWorkspace bool
+}
+
+// identity returns the kernel identity the definition asks for. The name
+// "compa" keeps Compa's own identity: Compa's workspace template uses it.
+func (d AgentContextDefinition) identity() agentIdentity {
+	identity := agentIdentity{
+		memory:           d.frontmatterFlag(frontmatterMemory, true),
+		privateWorkspace: d.frontmatterFlag(frontmatterPrivateWorkspace, false),
+	}
+	if d.Agent == nil {
+		return identity
+	}
+	name := strings.Join(strings.Fields(d.Agent.Frontmatter.Name), " ")
+	if name != "" && !strings.EqualFold(name, "compa") {
+		identity.name = name
+		identity.description = strings.Join(strings.Fields(d.Agent.Frontmatter.Description), " ")
+	}
+	return identity
+}
+
+// requiresTools reports whether AGENT.md sets requireTools: a model that
+// rejects tool calls then fails the turn instead of answering without tools.
+func (d AgentContextDefinition) requiresTools() bool {
+	return d.frontmatterFlag(frontmatterRequireTools, false)
+}
+
+// frontmatterFlag returns a boolean AGENT.md frontmatter key, or fallback
+// when the key is absent or not a boolean.
+func (d AgentContextDefinition) frontmatterFlag(key string, fallback bool) bool {
+	if d.Agent == nil {
+		return fallback
+	}
+	value, ok := frontmatterBool(d.Agent.Frontmatter.Fields[key])
+	if !ok {
+		return fallback
+	}
+	return value
+}
+
+// frontmatterBool reads a YAML boolean, including the quoted and YAML 1.1
+// spellings that yaml.v3 keeps as strings in an untyped map.
+func frontmatterBool(raw any) (value, ok bool) {
+	switch v := raw.(type) {
+	case bool:
+		return v, true
+	case string:
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "true", "yes", "on":
+			return true, true
+		case "false", "no", "off":
+			return false, true
+		}
+	}
+	return false, false
+}
+
+// warnOnInvalidAgentFrontmatterFlags logs boolean AGENT.md keys whose value
+// is not a boolean; they keep their defaults.
+func warnOnInvalidAgentFrontmatterFlags(agentID, workspace string, definition AgentContextDefinition) {
+	if definition.Agent == nil {
+		return
+	}
+	for _, key := range []string{frontmatterMemory, frontmatterPrivateWorkspace, frontmatterRequireTools} {
+		raw, present := definition.Agent.Frontmatter.Fields[key]
+		if !present {
+			continue
+		}
+		if _, ok := frontmatterBool(raw); !ok {
+			logger.WarnCF("agent", "AGENT.md key is not a boolean; using its default", map[string]any{
+				"agent_id":  agentID,
+				"workspace": workspace,
+				"key":       key,
+				"value":     fmt.Sprint(raw),
+			})
+		}
+	}
 }
 
 // agentDefinitionPaths lists the definition files whose changes invalidate the

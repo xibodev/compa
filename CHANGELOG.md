@@ -5,6 +5,16 @@ Notable changes to Compa, newest first. Versions follow
 
 ## Unreleased
 
+### Added
+
+- A program that embeds Compa can give the agent its own identity and leave
+  out the memory and workspace parts of the prompt, with the `AGENT.md` keys
+  `name`, `description`, `memory` and `privateWorkspace`. With
+  `requireTools: true`, a turn whose model rejects tool calls moves to the
+  route's next target, or fails with `agent.ErrToolsRequired` when no target
+  takes tools, instead of going on without tools. See
+  [Embed the Go runtime](docs/embedding.md).
+
 ## 3.0.0 - 2026-10-06
 
 First release.

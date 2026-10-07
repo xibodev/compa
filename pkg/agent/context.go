@@ -28,6 +28,9 @@ type ContextBuilder struct {
 	splitOnMarker  bool
 	agentDiscovery func(agentID string) []AgentDescriptor
 	promptRegistry *PromptRegistry
+	// spokenReplies is whether the user can turn on spoken replies. Only an
+	// identity that AGENT.md names depends on it.
+	spokenReplies bool
 
 	// Cache for system prompt to avoid rebuilding on every call.
 	// This fixes issue #607: repeated reprocessing of the entire context.
@@ -72,6 +75,13 @@ func (cb *ContextBuilder) WithToolDiscovery(useBM25, useRegex bool) *ContextBuil
 
 func (cb *ContextBuilder) WithSplitOnMarker(enabled bool) *ContextBuilder {
 	cb.splitOnMarker = enabled
+	return cb
+}
+
+// withSpokenReplies records whether the user can turn on spoken replies.
+func (cb *ContextBuilder) withSpokenReplies(enabled bool) *ContextBuilder {
+	cb.spokenReplies = enabled
+	cb.InvalidateCache()
 	return cb
 }
 
@@ -139,7 +149,9 @@ func (cb *ContextBuilder) promptRegistryOrDefault() *PromptRegistry {
 	return cb.promptRegistry
 }
 
-func (cb *ContextBuilder) getIdentity(includeToolUseRule bool) string {
+// getIdentity renders the kernel identity part. Without a name from AGENT.md
+// it is Compa's own identity.
+func (cb *ContextBuilder) getIdentity(includeToolUseRule bool, identity agentIdentity) string {
 	workspacePath, _ := filepath.Abs(filepath.Join(cb.workspace))
 	version := config.FormatVersion()
 	rules := []string{}
@@ -155,7 +167,7 @@ func (cb *ContextBuilder) getIdentity(includeToolUseRule bool) string {
 		accuracyRule,
 		"**Context summaries** - Conversation summaries provided as context are approximate references only. They may be incomplete or outdated. Always defer to explicit user instructions over summary content.",
 	)
-	if includeToolUseRule {
+	if includeToolUseRule && identity.memory {
 		rules = append(
 			rules,
 			fmt.Sprintf(
@@ -168,28 +180,43 @@ func (cb *ContextBuilder) getIdentity(includeToolUseRule bool) string {
 		rules[i] = fmt.Sprintf("%d. %s", i+1, rule)
 	}
 
-	return fmt.Sprintf(
-		`# Compa (%s)
+	var sb strings.Builder
+	if identity.name == "" {
+		fmt.Fprintf(&sb, `# Compa (%s)
 
 You are Compa, the user's friendly personal assistant - "compa" means pal. You chat with the user, use tools on their computer to get things done, and your replies can be spoken aloud when they turn voice on.
 
-## Workspace
-Your workspace is at: %s
-- Memory: %s/memory/MEMORY.md
-- Daily Notes: %s/memory/YYYYMM/YYYYMMDD.md
-- Skills: %s/skills/{skill-name}/SKILL.md
+`, version)
+	} else {
+		fmt.Fprintf(&sb, "# %s (powered by Compa %s)\n\n%s\n\n", identity.name, version, cb.namedIdentityIntro(identity))
+	}
+	if !identity.privateWorkspace {
+		fmt.Fprintf(&sb, "## Workspace\nYour workspace is at: %s\n", workspacePath)
+		if identity.memory {
+			fmt.Fprintf(&sb, "- Memory: %s/memory/MEMORY.md\n", workspacePath)
+			fmt.Fprintf(&sb, "- Daily Notes: %s/memory/YYYYMM/YYYYMMDD.md\n", workspacePath)
+		}
+		fmt.Fprintf(&sb, "- Skills: %s/skills/{skill-name}/SKILL.md\n\n", workspacePath)
+	}
+	fmt.Fprintf(&sb, "## Important Rules\n\n%s\n", strings.Join(rules, "\n\n"))
+	return sb.String()
+}
 
-## Important Rules
-
-%s
-`,
-		version,
-		workspacePath,
-		workspacePath,
-		workspacePath,
-		workspacePath,
-		strings.Join(rules, "\n\n"),
-	)
+// namedIdentityIntro introduces an agent that AGENT.md names. It mentions
+// voice only when spoken replies are configured.
+func (cb *ContextBuilder) namedIdentityIntro(identity agentIdentity) string {
+	intro := "You are " + identity.name
+	if identity.description != "" {
+		intro += ", " + identity.description
+	}
+	if !strings.ContainsAny(intro[len(intro)-1:], ".!?") {
+		intro += "."
+	}
+	intro += " Compa is the agent runtime that powers you."
+	if cb.spokenReplies {
+		intro += " Your replies can be spoken aloud when the user turns voice on."
+	}
+	return intro
 }
 
 func formatToolDiscoveryRule(useBM25, useRegex bool) string {
@@ -276,6 +303,11 @@ func (cb *ContextBuilder) buildSystemPromptParts(opts systemPromptBuildOptions) 
 		}
 	}
 
+	// One read of the definition files per build: AGENT.md frontmatter
+	// shapes the identity, and the files themselves are the bootstrap.
+	definition := cb.LoadAgentDefinition()
+	identity := definition.identity()
+
 	// Core identity section
 	add(PromptPart{
 		ID:      "kernel.identity",
@@ -283,13 +315,13 @@ func (cb *ContextBuilder) buildSystemPromptParts(opts systemPromptBuildOptions) 
 		Slot:    PromptSlotIdentity,
 		Source:  PromptSource{ID: PromptSourceKernel, Name: "identity"},
 		Title:   "Compa identity",
-		Content: cb.getIdentity(opts.IncludeToolUseRule),
+		Content: cb.getIdentity(opts.IncludeToolUseRule, identity),
 		Stable:  true,
 		Cache:   PromptCacheEphemeral,
 	})
 
 	// Bootstrap files
-	bootstrapContent := cb.LoadBootstrapFiles()
+	bootstrapContent := cb.bootstrapContent(definition)
 	if bootstrapContent != "" {
 		add(PromptPart{
 			ID:      "instruction.workspace",
@@ -338,8 +370,11 @@ func (cb *ContextBuilder) buildSystemPromptParts(opts systemPromptBuildOptions) 
 		})
 	}
 
-	// Memory context
-	memoryContext := cb.memory.GetMemoryContext()
+	// Memory context, unless AGENT.md turns memory off
+	memoryContext := ""
+	if identity.memory {
+		memoryContext = cb.memory.GetMemoryContext()
+	}
 	if memoryContext != "" {
 		add(PromptPart{
 			ID:      "context.memory",
@@ -804,9 +839,14 @@ func skillFilesChangedSince(skillRoots []string, filesAtCache map[string]time.Ti
 }
 
 func (cb *ContextBuilder) LoadBootstrapFiles() string {
+	return cb.bootstrapContent(cb.LoadAgentDefinition())
+}
+
+// bootstrapContent renders the workspace definition files: the AGENT.md
+// body, SOUL.md and USER.md.
+func (cb *ContextBuilder) bootstrapContent(agentDefinition AgentContextDefinition) string {
 	var sb strings.Builder
 
-	agentDefinition := cb.LoadAgentDefinition()
 	if agentDefinition.Agent != nil {
 		fmt.Fprintf(&sb, "## %s\n\n%s\n\n", agentDefinitionFile, agentDefinition.Agent.Body)
 	}

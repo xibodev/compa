@@ -327,7 +327,8 @@ func NewAgentInstance(
 			mcpDiscoveryActive && cfg.Tools.MCP.Discovery.UseBM25,
 			mcpDiscoveryActive && cfg.Tools.MCP.Discovery.UseRegex,
 		).
-		WithSplitOnMarker(cfg.Agents.Defaults.SplitOnMarker)
+		WithSplitOnMarker(cfg.Agents.Defaults.SplitOnMarker).
+		withSpokenReplies(spokenRepliesConfigured(cfg))
 
 	agentID := routing.DefaultAgentID
 	agentName := ""
@@ -344,6 +345,7 @@ func NewAgentInstance(
 		skillsFilter = resolveAgentSkillsFilter(agentCfg, definition)
 	}
 	warnOnUnknownAgentMCPServerDeclarations(agentID, workspace, cfg, definition)
+	warnOnInvalidAgentFrontmatterFlags(agentID, workspace, definition)
 
 	maxIter := defaults.MaxToolIterations
 	if maxIter == 0 {
@@ -626,6 +628,13 @@ func resolveAgentSkillsFilter(
 		return nil
 	}
 	return append([]string(nil), agentCfg.Skills...)
+}
+
+// spokenRepliesConfigured reports whether the user can turn on spoken
+// replies: voice is enabled with a text-to-speech target, as the web
+// client's voice controls require.
+func spokenRepliesConfigured(cfg *config.Config) bool {
+	return cfg != nil && cfg.Voice.Enabled && strings.TrimSpace(cfg.Voice.TTSTarget) != ""
 }
 
 func (a *AgentInstance) AllowsMCPServer(serverName string) bool {

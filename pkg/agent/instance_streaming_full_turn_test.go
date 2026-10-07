@@ -17,6 +17,7 @@ type instanceStreamingProvider struct {
 	instanceID  string
 	streamCalls atomic.Int32
 	chatCalls   atomic.Int32
+	toolCalls   atomic.Int32 // calls that offered tools
 	closed      atomic.Int32
 	chunks      []string
 	response    *providers.LLMResponse
@@ -31,13 +32,19 @@ type instanceStreamingPlan struct {
 	err      error
 }
 
-func (p *instanceStreamingProvider) Chat(context.Context, []providers.Message, []providers.ToolDefinition, string, map[string]any) (*providers.LLMResponse, error) {
+func (p *instanceStreamingProvider) Chat(_ context.Context, _ []providers.Message, tools []providers.ToolDefinition, _ string, _ map[string]any) (*providers.LLMResponse, error) {
 	p.chatCalls.Add(1)
+	if len(tools) > 0 {
+		p.toolCalls.Add(1)
+	}
 	return p.response, p.err
 }
 
-func (p *instanceStreamingProvider) ChatStream(ctx context.Context, _ []providers.Message, _ []providers.ToolDefinition, _ string, _ map[string]any, onChunk func(string)) (*providers.LLMResponse, error) {
+func (p *instanceStreamingProvider) ChatStream(ctx context.Context, _ []providers.Message, tools []providers.ToolDefinition, _ string, _ map[string]any, onChunk func(string)) (*providers.LLMResponse, error) {
 	call := int(p.streamCalls.Add(1))
+	if len(tools) > 0 {
+		p.toolCalls.Add(1)
+	}
 	if p.block {
 		<-ctx.Done()
 		return nil, ctx.Err()
@@ -96,8 +103,19 @@ func newInstanceStreamingLoop(
 	streamer bus.Streamer,
 ) (*AgentLoop, *bus.MessageBus) {
 	t.Helper()
+	return newInstanceStreamingLoopIn(t, t.TempDir(), providersByInstance, streamer)
+}
+
+// newInstanceStreamingLoopIn is newInstanceStreamingLoop on workspace.
+func newInstanceStreamingLoopIn(
+	t *testing.T,
+	workspace string,
+	providersByInstance map[string]*instanceStreamingProvider,
+	streamer bus.Streamer,
+) (*AgentLoop, *bus.MessageBus) {
+	t.Helper()
 	cfg := config.DefaultConfig()
-	cfg.Agents.Defaults.Workspace = t.TempDir()
+	cfg.Agents.Defaults.Workspace = workspace
 	cfg.Agents.Defaults.ModelName = "default-model"
 	cfg.Agents.Defaults.MaxToolIterations = 3
 	cfg.Channels = config.ChannelsConfig{"web": newConfiguredStreamingWebChannel(t, true)}
