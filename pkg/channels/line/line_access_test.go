@@ -7,10 +7,10 @@ import (
 
 	"github.com/line/line-bot-sdk-go/v8/linebot/webhook"
 
-	"github.com/xibodev/compa/v2/pkg/bus"
-	"github.com/xibodev/compa/v2/pkg/channels"
-	"github.com/xibodev/compa/v2/pkg/config"
-	"github.com/xibodev/compa/v2/pkg/pairing"
+	"github.com/xibodev/compa/v3/pkg/bus"
+	"github.com/xibodev/compa/v3/pkg/channels"
+	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v3/pkg/pairing"
 )
 
 func newAccessTestChannel(t *testing.T, allowFrom ...string) (*LINEChannel, *bus.MessageBus, *int) {

@@ -11,11 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/v2/pkg/bus"
-	"github.com/xibodev/compa/v2/pkg/config"
-	runtimeevents "github.com/xibodev/compa/v2/pkg/events"
-	"github.com/xibodev/compa/v2/pkg/evolution"
-	"github.com/xibodev/compa/v2/pkg/providers"
+	"github.com/xibodev/compa/v3/pkg/bus"
+	"github.com/xibodev/compa/v3/pkg/config"
+	runtimeevents "github.com/xibodev/compa/v3/pkg/events"
+	"github.com/xibodev/compa/v3/pkg/evolution"
+	"github.com/xibodev/compa/v3/pkg/providers"
 )
 
 func TestEvolutionBridge_DisabledWritesNothing(t *testing.T) {

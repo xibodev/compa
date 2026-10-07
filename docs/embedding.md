@@ -1,12 +1,12 @@
 # Embed the Go runtime
 
-`github.com/xibodev/compa/v2/pkg/agent` is the agent runtime Compa runs: the
+`github.com/xibodev/compa/v3/pkg/agent` is the agent runtime Compa runs: the
 agent loop with its tools, skills, sessions and model resolution. You can run
 it inside your own Go program, with no web UI and no second process. It needs
 Go 1.26.6 or later.
 
 ```sh
-go get github.com/xibodev/compa/v2
+go get github.com/xibodev/compa/v3
 ```
 
 ## A minimal program
@@ -25,10 +25,10 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/xibodev/compa/v2/pkg/agent"
-	"github.com/xibodev/compa/v2/pkg/bus"
-	"github.com/xibodev/compa/v2/pkg/config"
-	"github.com/xibodev/compa/v2/pkg/session"
+	"github.com/xibodev/compa/v3/pkg/agent"
+	"github.com/xibodev/compa/v3/pkg/bus"
+	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v3/pkg/session"
 )
 
 func main() {
@@ -162,7 +162,7 @@ func (hostTools) RegisterTools(
 loop := agent.NewAgentLoop(cfg, msgBus, nil, agent.WithToolProviders(hostTools{}))
 ```
 
-`tools` is `github.com/xibodev/compa/v2/pkg/tools`.
+`tools` is `github.com/xibodev/compa/v3/pkg/tools`.
 
 ## More
 

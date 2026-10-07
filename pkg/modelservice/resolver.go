@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/xibodev/compa/v2/pkg/auth"
-	"github.com/xibodev/compa/v2/pkg/config"
-	"github.com/xibodev/compa/v2/pkg/providers"
+	"github.com/xibodev/compa/v3/pkg/auth"
+	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v3/pkg/providers"
 )
 
 // CatalogLoader returns the model catalogs of cfg's provider instances,

@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xibodev/compa/v2/pkg/config"
-	"github.com/xibodev/compa/v2/pkg/fileutil"
+	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v3/pkg/fileutil"
 )
 
 type AuthCredential struct {

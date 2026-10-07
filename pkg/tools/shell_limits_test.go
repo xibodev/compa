@@ -10,7 +10,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/xibodev/compa/v2/pkg/config"
+	"github.com/xibodev/compa/v3/pkg/config"
 )
 
 func TestCappedBuffer_KeepsLimitAndMarksTheRest(t *testing.T) {

@@ -18,10 +18,10 @@ import (
 	"github.com/xibodev/llmgw-core/extension"
 	"github.com/xibodev/llmgw-core/oauthflow"
 
-	"github.com/xibodev/compa/v2/pkg/auth"
-	"github.com/xibodev/compa/v2/pkg/config"
-	"github.com/xibodev/compa/v2/pkg/providers"
-	"github.com/xibodev/compa/v2/pkg/providers/protocoltypes"
+	"github.com/xibodev/compa/v3/pkg/auth"
+	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v3/pkg/providers"
+	"github.com/xibodev/compa/v3/pkg/providers/protocoltypes"
 )
 
 const testDaemonSecret = "daemon-secret"

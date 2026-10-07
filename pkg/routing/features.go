@@ -4,8 +4,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/xibodev/compa/v2/pkg/providers"
-	"github.com/xibodev/compa/v2/pkg/tokenizer"
+	"github.com/xibodev/compa/v3/pkg/providers"
+	"github.com/xibodev/compa/v3/pkg/tokenizer"
 )
 
 // lookbackWindow is the number of recent history entries scanned for tool calls.

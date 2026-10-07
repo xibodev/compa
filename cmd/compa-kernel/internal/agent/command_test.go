@@ -6,7 +6,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/xibodev/compa/v2/pkg/session"
+	"github.com/xibodev/compa/v3/pkg/session"
 )
 
 func TestNewAgentCommand(t *testing.T) {

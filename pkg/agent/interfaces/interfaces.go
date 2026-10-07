@@ -5,8 +5,8 @@ package interfaces
 import (
 	"context"
 
-	"github.com/xibodev/compa/v2/pkg/bus"
-	"github.com/xibodev/compa/v2/pkg/channels"
+	"github.com/xibodev/compa/v3/pkg/bus"
+	"github.com/xibodev/compa/v3/pkg/channels"
 )
 
 // MessageBus publishes inbound and outbound messages.

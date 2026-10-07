@@ -5,12 +5,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xibodev/compa/v2/pkg/bus"
-	"github.com/xibodev/compa/v2/pkg/config"
-	"github.com/xibodev/compa/v2/pkg/constants"
-	"github.com/xibodev/compa/v2/pkg/identity"
-	"github.com/xibodev/compa/v2/pkg/logger"
-	"github.com/xibodev/compa/v2/pkg/pairing"
+	"github.com/xibodev/compa/v3/pkg/bus"
+	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v3/pkg/constants"
+	"github.com/xibodev/compa/v3/pkg/identity"
+	"github.com/xibodev/compa/v3/pkg/logger"
+	"github.com/xibodev/compa/v3/pkg/pairing"
 )
 
 // accessPolicy holds a channel's dm_policy and group_policy.

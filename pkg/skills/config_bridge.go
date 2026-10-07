@@ -1,6 +1,6 @@
 package skills
 
-import "github.com/xibodev/compa/v2/pkg/config"
+import "github.com/xibodev/compa/v3/pkg/config"
 
 func registryProvidersFromToolsConfig(cfg config.SkillsToolsConfig) []RegistryProvider {
 	providers := make([]RegistryProvider, 0, len(cfg.Registries))

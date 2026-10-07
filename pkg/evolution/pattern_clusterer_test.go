@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/v2/pkg/evolution"
-	"github.com/xibodev/compa/v2/pkg/providers"
+	"github.com/xibodev/compa/v3/pkg/evolution"
+	"github.com/xibodev/compa/v3/pkg/providers"
 )
 
 type llmClusterTestProvider struct {

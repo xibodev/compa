@@ -11,7 +11,7 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/xibodev/compa/v2/pkg/media"
+	"github.com/xibodev/compa/v3/pkg/media"
 )
 
 const (

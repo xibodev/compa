@@ -10,8 +10,8 @@ import (
 	"github.com/xibodev/llmgw-core/extension"
 	"github.com/xibodev/llmgw-core/translation"
 
-	"github.com/xibodev/compa/v2/pkg/config"
-	"github.com/xibodev/compa/v2/pkg/providers"
+	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v3/pkg/providers"
 )
 
 // NewExtensionClient returns the client of the daemon at endpoint using secret.

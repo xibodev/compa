@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xibodev/compa/v2/internal/moduletools"
+	"github.com/xibodev/compa/v3/internal/moduletools"
 )
 
 // Discovery against a REAL v2-declaring module binary, named by

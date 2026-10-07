@@ -4,7 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 
-	"github.com/xibodev/compa/v2/pkg/logger"
+	"github.com/xibodev/compa/v3/pkg/logger"
 )
 
 // SQL statements for FTS5 tables with trigram tokenizer.

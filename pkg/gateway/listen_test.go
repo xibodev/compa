@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/v2/pkg/netbind"
+	"github.com/xibodev/compa/v3/pkg/netbind"
 )
 
 func TestOpenGatewayListeners_HonorsIPv6OnlyHost(t *testing.T) {

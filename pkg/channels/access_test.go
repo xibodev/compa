@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/v2/pkg/bus"
-	"github.com/xibodev/compa/v2/pkg/config"
-	"github.com/xibodev/compa/v2/pkg/pairing"
+	"github.com/xibodev/compa/v3/pkg/bus"
+	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v3/pkg/pairing"
 )
 
 // stubPairing replaces recordPairing for the test and returns the requests

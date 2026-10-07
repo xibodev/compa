@@ -4,9 +4,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/xibodev/compa/v2/pkg"
-	"github.com/xibodev/compa/v2/pkg/config"
-	"github.com/xibodev/compa/v2/pkg/logger"
+	"github.com/xibodev/compa/v3/pkg"
+	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v3/pkg/logger"
 )
 
 const Logo = pkg.Logo

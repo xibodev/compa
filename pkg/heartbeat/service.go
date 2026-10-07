@@ -16,12 +16,12 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/xibodev/compa/v2/pkg/bus"
-	"github.com/xibodev/compa/v2/pkg/constants"
-	"github.com/xibodev/compa/v2/pkg/fileutil"
-	"github.com/xibodev/compa/v2/pkg/logger"
-	"github.com/xibodev/compa/v2/pkg/state"
-	"github.com/xibodev/compa/v2/pkg/tools"
+	"github.com/xibodev/compa/v3/pkg/bus"
+	"github.com/xibodev/compa/v3/pkg/constants"
+	"github.com/xibodev/compa/v3/pkg/fileutil"
+	"github.com/xibodev/compa/v3/pkg/logger"
+	"github.com/xibodev/compa/v3/pkg/state"
+	"github.com/xibodev/compa/v3/pkg/tools"
 )
 
 const (

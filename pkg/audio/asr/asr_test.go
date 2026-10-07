@@ -11,9 +11,9 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/xibodev/compa/v2/pkg/auth"
-	"github.com/xibodev/compa/v2/pkg/config"
-	"github.com/xibodev/compa/v2/pkg/modelservice"
+	"github.com/xibodev/compa/v3/pkg/auth"
+	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v3/pkg/modelservice"
 )
 
 func voiceInstance(id, endpoint string) *config.ProviderInstanceConfig {

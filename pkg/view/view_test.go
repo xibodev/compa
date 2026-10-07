@@ -3,7 +3,7 @@ package view_test
 import (
 	"testing"
 
-	"github.com/xibodev/compa/v2/pkg/view"
+	"github.com/xibodev/compa/v3/pkg/view"
 )
 
 func TestViewDefinition_DigestDeterminism(t *testing.T) {

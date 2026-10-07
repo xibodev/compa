@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/xibodev/compa/v2/cmd/compa-kernel/internal"
-	"github.com/xibodev/compa/v2/cmd/compa-kernel/internal/cliui"
-	"github.com/xibodev/compa/v2/pkg/config"
+	"github.com/xibodev/compa/v3/cmd/compa-kernel/internal"
+	"github.com/xibodev/compa/v3/cmd/compa-kernel/internal/cliui"
+	"github.com/xibodev/compa/v3/pkg/config"
 )
 
 func onboard(force bool) error {

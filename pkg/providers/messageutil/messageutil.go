@@ -3,7 +3,7 @@ package messageutil
 import (
 	"strings"
 
-	"github.com/xibodev/compa/v2/pkg/providers/protocoltypes"
+	"github.com/xibodev/compa/v3/pkg/providers/protocoltypes"
 )
 
 // IsTransientAssistantThoughtMessage reports whether msg is an invalid

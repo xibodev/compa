@@ -13,9 +13,9 @@ import (
 
 	"rsc.io/qr"
 
-	"github.com/xibodev/compa/v2/pkg/channels/weixin"
-	"github.com/xibodev/compa/v2/pkg/config"
-	"github.com/xibodev/compa/v2/pkg/logger"
+	"github.com/xibodev/compa/v3/pkg/channels/weixin"
+	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v3/pkg/logger"
 )
 
 const (

@@ -10,10 +10,10 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/xibodev/compa/v2/internal/module"
-	"github.com/xibodev/compa/v2/pkg/logger"
-	"github.com/xibodev/compa/v2/pkg/modproto"
-	toolshared "github.com/xibodev/compa/v2/pkg/tools/shared"
+	"github.com/xibodev/compa/v3/internal/module"
+	"github.com/xibodev/compa/v3/pkg/logger"
+	"github.com/xibodev/compa/v3/pkg/modproto"
+	toolshared "github.com/xibodev/compa/v3/pkg/tools/shared"
 )
 
 // Installed is one discovered module.

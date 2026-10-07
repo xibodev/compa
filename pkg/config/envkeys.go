@@ -9,7 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/xibodev/compa/v2/pkg"
+	"github.com/xibodev/compa/v3/pkg"
 )
 
 // Runtime environment variable keys for Compa processes.

@@ -10,10 +10,10 @@ import (
 	"net/http/httputil"
 	"time"
 
-	"github.com/xibodev/compa/v2/pkg/config"
-	"github.com/xibodev/compa/v2/pkg/logger"
-	ppid "github.com/xibodev/compa/v2/pkg/pid"
-	"github.com/xibodev/compa/v2/web/backend/middleware"
+	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v3/pkg/logger"
+	ppid "github.com/xibodev/compa/v3/pkg/pid"
+	"github.com/xibodev/compa/v3/web/backend/middleware"
 )
 
 // registerWebChatRoutes binds the web chat channel proxy endpoints to the ServeMux.

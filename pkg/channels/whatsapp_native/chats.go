@@ -3,9 +3,9 @@ package whatsapp
 import (
 	"sync"
 
-	"github.com/xibodev/compa/v2/pkg/bus"
-	"github.com/xibodev/compa/v2/pkg/config"
-	"github.com/xibodev/compa/v2/pkg/identity"
+	"github.com/xibodev/compa/v3/pkg/bus"
+	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v3/pkg/identity"
 )
 
 // This file holds the chat-selection rules of the native client. It has no

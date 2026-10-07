@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/xibodev/compa/v2/pkg/modproto"
+	"github.com/xibodev/compa/v3/pkg/modproto"
 )
 
 func installedModule(t *testing.T, home, id string) *modproto.Descriptor {

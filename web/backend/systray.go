@@ -10,8 +10,8 @@ import (
 
 	"fyne.io/systray"
 
-	"github.com/xibodev/compa/v2/pkg/logger"
-	"github.com/xibodev/compa/v2/web/backend/utils"
+	"github.com/xibodev/compa/v3/pkg/logger"
+	"github.com/xibodev/compa/v3/web/backend/utils"
 )
 
 func runTray() {

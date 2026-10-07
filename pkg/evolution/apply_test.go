@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/v2/pkg/evolution"
+	"github.com/xibodev/compa/v3/pkg/evolution"
 )
 
 // markEvolved records that evolution created skillName, which replace and

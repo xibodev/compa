@@ -16,9 +16,9 @@ import (
 
 	"github.com/h2non/filetype"
 
-	"github.com/xibodev/compa/v2/pkg/logger"
-	"github.com/xibodev/compa/v2/pkg/media"
-	"github.com/xibodev/compa/v2/pkg/providers"
+	"github.com/xibodev/compa/v3/pkg/logger"
+	"github.com/xibodev/compa/v3/pkg/media"
+	"github.com/xibodev/compa/v3/pkg/providers"
 )
 
 // genericPlaceholderRegex matches generic media placeholders emitted by various

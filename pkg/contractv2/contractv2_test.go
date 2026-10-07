@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xibodev/compa/v2/pkg/modproto"
+	"github.com/xibodev/compa/v3/pkg/modproto"
 )
 
 // THE FALSIFICATION TEST the operator ruling requires: a wrong contract_version

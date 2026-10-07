@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xibodev/compa/v2/pkg/providers"
+	"github.com/xibodev/compa/v3/pkg/providers"
 )
 
 func TestMatchingTurnMessageTail_IgnoresInternalRuntimeFields(t *testing.T) {

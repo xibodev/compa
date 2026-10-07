@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xibodev/compa/v2/pkg/modproto"
-	toolshared "github.com/xibodev/compa/v2/pkg/tools/shared"
+	"github.com/xibodev/compa/v3/pkg/modproto"
+	toolshared "github.com/xibodev/compa/v3/pkg/tools/shared"
 )
 
 // A newly installed module is enabled: installing something and finding it

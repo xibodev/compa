@@ -9,7 +9,7 @@ import (
 
 	"github.com/google/jsonschema-go/jsonschema"
 
-	"github.com/xibodev/compa/v2/pkg/logger"
+	"github.com/xibodev/compa/v3/pkg/logger"
 )
 
 // validateToolArgs validates args against a tool's JSON Schema, with the full

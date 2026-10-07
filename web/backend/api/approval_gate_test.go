@@ -12,9 +12,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xibodev/compa/v2/internal/module"
-	"github.com/xibodev/compa/v2/internal/moduletools"
-	"github.com/xibodev/compa/v2/pkg/modproto"
+	"github.com/xibodev/compa/v3/internal/module"
+	"github.com/xibodev/compa/v3/internal/moduletools"
+	"github.com/xibodev/compa/v3/pkg/modproto"
 )
 
 // The Modules page decides a run by the approval policy (tools.approval) with

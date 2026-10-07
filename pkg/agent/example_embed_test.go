@@ -6,11 +6,11 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/xibodev/compa/v2/pkg/agent"
-	"github.com/xibodev/compa/v2/pkg/bus"
-	"github.com/xibodev/compa/v2/pkg/config"
-	"github.com/xibodev/compa/v2/pkg/session"
-	"github.com/xibodev/compa/v2/pkg/tools"
+	"github.com/xibodev/compa/v3/pkg/agent"
+	"github.com/xibodev/compa/v3/pkg/bus"
+	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v3/pkg/session"
+	"github.com/xibodev/compa/v3/pkg/tools"
 )
 
 // These examples have no Output comment on purpose: `go test` compiles them

@@ -12,10 +12,10 @@ import (
 
 	"github.com/h2non/filetype"
 
-	"github.com/xibodev/compa/v2/pkg/bus"
-	"github.com/xibodev/compa/v2/pkg/config"
-	"github.com/xibodev/compa/v2/pkg/media"
-	fstools "github.com/xibodev/compa/v2/pkg/tools/fs"
+	"github.com/xibodev/compa/v3/pkg/bus"
+	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v3/pkg/media"
+	fstools "github.com/xibodev/compa/v3/pkg/tools/fs"
 )
 
 type SendCallbackWithContext func(

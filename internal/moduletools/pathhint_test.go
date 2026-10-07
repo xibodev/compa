@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xibodev/compa/v2/pkg/modproto"
+	"github.com/xibodev/compa/v3/pkg/modproto"
 )
 
 func pathFailureTool(t *testing.T, home string) *CapabilityTool {

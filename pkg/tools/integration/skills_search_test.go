@@ -6,7 +6,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
-	"github.com/xibodev/compa/v2/pkg/skills"
+	"github.com/xibodev/compa/v3/pkg/skills"
 )
 
 func TestFindSkillsToolName(t *testing.T) {

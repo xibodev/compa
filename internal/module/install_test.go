@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/v2/internal/module"
-	"github.com/xibodev/compa/v2/pkg/modproto"
+	"github.com/xibodev/compa/v3/internal/module"
+	"github.com/xibodev/compa/v3/pkg/modproto"
 )
 
 func TestValidID(t *testing.T) {

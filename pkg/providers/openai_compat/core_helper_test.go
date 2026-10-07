@@ -4,7 +4,7 @@ import (
 	core "github.com/xibodev/llmgw-core"
 	coreproviders "github.com/xibodev/llmgw-core/providers"
 
-	"github.com/xibodev/compa/v2/pkg/providers/coretransport"
+	"github.com/xibodev/compa/v3/pkg/providers/coretransport"
 )
 
 // newTestProvider returns the chat client of an OpenAI-compatible upstream

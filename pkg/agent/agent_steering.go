@@ -5,8 +5,8 @@ package agent
 import (
 	"context"
 
-	"github.com/xibodev/compa/v2/pkg/bus"
-	"github.com/xibodev/compa/v2/pkg/logger"
+	"github.com/xibodev/compa/v3/pkg/bus"
+	"github.com/xibodev/compa/v3/pkg/logger"
 )
 
 // processMessageSync runs msg and sends its reply or error to its chat; the

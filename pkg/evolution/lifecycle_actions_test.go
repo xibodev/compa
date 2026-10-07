@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/xibodev/compa/v2/pkg/evolution"
+	"github.com/xibodev/compa/v3/pkg/evolution"
 )
 
 func TestApplyLifecycleStateDeletedRemovesSkillFile(t *testing.T) {

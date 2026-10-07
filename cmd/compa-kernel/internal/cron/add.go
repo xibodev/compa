@@ -5,7 +5,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/xibodev/compa/v2/pkg/cron"
+	"github.com/xibodev/compa/v3/pkg/cron"
 )
 
 func newAddCommand(open openStore) *cobra.Command {

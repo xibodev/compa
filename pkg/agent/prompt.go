@@ -7,8 +7,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/xibodev/compa/v2/pkg/logger"
-	"github.com/xibodev/compa/v2/pkg/providers"
+	"github.com/xibodev/compa/v3/pkg/logger"
+	"github.com/xibodev/compa/v3/pkg/providers"
 )
 
 type PromptLayer string

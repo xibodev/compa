@@ -22,11 +22,11 @@ import (
 
 	"github.com/creack/pty"
 
-	"github.com/xibodev/compa/v2/pkg/config"
-	"github.com/xibodev/compa/v2/pkg/constants"
-	"github.com/xibodev/compa/v2/pkg/isolation"
-	"github.com/xibodev/compa/v2/pkg/logger"
-	"github.com/xibodev/compa/v2/pkg/pathlink"
+	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v3/pkg/constants"
+	"github.com/xibodev/compa/v3/pkg/isolation"
+	"github.com/xibodev/compa/v3/pkg/logger"
+	"github.com/xibodev/compa/v3/pkg/pathlink"
 )
 
 var (

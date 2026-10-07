@@ -8,7 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/xibodev/compa/v2/pkg/logger"
+	"github.com/xibodev/compa/v3/pkg/logger"
 )
 
 // CleanupPolicy controls how the MediaStore treats the underlying file when

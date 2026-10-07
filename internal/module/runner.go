@@ -34,8 +34,8 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/xibodev/compa/v2/pkg/modproto"
-	"github.com/xibodev/compa/v2/pkg/pathlink"
+	"github.com/xibodev/compa/v3/pkg/modproto"
+	"github.com/xibodev/compa/v3/pkg/pathlink"
 )
 
 // Defaults applied when a caller does not specify bounds. They are deliberately

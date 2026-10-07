@@ -15,11 +15,11 @@ import (
 	"github.com/SevereCloud/vksdk/v3/longpoll-bot"
 	"github.com/SevereCloud/vksdk/v3/object"
 
-	"github.com/xibodev/compa/v2/pkg/bus"
-	"github.com/xibodev/compa/v2/pkg/channels"
-	"github.com/xibodev/compa/v2/pkg/config"
-	"github.com/xibodev/compa/v2/pkg/identity"
-	"github.com/xibodev/compa/v2/pkg/logger"
+	"github.com/xibodev/compa/v3/pkg/bus"
+	"github.com/xibodev/compa/v3/pkg/channels"
+	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v3/pkg/identity"
+	"github.com/xibodev/compa/v3/pkg/logger"
 )
 
 type VKChannel struct {

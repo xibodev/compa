@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/v2/pkg/commands"
+	"github.com/xibodev/compa/v3/pkg/commands"
 )
 
 func TestStartCommandRegistration_DoesNotBlock(t *testing.T) {

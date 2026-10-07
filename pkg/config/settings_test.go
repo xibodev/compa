@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/xibodev/compa/v2/pkg/approval"
+	"github.com/xibodev/compa/v3/pkg/approval"
 )
 
 func writeConfigFile(t *testing.T, content string) string {

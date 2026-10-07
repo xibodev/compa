@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xibodev/compa/v2/pkg/config"
-	"github.com/xibodev/compa/v2/pkg/modelservice"
+	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v3/pkg/modelservice"
 )
 
 // withConnectEnv points the CLI at a temporary home and config, and replaces

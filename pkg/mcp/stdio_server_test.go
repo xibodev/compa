@@ -12,7 +12,7 @@ import (
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/xibodev/compa/v2/pkg/config"
+	"github.com/xibodev/compa/v3/pkg/config"
 )
 
 // stdioTestServerEnv makes the test binary run as a stdio MCP server, in the

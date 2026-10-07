@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/xibodev/compa/v2/pkg/config"
-	ppid "github.com/xibodev/compa/v2/pkg/pid"
-	"github.com/xibodev/compa/v2/web/backend/utils"
+	"github.com/xibodev/compa/v3/pkg/config"
+	ppid "github.com/xibodev/compa/v3/pkg/pid"
+	"github.com/xibodev/compa/v3/web/backend/utils"
 )
 
 // inspectGatewayProcess tells from the program a process runs, read with

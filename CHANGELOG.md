@@ -5,6 +5,11 @@ Notable changes to Compa, newest first. Versions follow
 
 ## Unreleased
 
+### Changed
+
+- The Go module path is `github.com/xibodev/compa/v3`: a Go program that
+  embeds Compa imports its packages from there.
+
 ### Fixed
 
 - When a send to Telegram, Slack or Matrix fails after part of the message was

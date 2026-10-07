@@ -3,7 +3,7 @@ package utils
 import (
 	"testing"
 
-	"github.com/xibodev/compa/v2/pkg/logger"
+	"github.com/xibodev/compa/v3/pkg/logger"
 )
 
 func TestHtmlToMarkdown(t *testing.T) {

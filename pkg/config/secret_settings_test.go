@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xibodev/compa/v2/pkg/logger"
+	"github.com/xibodev/compa/v3/pkg/logger"
 )
 
 // plainSecretsConfig is a config.json with plain secrets, as an edit sends

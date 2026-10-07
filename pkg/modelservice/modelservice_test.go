@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xibodev/compa/v2/pkg/config"
+	"github.com/xibodev/compa/v3/pkg/config"
 	llmgwproviders "github.com/xibodev/llmgw-core/providers"
 )
 

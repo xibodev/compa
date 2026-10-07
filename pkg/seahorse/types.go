@@ -3,8 +3,8 @@ package seahorse
 import (
 	"time"
 
-	"github.com/xibodev/compa/v2/pkg/providers"
-	"github.com/xibodev/compa/v2/pkg/tokenizer"
+	"github.com/xibodev/compa/v3/pkg/providers"
+	"github.com/xibodev/compa/v3/pkg/tokenizer"
 )
 
 // SummaryKind distinguishes leaf summaries (from raw messages) vs condensed

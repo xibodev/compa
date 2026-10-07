@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/xibodev/compa/v2/pkg/contractv2"
-	"github.com/xibodev/compa/v2/pkg/modprotov2"
+	"github.com/xibodev/compa/v3/pkg/contractv2"
+	"github.com/xibodev/compa/v3/pkg/modprotov2"
 )
 
 // THE TRAP: contract_version lives inside envelope.result, so evaluating raw

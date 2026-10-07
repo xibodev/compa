@@ -1,7 +1,7 @@
 package agent
 
 import (
-	"github.com/xibodev/compa/v2/pkg/bus"
+	"github.com/xibodev/compa/v3/pkg/bus"
 )
 
 // computeContextUsage estimates current context window consumption for the

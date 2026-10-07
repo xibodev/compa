@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"github.com/xibodev/compa/v2/pkg/session"
+	"github.com/xibodev/compa/v3/pkg/session"
 )
 
 // Tool is the interface that all tools must implement.

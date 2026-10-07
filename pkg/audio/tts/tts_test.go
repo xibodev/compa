@@ -10,9 +10,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xibodev/compa/v2/pkg/auth"
-	"github.com/xibodev/compa/v2/pkg/config"
-	"github.com/xibodev/compa/v2/pkg/media"
+	"github.com/xibodev/compa/v3/pkg/auth"
+	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v3/pkg/media"
 )
 
 func voiceInstance(id, kind, endpoint string) *config.ProviderInstanceConfig {

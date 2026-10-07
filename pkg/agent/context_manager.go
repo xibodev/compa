@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/xibodev/compa/v2/pkg/providers"
+	"github.com/xibodev/compa/v3/pkg/providers"
 )
 
 // ContextManager manages conversation context via a pluggable strategy.

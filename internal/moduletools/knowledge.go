@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/xibodev/compa/v2/internal/module"
-	"github.com/xibodev/compa/v2/pkg/modproto"
+	"github.com/xibodev/compa/v3/internal/module"
+	"github.com/xibodev/compa/v3/pkg/modproto"
 )
 
 // Progressive composition of module knowledge into the agent's prompt.

@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/v2/pkg/tools"
+	"github.com/xibodev/compa/v3/pkg/tools"
 )
 
 func TestGrepSearchSummaries(t *testing.T) {

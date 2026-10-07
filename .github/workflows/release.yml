@@ -187,7 +187,7 @@ jobs:
         run: |
           set -euo pipefail
           test -f web/backend/dist/index.html
-          pkg=github.com/xibodev/compa/v2/pkg/config
+          pkg=github.com/xibodev/compa/v3/pkg/config
           go_version=$(go env GOVERSION | cut -d ' ' -f 1)
           ldflags="-s -w -X $pkg.Version=$VERSION -X $pkg.GitCommit=$COMMIT -X $pkg.BuildTime=$BUILD_TIME -X $pkg.GoVersion=$go_version"
           ext=""

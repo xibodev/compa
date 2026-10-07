@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/xibodev/compa/v2/internal/module"
+	"github.com/xibodev/compa/v3/internal/module"
 )
 
 // TestDeclaredRuntimeDirectoryTravelsWithTheBinary covers the gap that made a

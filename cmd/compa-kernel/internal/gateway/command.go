@@ -6,12 +6,12 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/xibodev/compa/v2/cmd/compa-kernel/internal"
-	"github.com/xibodev/compa/v2/pkg/config"
-	"github.com/xibodev/compa/v2/pkg/gateway"
-	"github.com/xibodev/compa/v2/pkg/logger"
-	"github.com/xibodev/compa/v2/pkg/netbind"
-	"github.com/xibodev/compa/v2/pkg/utils"
+	"github.com/xibodev/compa/v3/cmd/compa-kernel/internal"
+	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v3/pkg/gateway"
+	"github.com/xibodev/compa/v3/pkg/logger"
+	"github.com/xibodev/compa/v3/pkg/netbind"
+	"github.com/xibodev/compa/v3/pkg/utils"
 )
 
 func resolveGatewayHostOverride(explicit bool, host string) (string, error) {

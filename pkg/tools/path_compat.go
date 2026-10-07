@@ -3,7 +3,7 @@ package tools
 import (
 	"regexp"
 
-	fstools "github.com/xibodev/compa/v2/pkg/tools/fs"
+	fstools "github.com/xibodev/compa/v3/pkg/tools/fs"
 )
 
 func validatePathWithAllowPaths(

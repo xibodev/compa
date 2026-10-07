@@ -1,7 +1,7 @@
 package module
 
 import (
-	"github.com/xibodev/compa/v2/pkg/modproto"
+	"github.com/xibodev/compa/v3/pkg/modproto"
 	"os"
 	"strings"
 )

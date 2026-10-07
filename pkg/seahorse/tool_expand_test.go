@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/xibodev/compa/v2/pkg/tools"
+	"github.com/xibodev/compa/v3/pkg/tools"
 )
 
 // short_expand only returns messages of the calling turn's conversation

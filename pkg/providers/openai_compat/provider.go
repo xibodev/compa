@@ -18,10 +18,10 @@ import (
 
 	core "github.com/xibodev/llmgw-core"
 
-	"github.com/xibodev/compa/v2/pkg/logger"
-	"github.com/xibodev/compa/v2/pkg/providers/common"
-	"github.com/xibodev/compa/v2/pkg/providers/messageutil"
-	"github.com/xibodev/compa/v2/pkg/providers/protocoltypes"
+	"github.com/xibodev/compa/v3/pkg/logger"
+	"github.com/xibodev/compa/v3/pkg/providers/common"
+	"github.com/xibodev/compa/v3/pkg/providers/messageutil"
+	"github.com/xibodev/compa/v3/pkg/providers/protocoltypes"
 )
 
 type (

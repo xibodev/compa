@@ -10,11 +10,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xibodev/compa/v2/pkg/bus"
-	runtimeevents "github.com/xibodev/compa/v2/pkg/events"
-	"github.com/xibodev/compa/v2/pkg/logger"
-	"github.com/xibodev/compa/v2/pkg/providers"
-	"github.com/xibodev/compa/v2/pkg/tools"
+	"github.com/xibodev/compa/v3/pkg/bus"
+	runtimeevents "github.com/xibodev/compa/v3/pkg/events"
+	"github.com/xibodev/compa/v3/pkg/logger"
+	"github.com/xibodev/compa/v3/pkg/providers"
+	"github.com/xibodev/compa/v3/pkg/tools"
 )
 
 // defaultMaxParallelTurns is how many turns run at once when

@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"gopkg.in/yaml.v3"
 
-	"github.com/xibodev/compa/v2/pkg/approval"
+	"github.com/xibodev/compa/v3/pkg/approval"
 )
 
 func TestAgentConfig_FullParse(t *testing.T) {

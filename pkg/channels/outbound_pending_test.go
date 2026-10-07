@@ -10,7 +10,7 @@ import (
 
 	"golang.org/x/time/rate"
 
-	"github.com/xibodev/compa/v2/pkg/bus"
+	"github.com/xibodev/compa/v3/pkg/bus"
 )
 
 // gatedChannel records what it sends; while gate is open (not closed),

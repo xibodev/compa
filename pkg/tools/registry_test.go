@@ -10,8 +10,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/xibodev/compa/v2/pkg/media"
-	"github.com/xibodev/compa/v2/pkg/providers"
+	"github.com/xibodev/compa/v3/pkg/media"
+	"github.com/xibodev/compa/v3/pkg/providers"
 )
 
 // --- mock types ---

@@ -5,7 +5,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/xibodev/compa/v2/pkg/config"
+	"github.com/xibodev/compa/v3/pkg/config"
 )
 
 var execCommand = LauncherExecCommand

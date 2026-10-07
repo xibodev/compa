@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	basechannels "github.com/xibodev/compa/v2/pkg/channels"
-	"github.com/xibodev/compa/v2/pkg/config"
+	basechannels "github.com/xibodev/compa/v3/pkg/channels"
+	"github.com/xibodev/compa/v3/pkg/config"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)

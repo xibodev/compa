@@ -63,7 +63,7 @@ claim that other products already embed Compa.
 | Visual wordmark | **compa** | Lowercase. Use as artwork, not as sentence-case prose. |
 | Meaning | Mexican Spanish slang for **pal** | Explain when useful; do not turn it into a second tagline. |
 | Repository | `compa` | Keep verbatim. |
-| Go module | `github.com/xibodev/compa/v2` | Keep verbatim. |
+| Go module | `github.com/xibodev/compa/v3` | Keep verbatim. |
 | Headed binary | `compa` | Keep verbatim. |
 | Runtime binary | `compa-kernel` | Keep verbatim. |
 | Local state | `~/.compa` | Keep verbatim. |

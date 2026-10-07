@@ -7,10 +7,10 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/xibodev/compa/v2/pkg/config"
+	"github.com/xibodev/compa/v3/pkg/config"
 	"time"
 
-	"github.com/xibodev/compa/v2/pkg/providers"
+	"github.com/xibodev/compa/v3/pkg/providers"
 )
 
 // setupWorkspace creates a temporary workspace with standard directories and optional files.

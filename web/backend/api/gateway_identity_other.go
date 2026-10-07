@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	ppid "github.com/xibodev/compa/v2/pkg/pid"
+	ppid "github.com/xibodev/compa/v3/pkg/pid"
 )
 
 // gatewayInspectTimeout bounds the ps call on systems without /proc.

@@ -9,8 +9,8 @@ import (
 	"encoding/json"
 	"path/filepath"
 
-	"github.com/xibodev/compa/v2/pkg"
-	"github.com/xibodev/compa/v2/pkg/approval"
+	"github.com/xibodev/compa/v3/pkg"
+	"github.com/xibodev/compa/v3/pkg/approval"
 )
 
 // DefaultConfig returns the default configuration for Compa. It

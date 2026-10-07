@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xibodev/compa/v2/pkg/logger"
-	"github.com/xibodev/compa/v2/pkg/updater"
+	"github.com/xibodev/compa/v3/pkg/logger"
+	"github.com/xibodev/compa/v3/pkg/updater"
 )
 
 // POST /api/update installs a release of Compa from github.com/xibodev/compa:

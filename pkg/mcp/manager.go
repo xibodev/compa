@@ -19,9 +19,9 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/xibodev/compa/v2/pkg/config"
-	runtimeevents "github.com/xibodev/compa/v2/pkg/events"
-	"github.com/xibodev/compa/v2/pkg/logger"
+	"github.com/xibodev/compa/v3/pkg/config"
+	runtimeevents "github.com/xibodev/compa/v3/pkg/events"
+	"github.com/xibodev/compa/v3/pkg/logger"
 )
 
 // ErrSessionLost is the error of a tool call during which the server lost

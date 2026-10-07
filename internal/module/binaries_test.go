@@ -4,8 +4,8 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/xibodev/compa/v2/internal/module"
-	"github.com/xibodev/compa/v2/pkg/modproto"
+	"github.com/xibodev/compa/v3/internal/module"
+	"github.com/xibodev/compa/v3/pkg/modproto"
 )
 
 // hostBinary is a binary that genuinely exists on every supported platform, so

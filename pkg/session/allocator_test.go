@@ -3,8 +3,8 @@ package session
 import (
 	"testing"
 
-	"github.com/xibodev/compa/v2/pkg/bus"
-	"github.com/xibodev/compa/v2/pkg/routing"
+	"github.com/xibodev/compa/v3/pkg/bus"
+	"github.com/xibodev/compa/v3/pkg/routing"
 )
 
 func TestAllocateRouteSession_PerPeerDM(t *testing.T) {

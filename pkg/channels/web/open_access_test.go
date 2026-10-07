@@ -3,8 +3,8 @@ package web
 import (
 	"testing"
 
-	"github.com/xibodev/compa/v2/pkg/bus"
-	"github.com/xibodev/compa/v2/pkg/config"
+	"github.com/xibodev/compa/v3/pkg/bus"
+	"github.com/xibodev/compa/v3/pkg/config"
 )
 
 // The built-in web chat is reached only through the password-protected

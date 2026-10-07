@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/v2/pkg/bus"
-	"github.com/xibodev/compa/v2/pkg/config"
-	"github.com/xibodev/compa/v2/pkg/pairing"
+	"github.com/xibodev/compa/v3/pkg/bus"
+	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v3/pkg/pairing"
 )
 
 func newAccessTestChannel(t *testing.T, downloads *int, allowFrom ...string) (*OneBotChannel, *bus.MessageBus) {

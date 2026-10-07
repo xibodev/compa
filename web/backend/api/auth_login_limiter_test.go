@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/v2/web/backend/middleware"
+	"github.com/xibodev/compa/v3/web/backend/middleware"
 )
 
 func TestLoginRateLimiterForgetsTheLeastRecentClient(t *testing.T) {

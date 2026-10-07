@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/v2/pkg/approval"
-	"github.com/xibodev/compa/v2/pkg/config"
-	"github.com/xibodev/compa/v2/pkg/pairing"
-	ppid "github.com/xibodev/compa/v2/pkg/pid"
+	"github.com/xibodev/compa/v3/pkg/approval"
+	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v3/pkg/pairing"
+	ppid "github.com/xibodev/compa/v3/pkg/pid"
 )
 
 // fakeGatewayReload is a gateway that answers POST /reload with status and

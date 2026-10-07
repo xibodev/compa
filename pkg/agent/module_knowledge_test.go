@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xibodev/compa/v2/pkg/bus"
+	"github.com/xibodev/compa/v3/pkg/bus"
 )
 
 func optsWithModule(moduleID string) processOptions {

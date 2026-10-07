@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/xibodev/compa/v2/pkg/commands"
+	"github.com/xibodev/compa/v3/pkg/commands"
 )
 
 type mockRegistrar struct{}

@@ -11,14 +11,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/xibodev/compa/v2/pkg/approval"
-	"github.com/xibodev/compa/v2/pkg/bus"
-	"github.com/xibodev/compa/v2/pkg/constants"
-	runtimeevents "github.com/xibodev/compa/v2/pkg/events"
-	"github.com/xibodev/compa/v2/pkg/logger"
-	"github.com/xibodev/compa/v2/pkg/providers"
-	"github.com/xibodev/compa/v2/pkg/tools"
-	"github.com/xibodev/compa/v2/pkg/utils"
+	"github.com/xibodev/compa/v3/pkg/approval"
+	"github.com/xibodev/compa/v3/pkg/bus"
+	"github.com/xibodev/compa/v3/pkg/constants"
+	runtimeevents "github.com/xibodev/compa/v3/pkg/events"
+	"github.com/xibodev/compa/v3/pkg/logger"
+	"github.com/xibodev/compa/v3/pkg/providers"
+	"github.com/xibodev/compa/v3/pkg/tools"
+	"github.com/xibodev/compa/v3/pkg/utils"
 )
 
 // Remaining tool calls in a batch are skipped once a steering message is queued

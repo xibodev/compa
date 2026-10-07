@@ -4,7 +4,7 @@ import (
 	"os/exec"
 	"path/filepath"
 
-	"github.com/xibodev/compa/v2/pkg/modproto"
+	"github.com/xibodev/compa/v3/pkg/modproto"
 )
 
 // ResolveBinaries turns a module's DECLARED subprocess names into absolute

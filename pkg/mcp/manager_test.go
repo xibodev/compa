@@ -18,8 +18,8 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/xibodev/compa/v2/pkg/config"
-	runtimeevents "github.com/xibodev/compa/v2/pkg/events"
+	"github.com/xibodev/compa/v3/pkg/config"
+	runtimeevents "github.com/xibodev/compa/v3/pkg/events"
 )
 
 func TestLoadEnvFile(t *testing.T) {

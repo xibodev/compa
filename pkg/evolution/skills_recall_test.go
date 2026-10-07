@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xibodev/compa/v2/pkg/evolution"
+	"github.com/xibodev/compa/v3/pkg/evolution"
 )
 
 func TestRecallSimilarSkills_ReturnsWorkspaceSkillFirst(t *testing.T) {

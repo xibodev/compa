@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/v2/pkg/bus"
-	"github.com/xibodev/compa/v2/pkg/config"
+	"github.com/xibodev/compa/v3/pkg/bus"
+	"github.com/xibodev/compa/v3/pkg/config"
 )
 
 // reloadTestType is a channel type whose factory builds mock channels, so

@@ -5,7 +5,7 @@ package sources
 import (
 	"context"
 
-	"github.com/xibodev/compa/v2/pkg/devices/events"
+	"github.com/xibodev/compa/v3/pkg/devices/events"
 )
 
 type USBMonitor struct{}

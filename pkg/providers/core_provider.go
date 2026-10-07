@@ -15,10 +15,10 @@ import (
 	coreproviders "github.com/xibodev/llmgw-core/providers"
 	"github.com/xibodev/llmgw-core/translation"
 
-	"github.com/xibodev/compa/v2/pkg/auth"
-	"github.com/xibodev/compa/v2/pkg/config"
-	"github.com/xibodev/compa/v2/pkg/netbind"
-	"github.com/xibodev/compa/v2/pkg/providers/coretransport"
+	"github.com/xibodev/compa/v3/pkg/auth"
+	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v3/pkg/netbind"
+	"github.com/xibodev/compa/v3/pkg/providers/coretransport"
 )
 
 // Every provider instance runs on an llmgw-core provider. Core has no

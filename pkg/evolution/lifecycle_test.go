@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/v2/pkg/evolution"
+	"github.com/xibodev/compa/v3/pkg/evolution"
 )
 
 func TestStore_SaveAndLoadProfile(t *testing.T) {

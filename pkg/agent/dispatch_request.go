@@ -3,9 +3,9 @@ package agent
 import (
 	"strings"
 
-	"github.com/xibodev/compa/v2/pkg/bus"
-	"github.com/xibodev/compa/v2/pkg/routing"
-	"github.com/xibodev/compa/v2/pkg/session"
+	"github.com/xibodev/compa/v3/pkg/bus"
+	"github.com/xibodev/compa/v3/pkg/routing"
+	"github.com/xibodev/compa/v3/pkg/session"
 )
 
 // DispatchRequest is the normalized runtime input passed into the agent loop

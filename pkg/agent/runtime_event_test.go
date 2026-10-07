@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	runtimeevents "github.com/xibodev/compa/v2/pkg/events"
+	runtimeevents "github.com/xibodev/compa/v3/pkg/events"
 )
 
 func subscribeRuntimeEventsForTest(

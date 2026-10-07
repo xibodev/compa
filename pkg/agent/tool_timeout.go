@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/xibodev/compa/v2/pkg/tools"
+	"github.com/xibodev/compa/v3/pkg/tools"
 )
 
 // defaultToolTimeout bounds a tool call: a tool that hangs must not hold its

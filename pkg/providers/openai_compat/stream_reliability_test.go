@@ -13,7 +13,7 @@ import (
 
 	core "github.com/xibodev/llmgw-core"
 
-	"github.com/xibodev/compa/v2/pkg/providers/coretransport"
+	"github.com/xibodev/compa/v3/pkg/providers/coretransport"
 )
 
 // scriptedStream yields frames, waiting delay before each, and then either

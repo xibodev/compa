@@ -3,10 +3,10 @@
 package agent
 
 import (
-	"github.com/xibodev/compa/v2/pkg/agent/interfaces"
-	"github.com/xibodev/compa/v2/pkg/config"
-	"github.com/xibodev/compa/v2/pkg/media"
-	"github.com/xibodev/compa/v2/pkg/providers"
+	"github.com/xibodev/compa/v3/pkg/agent/interfaces"
+	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v3/pkg/media"
+	"github.com/xibodev/compa/v3/pkg/providers"
 )
 
 // Pipeline holds the runtime dependencies used by Pipeline methods.

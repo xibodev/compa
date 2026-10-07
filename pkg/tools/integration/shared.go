@@ -3,8 +3,8 @@ package integrationtools
 import (
 	"context"
 
-	"github.com/xibodev/compa/v2/pkg/session"
-	toolshared "github.com/xibodev/compa/v2/pkg/tools/shared"
+	"github.com/xibodev/compa/v3/pkg/session"
+	toolshared "github.com/xibodev/compa/v3/pkg/tools/shared"
 )
 
 type (

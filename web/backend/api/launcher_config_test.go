@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xibodev/compa/v2/web/backend/launcherconfig"
+	"github.com/xibodev/compa/v3/web/backend/launcherconfig"
 )
 
 func TestGetLauncherConfigUsesRuntimeFallback(t *testing.T) {

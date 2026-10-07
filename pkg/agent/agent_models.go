@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/xibodev/compa/v2/pkg/commands"
-	"github.com/xibodev/compa/v2/pkg/config"
-	"github.com/xibodev/compa/v2/pkg/logger"
-	"github.com/xibodev/compa/v2/pkg/providers"
+	"github.com/xibodev/compa/v3/pkg/commands"
+	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v3/pkg/logger"
+	"github.com/xibodev/compa/v3/pkg/providers"
 )
 
 // modelResolver returns the resolver the loop resolves selections with.

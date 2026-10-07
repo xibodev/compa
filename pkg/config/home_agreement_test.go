@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/xibodev/compa/v2/pkg"
+	"github.com/xibodev/compa/v3/pkg"
 )
 
 func TestGetHomeHonoursCompaHome(t *testing.T) {

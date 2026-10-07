@@ -9,8 +9,8 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/xibodev/compa/v2/pkg/config"
-	"github.com/xibodev/compa/v2/pkg/logger"
+	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v3/pkg/logger"
 )
 
 // registerConfigRoutes binds configuration management endpoints to the ServeMux.

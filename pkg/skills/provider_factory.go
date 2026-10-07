@@ -3,7 +3,7 @@ package skills
 import (
 	"sync"
 
-	"github.com/xibodev/compa/v2/pkg/config"
+	"github.com/xibodev/compa/v3/pkg/config"
 )
 
 type RegistryProviderBuilder func(name string, cfg config.SkillRegistryConfig) RegistryProvider

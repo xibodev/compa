@@ -7,7 +7,7 @@ import (
 
 	"github.com/slack-go/slack"
 
-	"github.com/xibodev/compa/v2/pkg/channels"
+	"github.com/xibodev/compa/v3/pkg/channels"
 )
 
 func TestClassifySendError(t *testing.T) {

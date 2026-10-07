@@ -5,9 +5,9 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/xibodev/compa/v2/pkg/config"
-	"github.com/xibodev/compa/v2/pkg/modelservice"
-	"github.com/xibodev/compa/v2/pkg/providers"
+	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v3/pkg/modelservice"
+	"github.com/xibodev/compa/v3/pkg/providers"
 )
 
 // testInstance is one provider instance of a test: its runtime settings and

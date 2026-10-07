@@ -16,9 +16,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xibodev/compa/v2/pkg/fileutil"
-	"github.com/xibodev/compa/v2/pkg/logger"
-	"github.com/xibodev/compa/v2/pkg/skills"
+	"github.com/xibodev/compa/v3/pkg/fileutil"
+	"github.com/xibodev/compa/v3/pkg/logger"
+	"github.com/xibodev/compa/v3/pkg/skills"
 )
 
 // recordRetention is how long the store keeps a task or pattern record after

@@ -9,8 +9,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/xibodev/compa/v2/pkg"
-	"github.com/xibodev/compa/v2/pkg/config"
+	"github.com/xibodev/compa/v3/pkg"
+	"github.com/xibodev/compa/v3/pkg/config"
 )
 
 // MountRule describes a source-to-target mount exposed inside the Linux

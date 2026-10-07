@@ -13,9 +13,9 @@ import (
 
 	core "github.com/xibodev/llmgw-core"
 
-	"github.com/xibodev/compa/v2/pkg/audio/voice"
-	"github.com/xibodev/compa/v2/pkg/config"
-	"github.com/xibodev/compa/v2/pkg/modelservice"
+	"github.com/xibodev/compa/v3/pkg/audio/voice"
+	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v3/pkg/modelservice"
 )
 
 // Voice modes. A push-to-talk ("cascade") turn ends when the user stops

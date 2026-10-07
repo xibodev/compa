@@ -1,8 +1,8 @@
 package api
 
 import (
-	"github.com/xibodev/compa/v2/pkg/config"
-	"github.com/xibodev/compa/v2/pkg/modelservice"
+	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v3/pkg/modelservice"
 )
 
 // CatalogModel is one model in a provider instance's saved catalog.

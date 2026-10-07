@@ -5,7 +5,7 @@ package agent
 import (
 	"fmt"
 
-	runtimeevents "github.com/xibodev/compa/v2/pkg/events"
+	runtimeevents "github.com/xibodev/compa/v3/pkg/events"
 )
 
 func (al *AgentLoop) newTurnEventScope(agentID, sessionKey string, turnCtx *TurnContext) turnEventScope {

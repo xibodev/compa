@@ -14,7 +14,7 @@ import (
 
 	"golang.org/x/sys/windows"
 
-	ppid "github.com/xibodev/compa/v2/pkg/pid"
+	ppid "github.com/xibodev/compa/v3/pkg/pid"
 )
 
 // gatewayShutdownRequestTimeout bounds asking the kernel to shut down.

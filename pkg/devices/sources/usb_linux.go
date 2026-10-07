@@ -10,8 +10,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/xibodev/compa/v2/pkg/devices/events"
-	"github.com/xibodev/compa/v2/pkg/logger"
+	"github.com/xibodev/compa/v3/pkg/devices/events"
+	"github.com/xibodev/compa/v3/pkg/logger"
 )
 
 var usbClassToCapability = map[string]string{

@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/xibodev/compa/v2/pkg/memory"
-	"github.com/xibodev/compa/v2/pkg/providers"
-	"github.com/xibodev/compa/v2/pkg/session"
+	"github.com/xibodev/compa/v3/pkg/memory"
+	"github.com/xibodev/compa/v3/pkg/providers"
+	"github.com/xibodev/compa/v3/pkg/session"
 )
 
 // Compile-time interface satisfaction checks.

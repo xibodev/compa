@@ -12,8 +12,8 @@ import (
 	"github.com/xibodev/llmgw-core/anonymous"
 	llmgwproviders "github.com/xibodev/llmgw-core/providers"
 
-	"github.com/xibodev/compa/v2/pkg/config"
-	"github.com/xibodev/compa/v2/pkg/providers"
+	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v3/pkg/providers"
 )
 
 // AnonymousVerifyFunc checks the free providers that need no key against cfg,

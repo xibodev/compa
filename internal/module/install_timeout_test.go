@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/v2/internal/module"
+	"github.com/xibodev/compa/v3/internal/module"
 )
 
 // The bug this exists for: a module that describes itself in about a second
