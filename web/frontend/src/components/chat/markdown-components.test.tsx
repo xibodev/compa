@@ -10,6 +10,7 @@ import {
   MARKDOWN_REHYPE_PLUGINS,
   MARKDOWN_REMARK_PLUGINS,
 } from "./markdown"
+import { RevealedImagesContext } from "./revealed-images"
 
 function renderMarkdown(markdown: string) {
   const client = new QueryClient({
@@ -28,6 +29,25 @@ function renderMarkdown(markdown: string) {
   )
 }
 
+// One message's markdown, with the images clicked in it so far.
+function renderMessage(markdown: string, revealed: Set<string>) {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
+  return render(
+    <QueryClientProvider client={client}>
+      <RevealedImagesContext.Provider value={revealed}>
+        <ReactMarkdown
+          remarkPlugins={MARKDOWN_REMARK_PLUGINS}
+          rehypePlugins={MARKDOWN_REHYPE_PLUGINS}
+          components={MARKDOWN_COMPONENTS}
+        >
+          {markdown}
+        </ReactMarkdown>
+      </RevealedImagesContext.Provider>
+    </QueryClientProvider>,
+  )
+}
 const launcherConfig = (extra: Record<string, unknown> = {}) =>
   vi.fn(() =>
     Promise.resolve(
@@ -62,6 +82,33 @@ describe("reply markdown", () => {
     expect(image).toHaveAttribute("referrerpolicy", "no-referrer")
   })
 
+  it("loads a clicked image in that message only", async () => {
+    vi.stubGlobal("fetch", launcherConfig())
+    const image = "![a chart](https://tracker.example/one-message.png)"
+    const first = renderMessage(image, new Set())
+    fireEvent.click(screen.getByRole("button", { name: "a chart" }))
+    await screen.findByRole("img", { name: "a chart" })
+    first.unmount()
+
+    // Another message with the same image still asks first.
+    renderMessage(image, new Set())
+    expect(screen.getByRole("button", { name: "a chart" })).toBeInTheDocument()
+    expect(document.querySelector("img")).toBeNull()
+  })
+
+  it("keeps a clicked image loaded when its message renders again", async () => {
+    vi.stubGlobal("fetch", launcherConfig())
+    const revealed = new Set<string>()
+    const image = "![a chart](https://tracker.example/streamed.png)"
+    const first = renderMessage(image, revealed)
+    fireEvent.click(screen.getByRole("button", { name: "a chart" }))
+    await screen.findByRole("img", { name: "a chart" })
+    first.unmount()
+
+    // The same message, mounted again as it streams on.
+    renderMessage(`${image}\n\nmore text`, revealed)
+    expect(screen.getByRole("img", { name: "a chart" })).toBeInTheDocument()
+  })
   it("names an image without alt text by its site", () => {
     vi.stubGlobal("fetch", launcherConfig())
     renderMarkdown("![](https://cdn.example/a.png)")

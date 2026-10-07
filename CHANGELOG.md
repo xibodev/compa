@@ -13,6 +13,9 @@ Notable changes to Compa, newest first. Versions follow
   three times.
 - A Slack channel message that mentions the bot keeps its files, and one with
   only a file is answered; the files were dropped.
+- With **Remote Images** on **On click**, a click loads an image in that
+  message only; other messages with the same image still ask. It loaded
+  everywhere the image appeared until the page reloaded.
 
 ## 2.1.1 - 2026-10-06
 

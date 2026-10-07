@@ -20,6 +20,7 @@ import {
   MARKDOWN_REMARK_PLUGINS,
 } from "@/components/chat/markdown"
 import { MessageCodeBlock } from "@/components/chat/message-code-block"
+import { RevealedImagesContext } from "@/components/chat/revealed-images"
 import { Button } from "@/components/ui/button"
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard"
 import { formatMessageTime } from "@/hooks/use-web-chat"
@@ -81,6 +82,8 @@ export const AssistantMessage = memo(function AssistantMessage({
     (attachment) => attachment.type !== "image",
   )
   const [isExpanded, setIsExpanded] = useState(false)
+  // The remote images loaded in this message stay loaded while it streams.
+  const [revealedImages] = useState(() => new Set<string>())
   const formattedTimestamp =
     timestamp !== "" ? formatMessageTime(timestamp) : ""
   const toolNames = toolCalls.map((t) => t.function?.name).filter(Boolean)
@@ -215,13 +218,17 @@ export const AssistantMessage = memo(function AssistantMessage({
                           {t("chat.toolCallExplanationLabel")}
                         </div>
                         <div className="prose dark:prose-invert prose-p:my-1.5 prose-p:whitespace-pre-wrap max-w-none text-[13px] leading-relaxed [overflow-wrap:anywhere] break-words opacity-80">
-                          <ReactMarkdown
-                            remarkPlugins={MARKDOWN_REMARK_PLUGINS}
-                            rehypePlugins={MARKDOWN_REHYPE_PLUGINS}
-                            components={MARKDOWN_COMPONENTS}
+                          <RevealedImagesContext.Provider
+                            value={revealedImages}
                           >
-                            {explanation}
-                          </ReactMarkdown>
+                            <ReactMarkdown
+                              remarkPlugins={MARKDOWN_REMARK_PLUGINS}
+                              rehypePlugins={MARKDOWN_REHYPE_PLUGINS}
+                              components={MARKDOWN_COMPONENTS}
+                            >
+                              {explanation}
+                            </ReactMarkdown>
+                          </RevealedImagesContext.Provider>
                         </div>
                       </div>
                     )}
@@ -270,13 +277,15 @@ export const AssistantMessage = memo(function AssistantMessage({
                   : "prose-p:my-2 prose-p:whitespace-pre-wrap p-4 text-[15px] leading-relaxed",
               )}
             >
-              <ReactMarkdown
-                remarkPlugins={MARKDOWN_REMARK_PLUGINS}
-                rehypePlugins={MARKDOWN_REHYPE_PLUGINS}
-                components={MARKDOWN_COMPONENTS}
-              >
-                {displayContent}
-              </ReactMarkdown>
+              <RevealedImagesContext.Provider value={revealedImages}>
+                <ReactMarkdown
+                  remarkPlugins={MARKDOWN_REMARK_PLUGINS}
+                  rehypePlugins={MARKDOWN_REHYPE_PLUGINS}
+                  components={MARKDOWN_COMPONENTS}
+                >
+                  {displayContent}
+                </ReactMarkdown>
+              </RevealedImagesContext.Provider>
             </div>
           )}
 
