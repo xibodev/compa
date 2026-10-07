@@ -763,6 +763,43 @@ func (c *OneBotChannel) parseMessageSegments(
 	return result
 }
 
+// cqUnescaper undoes OneBot's escaping of text and CQ code values.
+var cqUnescaper = strings.NewReplacer("&#91;", "[", "&#93;", "]", "&#44;", ",", "&amp;", "&")
+
+// cqSegments splits a message in OneBot's string format, text with CQ codes
+// such as [CQ:image,file=a.png,url=https://...], into the segments of the
+// array format: {"type": "image", "data": {"file": "a.png", "url": "..."}}.
+func cqSegments(s string) []map[string]any {
+	var segments []map[string]any
+	addText := func(text string) {
+		if text != "" {
+			segments = append(segments, map[string]any{
+				"type": "text", "data": map[string]any{"text": cqUnescaper.Replace(text)},
+			})
+		}
+	}
+	for {
+		start := strings.Index(s, "[CQ:")
+		end := strings.IndexByte(s[max(start, 0):], ']')
+		if start < 0 || end < 0 {
+			break
+		}
+		end += start
+		addText(s[:start])
+		fields := strings.Split(s[start+len("[CQ:"):end], ",")
+		data := map[string]any{}
+		for _, field := range fields[1:] {
+			if key, value, ok := strings.Cut(field, "="); ok {
+				data[key] = cqUnescaper.Replace(value)
+			}
+		}
+		segments = append(segments, map[string]any{"type": fields[0], "data": data})
+		s = s[end+1:]
+	}
+	addText(s)
+	return segments
+}
+
 // parseSegments reads a message's text, mention, reply and the media it lists,
 // without downloading anything.
 func parseSegments(raw json.RawMessage, selfID int64) parseMessageResult {
@@ -770,22 +807,11 @@ func parseSegments(raw json.RawMessage, selfID int64) parseMessageResult {
 		return parseMessageResult{}
 	}
 
+	var segments []map[string]any
 	var s string
 	if err := json.Unmarshal(raw, &s); err == nil {
-		mentioned := false
-		if selfID > 0 {
-			cqAt := fmt.Sprintf("[CQ:at,qq=%d]", selfID)
-			if strings.Contains(s, cqAt) {
-				mentioned = true
-				s = strings.ReplaceAll(s, cqAt, "")
-				s = strings.TrimSpace(s)
-			}
-		}
-		return parseMessageResult{Text: s, IsBotMentioned: mentioned}
-	}
-
-	var segments []map[string]any
-	if err := json.Unmarshal(raw, &segments); err != nil {
+		segments = cqSegments(s)
+	} else if err := json.Unmarshal(raw, &segments); err != nil {
 		return parseMessageResult{}
 	}
 

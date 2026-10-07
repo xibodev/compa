@@ -32,6 +32,9 @@ Notable changes to Compa, newest first. Versions follow
 - On Telegram, the path of a file sent in a reply stays with the reply; it
   could take the place of the quoted message's photo, document or voice
   message, which the agent doesn't get.
+- OneBot downloads the pictures, videos, files and voice messages of a message
+  sent in its string format, with CQ codes, and reads its reply and escaped
+  characters; the agent got the codes as text.
 
 ## 3.0.0 - 2026-10-06
 

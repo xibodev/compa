@@ -292,3 +292,91 @@ func TestHandleMessage_MediaStaysInPlaceAfterTheGroupTrigger(t *testing.T) {
 		t.Fatal("the group message was not published")
 	}
 }
+
+// A message in OneBot's string format has its media downloaded and tagged in
+// place, as in the array format, and its escapes undone.
+func TestParseMessageSegments_StringFormat(t *testing.T) {
+	dir := t.TempDir()
+	var names []string
+	ch := &OneBotChannel{
+		downloadFn: func(_, filename string) string {
+			names = append(names, filename)
+			localPath := filepath.Join(dir, "download")
+			if err := os.WriteFile(localPath, []byte("img"), 0o600); err != nil {
+				t.Error(err)
+				return ""
+			}
+			return localPath
+		},
+	}
+
+	raw, err := json.Marshal("see &#91;1&#93; &amp; [CQ:image,file=a&#44;b.png,url=https://cdn.example.com/a.png] here [CQ:face,id=14]")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := ch.parseMessageSegments(raw, 0, media.NewFileMediaStore(), "onebot:test:string")
+
+	if want := "see [1] & [image] here [face:14]"; result.Text != want {
+		t.Fatalf("Text = %q, want %q", result.Text, want)
+	}
+	if len(result.Media) != 1 || strings.Join(names, ",") != "a,b.png" {
+		t.Fatalf("media = %v, downloaded %q; want one a,b.png", result.Media, names)
+	}
+}
+
+// A reply and a mention of the bot in the string format.
+func TestParseSegments_StringFormatReplyAndMention(t *testing.T) {
+	raw, err := json.Marshal("[CQ:reply,id=123][CQ:at,qq=10001] hello [CQ:at,qq=20002]")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := parseSegments(raw, 10001)
+
+	if !result.IsBotMentioned || result.ReplyTo != "123" || result.Text != "hello" {
+		t.Fatalf("mentioned = %v, reply to %q, text %q; want true, 123, hello",
+			result.IsBotMentioned, result.ReplyTo, result.Text)
+	}
+}
+
+// A message in the string format, with raw_message beside it as OneBot sends
+// it, reaches the agent with its media downloaded and tagged in place.
+func TestHandleMessage_StringFormatMedia(t *testing.T) {
+	messageBus := bus.NewMessageBus()
+	ch, err := NewOneBotChannel(&config.Channel{
+		Type: config.ChannelOneBot, Enabled: true, AllowFrom: config.FlexibleStringSlice{"111"},
+	}, &config.OneBotSettings{}, messageBus)
+	if err != nil {
+		t.Fatalf("NewOneBotChannel: %v", err)
+	}
+	ch.ctx = context.Background()
+	ch.SetAccessPolicy(config.DMPolicyPairing, config.GroupPolicyAllowlist)
+	localPath := filepath.Join(t.TempDir(), "a.png")
+	if err := os.WriteFile(localPath, []byte("img"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ch.downloadFn = func(string, string) string { return localPath }
+
+	text := "see [CQ:image,file=a.png,url=https://cdn.example.com/a.png] here"
+	message, err := json.Marshal(text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch.handleRawEvent(&oneBotRawEvent{
+		PostType:    "message",
+		MessageType: "private",
+		MessageID:   json.RawMessage(`"m10"`),
+		UserID:      json.RawMessage(`111`),
+		SelfID:      json.RawMessage(`10001`),
+		Message:     message,
+		RawMessage:  text,
+	})
+
+	select {
+	case inbound := <-messageBus.InboundChan():
+		if inbound.Content != "see [image] here" || len(inbound.Media) != 1 {
+			t.Fatalf("published %q with %d media, want %q with one", inbound.Content, len(inbound.Media), "see [image] here")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("the message was not published")
+	}
+}
