@@ -38,6 +38,9 @@ Notable changes to Compa, newest first. Versions follow
 - **Gateway restart required** clears once the gateway reloads the saved
   config by itself, with `gateway.hot_reload` on or after `/reload` in a chat;
   it stayed until the gateway restarted.
+- The agent can read the skills in `~/.compa/skills` and in the built-in
+  skills folder, as its prompt tells it to; with **Restrict to Workspace** on,
+  the default, `read_file` refused them as outside the workspace.
 
 ## 3.0.0 - 2026-10-06
 
