@@ -329,7 +329,21 @@ func (p *Pipeline) CallLLM(
 				"model": exec.llmModelName,
 				"error": err.Error(),
 			})
+			al.emitEvent(
+				runtimeevents.KindAgentLLMRetry,
+				ts.eventMeta("runTurn", "turn.llm.retry"),
+				LLMRetryPayload{
+					Attempt:    retry + 1,
+					MaxRetries: maxRetries,
+					Reason:     "tools_unsupported",
+					Error:      err.Error(),
+				},
+			)
+			if !constants.IsInternalChannel(ts.channel) {
+				al.bus.PublishOutbound(ctx, outboundMessageForTurn(ts, toolsUnsupportedNotice(exec.llmModelName)))
+			}
 			exec.providerToolDefs = nil
+			exec.callMessages = p.messagesWithoutToolUseRule(ts, exec)
 			exec.response, err = callLLM(exec.callMessages, nil)
 			if err == nil {
 				break
@@ -843,6 +857,40 @@ const maxLLMRetryAfterWait = time.Minute
 var ErrToolsRequired = errors.New(
 	"The selected model doesn't support tool calls, and this agent requires them. Choose a model that supports tool calling.",
 )
+
+// toolsUnsupportedNotice tells the chat that the turn's model rejected tool
+// calls, so the reply that follows is written without tools.
+func toolsUnsupportedNotice(model string) string {
+	subject := "The model"
+	if model = strings.TrimSpace(model); model != "" {
+		subject = "Model " + model
+	}
+	return subject + " doesn't support tool calls. Retrying without tools, so this reply can't run commands or change files."
+}
+
+// messagesWithoutToolUseRule returns the call's messages with the system
+// message rebuilt for a call without tools: without the rule to always use
+// tools or the parts that describe tools, as for a turn profile with no
+// callable tools. The other messages, which a BeforeLLM hook may have
+// changed, stay as they are; hooks can't change the system message.
+func (p *Pipeline) messagesWithoutToolUseRule(ts *turnState, exec *turnExecution) []providers.Message {
+	messages := exec.callMessages
+	if ts.agent.ContextBuilder == nil || len(messages) == 0 || messages[0].Role != "system" {
+		return messages
+	}
+	req := promptBuildRequestForTurn(ts, nil, exec.summary, "", nil, p.Cfg)
+	req.ActiveSkills = ts.agent.ContextBuilder.ResolveActiveSkillsForContext(ts.activeSkills)
+	req.SuppressToolUseRule = true
+	req.ToolUseFallback = false
+	rebuilt := ts.agent.ContextBuilder.BuildMessagesFromPrompt(req)
+	withoutRule := make([]providers.Message, 0, len(messages))
+	// A system prompt that was only the rule, under a turn profile that turns
+	// Compa's own system prompt off, goes altogether.
+	if rebuilt[0].Role == "system" {
+		withoutRule = append(withoutRule, rebuilt[0])
+	}
+	return append(withoutRule, messages[1:]...)
+}
 
 // llmRetryReason names why a retryable call failed, from core's
 // classification of its error.

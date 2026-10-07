@@ -38,6 +38,10 @@ Notable changes to Compa, newest first. Versions follow
 - **Gateway restart required** clears once the gateway reloads the saved
   config by itself, with `gateway.hot_reload` on or after `/reload` in a chat;
   it stayed until the gateway restarted.
+- When the model rejects tool calls, the chat is told that the reply comes
+  without tools, `agent.llm.retry` reports the reason `tools_unsupported`, and
+  the retried request no longer tells the model to always use tools; only the
+  log said so.
 
 ## 3.0.0 - 2026-10-06
 

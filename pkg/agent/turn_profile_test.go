@@ -58,7 +58,7 @@ func (p *turnProfileSideQuestionCaptureProvider) GetDefaultModel() string {
 func newTurnProfileAgentLoop(
 	t *testing.T,
 	cfg *config.Config,
-	provider *turnProfileCaptureProvider,
+	provider providers.LLMProvider,
 ) *AgentLoop {
 	t.Helper()
 	t.Setenv("COMPA_BUILTIN_SKILLS", t.TempDir())
@@ -531,6 +531,45 @@ func TestTurnProfile_SystemPromptOffAddsToolFallbackWhenToolsVisible(t *testing.
 	}
 	if got := strings.TrimSpace(provider.messages[0].Content); got != toolUseSystemPromptRule() {
 		t.Fatalf("fallback prompt = %q, want existing tool rule %q", got, toolUseSystemPromptRule())
+	}
+}
+
+// A model that rejects tool calls gets the retry without the fallback prompt,
+// which is only the rule to always use tools.
+func TestTurnProfile_ToolsUnsupportedRetryDropsTheToolFallback(t *testing.T) {
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				TurnProfile: config.TurnProfileConfig{
+					Enabled:      true,
+					History:      config.TurnProfileBlock{Mode: config.TurnProfileModeOff},
+					SystemPrompt: config.TurnProfileBlock{Mode: config.TurnProfileModeOff},
+					Skills:       config.TurnProfileBlock{Mode: config.TurnProfileModeOff},
+					Tools: config.TurnProfileBlock{
+						Mode:  config.TurnProfileModeCustom,
+						Allow: []string{"echo_text"},
+					},
+				},
+			},
+		},
+	}
+	provider := &toolsRejectingProvider{}
+	al := newTurnProfileAgentLoop(t, cfg, provider)
+	al.RegisterTool(&echoTextTool{})
+	agent := al.GetRegistry().GetDefaultAgent()
+
+	if _, err := al.runAgentLoop(context.Background(), agent, processOptions{
+		Dispatch: DispatchRequest{
+			SessionKey:  "agent:default:test-tool-fallback-unsupported",
+			UserMessage: "hello",
+		},
+		DefaultResponse: defaultResponse,
+	}); err != nil {
+		t.Fatalf("runAgentLoop() error = %v", err)
+	}
+	if prompts := provider.prompts(); len(prompts) != 2 ||
+		strings.TrimSpace(prompts[0]) != toolUseSystemPromptRule() || prompts[1] != "" {
+		t.Fatalf("system prompts = %q, want the tool rule, then none", prompts)
 	}
 }
 
