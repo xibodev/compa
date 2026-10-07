@@ -567,7 +567,11 @@ func (m *Manager) preSend(ctx context.Context, name string, msg bus.OutboundMess
 					}
 					return []string{entry.id}, true
 				}
-				// edit failed → fall through to normal Send
+				// The edit failed, so the message is sent anew; the placeholder
+				// would stay behind.
+				if deleter, ok := ch.(MessageDeleter); ok {
+					deleter.DeleteMessage(ctx, chatID, entry.id) // best effort
+				}
 			}
 		}
 	}

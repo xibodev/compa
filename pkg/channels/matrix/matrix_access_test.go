@@ -257,3 +257,79 @@ func TestSendMediaFailingAfterADeliveredPartIsNotRetried(t *testing.T) {
 		t.Error("the progress message is still tracked after part of the reply went out")
 	}
 }
+
+// sizeTestChannel is a Matrix channel whose homeserver records the size of
+// each event it gets and answers with status.
+func sizeTestChannel(t *testing.T, status int, body string) (*MatrixChannel, *[]int) {
+	t.Helper()
+	var sizes []int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, _ := io.ReadAll(r.Body)
+		sizes = append(sizes, len(data))
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(server.Close)
+	client, err := mautrix.NewClient(server.URL, id.UserID("@compa:matrix.test"), "")
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+	ch := &MatrixChannel{
+		BaseChannel: channels.NewBaseChannel("matrix", nil, bus.NewMessageBus(), nil),
+		client:      client,
+		config:      &config.MatrixSettings{},
+		progress:    channels.NewToolFeedbackAnimator(nil),
+	}
+	ch.SetRunning(true)
+	return ch, &sizes
+}
+
+// Tool feedback goes out as one event, and its animated edits replace it, so
+// it is shortened until each of them fits one event.
+func TestToolFeedbackFitsOneEvent(t *testing.T) {
+	ch, sizes := sizeTestChannel(t, http.StatusOK, `{"event_id":"$1"}`)
+	feedback := "running a tool\n" + strings.Repeat("ü", 70000)
+
+	_, err := ch.Send(context.Background(), bus.OutboundMessage{
+		ChatID:  "!room:matrix.test",
+		Content: feedback,
+		Context: bus.InboundContext{Raw: map[string]string{"message_kind": "tool_feedback"}},
+	})
+	if err != nil {
+		t.Fatalf("Send() error = %v", err)
+	}
+	if len(*sizes) != 1 || (*sizes)[0] > maxEventContentBytes {
+		t.Fatalf("sent events of %v bytes, want one of at most %d", *sizes, maxEventContentBytes)
+	}
+	fitted := ch.PrepareToolFeedbackMessageContent(feedback)
+	if n := ch.editBytes(channels.InitialAnimatedToolFeedbackContent(fitted)); n > maxEventContentBytes {
+		t.Fatalf("an edit of the progress message is %d bytes, more than %d", n, maxEventContentBytes)
+	}
+	if !strings.HasPrefix(fitted, "running a tool") {
+		t.Fatalf("the fitted feedback lost its first line: %.40q", fitted)
+	}
+}
+
+// An edit too large for one event fails at once, without retries, so the
+// caller sends the text anew.
+func TestEditTooLargeForOneEventFails(t *testing.T) {
+	ch, sizes := sizeTestChannel(t, http.StatusOK, `{"event_id":"$1"}`)
+
+	err := ch.EditMessage(context.Background(), "!room:matrix.test", "$old", strings.Repeat("ü", 40000))
+	if !errors.Is(err, channels.ErrSendFailed) {
+		t.Fatalf("EditMessage() error = %v, want a failure that is not retried", err)
+	}
+	if len(*sizes) != 0 {
+		t.Fatalf("sent %d events, want none", len(*sizes))
+	}
+}
+
+// The homeserver refusing an event as too large isn't retried either.
+func TestSendRefusedAsTooLargeIsNotRetried(t *testing.T) {
+	ch, _ := sizeTestChannel(t, http.StatusRequestEntityTooLarge, `{"errcode":"M_TOO_LARGE","error":"too large"}`)
+
+	_, err := ch.Send(context.Background(), bus.OutboundMessage{ChatID: "!room:matrix.test", Content: "hello"})
+	if !errors.Is(err, channels.ErrSendFailed) || errors.Is(err, channels.ErrTemporary) {
+		t.Fatalf("Send() error = %v, want a failure that is not retried", err)
+	}
+}

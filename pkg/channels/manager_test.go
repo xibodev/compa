@@ -2569,7 +2569,7 @@ func TestRunWorker_FinalizedStreamSuppressesMarkerSplitBeforeSending(t *testing.
 func TestPreSend_PlaceholderEditFails_FallsThrough(t *testing.T) {
 	m := newTestManager()
 
-	ch := &mockMessageEditor{
+	ch := &mockDeletingMessageEditor{mockMessageEditor: mockMessageEditor{
 		mockChannel: mockChannel{
 			sendFn: func(_ context.Context, _ bus.OutboundMessage) error {
 				return nil
@@ -2578,7 +2578,7 @@ func TestPreSend_PlaceholderEditFails_FallsThrough(t *testing.T) {
 		editFn: func(_ context.Context, _, _, _ string) error {
 			return fmt.Errorf("edit failed")
 		},
-	}
+	}}
 
 	m.RecordPlaceholder("test", "123", "456")
 
@@ -2587,6 +2587,10 @@ func TestPreSend_PlaceholderEditFails_FallsThrough(t *testing.T) {
 
 	if edited {
 		t.Fatal("expected preSend to return false when edit fails")
+	}
+	// The message is sent anew, so the placeholder is deleted.
+	if ch.deleteCalls != 1 || ch.deletedMessageID != "456" {
+		t.Fatalf("deleted %d messages, last %q; want the placeholder 456", ch.deleteCalls, ch.deletedMessageID)
 	}
 }
 
