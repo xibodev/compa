@@ -6531,6 +6531,10 @@ func TestInjectPathTags_HandlesVariousChannelPlaceholders(t *testing.T) {
 		{"bare_audio", "[audio]", "[audio:/tmp/a.m4a]", "[audio:/tmp/a.m4a]"},
 		{"bare_video", "[video]", "[video:/tmp/v.mp4]", "[video:/tmp/v.mp4]"},
 		{"bare_file", "[file]", "[file:/tmp/f.pdf]", "[file:/tmp/f.pdf]"},
+		// Telegram / OneBot / Delta Chat voice message
+		{"voice", "listen [voice]", "[audio:/tmp/v.ogg]", "listen [audio:/tmp/v.ogg]"},
+		// A transcript is not a placeholder
+		{"transcript", "[voice: hello]", "[audio:/tmp/a.ogg]", "[voice: hello] [audio:/tmp/a.ogg]"},
 		// Mixed surrounding text
 		{
 			"with_text",
