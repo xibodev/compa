@@ -326,11 +326,52 @@ func TestStore_LoadLearningRecordsIgnoresTruncatedTrailingLine(t *testing.T) {
 		t.Fatalf("loaded[0].ID = %q, want %q", loaded[0].ID, "case-1")
 	}
 
+	// The broken line is saved aside and dropped from the store, so loading
+	// again doesn't find it and warn again.
 	data, err := os.ReadFile(paths.TaskRecords)
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
+	if err != nil || strings.Contains(string(data), "\"broken\"") {
+		t.Fatalf("store = %q, %v; want the broken line dropped", data, err)
 	}
-	if !strings.Contains(string(data), "\"broken\"") {
-		t.Fatalf("expected test fixture to include broken trailing line")
+	quarantined, err := os.ReadFile(paths.TaskRecords + ".corrupt")
+	if err != nil || !strings.Contains(string(quarantined), "\"broken\"") {
+		t.Fatalf("quarantine = %q, %v; want the broken line", quarantined, err)
+	}
+}
+
+// A corrupt line that can't be saved to <file>.corrupt stays in the store,
+// through a load and through a rewrite.
+func TestStore_KeepsCorruptLineItCannotSaveAside(t *testing.T) {
+	paths := evolution.NewPaths(t.TempDir(), "")
+	if err := os.MkdirAll(paths.RootDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lines := "{\"id\":\"case-1\",\"kind\":\"task\"}\n{\"id\":\"broken\"\n"
+	if err := os.WriteFile(paths.TaskRecords, []byte(lines), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(paths.TaskRecords+".corrupt", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	store := evolution.NewStore(paths)
+
+	loaded, err := store.LoadTaskRecords()
+	if err != nil || len(loaded) != 1 {
+		t.Fatalf("loaded = %+v, %v; want case-1", loaded, err)
+	}
+	data, err := os.ReadFile(paths.TaskRecords)
+	if err != nil || string(data) != lines {
+		t.Fatalf("store = %q, %v; want it unchanged", data, err)
+	}
+
+	err = store.UpdateTaskRecords(func(records []evolution.LearningRecord) bool {
+		records[0].Summary = "judged"
+		return true
+	})
+	if err != nil {
+		t.Fatalf("UpdateTaskRecords: %v", err)
+	}
+	data, err = os.ReadFile(paths.TaskRecords)
+	if err != nil || !strings.Contains(string(data), "judged") || !strings.Contains(string(data), "\"broken\"") {
+		t.Fatalf("store = %q, %v; want the update and the broken line", data, err)
 	}
 }
