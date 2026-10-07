@@ -203,3 +203,79 @@ func TestHandleMessage_GroupTriggerBeforeDownload(t *testing.T) {
 		t.Fatalf("downloads = %d, want 1", downloads)
 	}
 }
+
+// Each media tag stays where its segment was, between the right words; a
+// download that failed leaves no tag.
+func TestParseMessageSegments_KeepsMediaInPlace(t *testing.T) {
+	localPath := filepath.Join(t.TempDir(), "b.png")
+	if err := os.WriteFile(localPath, []byte("fake-image"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ch := &OneBotChannel{
+		downloadFn: func(urlStr, _ string) string {
+			if strings.HasSuffix(urlStr, "a.png") {
+				return ""
+			}
+			return localPath
+		},
+	}
+
+	raw := json.RawMessage(`[
+		{"type":"text","data":{"text":" before "}},
+		{"type":"image","data":{"url":"https://cdn.example.com/a.png","file":"a.png"}},
+		{"type":"text","data":{"text":"middle"}},
+		{"type":"image","data":{"url":"https://cdn.example.com/b.png","file":"b.png"}},
+		{"type":"text","data":{"text":"after"}}
+	]`)
+	result := ch.parseMessageSegments(raw, 0, media.NewFileMediaStore(), "onebot:test:order")
+
+	if want := "before middle[image]after"; result.Text != want {
+		t.Fatalf("Text = %q, want %q", result.Text, want)
+	}
+	if len(result.Media) != 1 {
+		t.Fatalf("Media count = %d, want 1", len(result.Media))
+	}
+}
+
+// A group trigger takes its prefix off the text; the tags still go where
+// their segments were.
+func TestHandleMessage_MediaStaysInPlaceAfterTheGroupTrigger(t *testing.T) {
+	messageBus := bus.NewMessageBus()
+	ch, err := NewOneBotChannel(&config.Channel{
+		Type: config.ChannelOneBot, Enabled: true, AllowFrom: config.FlexibleStringSlice{"group:30003"},
+		GroupTrigger: config.GroupTriggerConfig{Prefixes: []string{"/ai"}},
+	}, &config.OneBotSettings{}, messageBus)
+	if err != nil {
+		t.Fatalf("NewOneBotChannel: %v", err)
+	}
+	ch.ctx = context.Background()
+	ch.SetAccessPolicy(config.DMPolicyPairing, config.GroupPolicyAllowlist)
+	localPath := filepath.Join(t.TempDir(), "a.png")
+	if err := os.WriteFile(localPath, []byte("img"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ch.downloadFn = func(string, string) string { return localPath }
+
+	ch.handleRawEvent(&oneBotRawEvent{
+		PostType:    "message",
+		MessageType: "group",
+		MessageID:   json.RawMessage(`"m9"`),
+		UserID:      json.RawMessage(`20002`),
+		GroupID:     json.RawMessage(`30003`),
+		SelfID:      json.RawMessage(`10001`),
+		Message: json.RawMessage(`[
+			{"type":"text","data":{"text":"/ai before "}},
+			{"type":"image","data":{"url":"https://cdn.example.com/a.png","file":"a.png"}},
+			{"type":"text","data":{"text":" after"}}
+		]`),
+	})
+
+	select {
+	case inbound := <-messageBus.InboundChan():
+		if want := "before [image] after"; inbound.Content != want {
+			t.Fatalf("published %q, want %q", inbound.Content, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("the group message was not published")
+	}
+}

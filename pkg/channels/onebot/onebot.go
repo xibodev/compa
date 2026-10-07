@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
@@ -745,6 +746,7 @@ type pendingMedia struct {
 	tag      string // how the text marks it, such as "[image]"
 	url      string
 	filename string
+	at       int // where the segment stands in the message's text, in bytes
 }
 
 // parseMessageSegments parses a message and downloads its media.
@@ -755,9 +757,9 @@ func (c *OneBotChannel) parseMessageSegments(
 	scope string,
 ) parseMessageResult {
 	result := parseSegments(raw, selfID)
-	refs, tags := c.fetchMedia(result.pending, store, scope)
+	refs, fetched := c.fetchMedia(result.pending, store, scope)
 	result.Media = refs
-	result.Text = strings.TrimSpace(result.Text + tags)
+	result.Text = withMediaTags(result.Text, 0, fetched)
 	return result
 }
 
@@ -787,7 +789,7 @@ func parseSegments(raw json.RawMessage, selfID int64) parseMessageResult {
 		return parseMessageResult{}
 	}
 
-	var textParts []string
+	var text strings.Builder
 	mentioned := false
 	selfIDStr := strconv.FormatInt(selfID, 10)
 	var pending []pendingMedia
@@ -801,7 +803,7 @@ func parseSegments(raw json.RawMessage, selfID int64) parseMessageResult {
 		case "text":
 			if data != nil {
 				if t, ok := data["text"].(string); ok {
-					textParts = append(textParts, t)
+					text.WriteString(t)
 				}
 			}
 
@@ -822,7 +824,9 @@ func parseSegments(raw json.RawMessage, selfID int64) parseMessageResult {
 					} else if n, ok := data["name"].(string); ok && n != "" {
 						filename = n
 					}
-					pending = append(pending, pendingMedia{tag: "[" + segType + "]", url: url, filename: filename})
+					pending = append(pending, pendingMedia{
+						tag: "[" + segType + "]", url: url, filename: filename, at: text.Len(),
+					})
 				}
 			}
 
@@ -830,7 +834,7 @@ func parseSegments(raw json.RawMessage, selfID int64) parseMessageResult {
 			if data != nil {
 				url, _ := data["url"].(string)
 				if url != "" {
-					pending = append(pending, pendingMedia{tag: "[voice]", url: url, filename: "voice.amr"})
+					pending = append(pending, pendingMedia{tag: "[voice]", url: url, filename: "voice.amr", at: text.Len()})
 				}
 			}
 
@@ -844,18 +848,26 @@ func parseSegments(raw json.RawMessage, selfID int64) parseMessageResult {
 		case "face":
 			if data != nil {
 				faceID, _ := data["id"]
-				textParts = append(textParts, fmt.Sprintf("[face:%v]", faceID))
+				fmt.Fprintf(&text, "[face:%v]", faceID)
 			}
 
 		case "forward":
-			textParts = append(textParts, "[forward message]")
+			text.WriteString("[forward message]")
 
 		default:
 		}
 	}
 
+	// Where each media segment stands, in the trimmed text.
+	joined := text.String()
+	lead := len(joined) - len(strings.TrimLeftFunc(joined, unicode.IsSpace))
+	trimmed := strings.TrimSpace(joined)
+	for i := range pending {
+		pending[i].at = min(max(pending[i].at-lead, 0), len(trimmed))
+	}
+
 	return parseMessageResult{
-		Text:           strings.TrimSpace(strings.Join(textParts, "")),
+		Text:           trimmed,
 		IsBotMentioned: mentioned,
 		ReplyTo:        replyTo,
 		pending:        pending,
@@ -863,10 +875,14 @@ func parseSegments(raw json.RawMessage, selfID int64) parseMessageResult {
 }
 
 // fetchMedia downloads the listed media into the store and returns their refs
-// and the tags that stand for them in the text.
-func (c *OneBotChannel) fetchMedia(pending []pendingMedia, store media.MediaStore, scope string) ([]string, string) {
+// and the items it downloaded, whose tags stand for them in the text.
+func (c *OneBotChannel) fetchMedia(
+	pending []pendingMedia,
+	store media.MediaStore,
+	scope string,
+) ([]string, []pendingMedia) {
 	var refs []string
-	var tags strings.Builder
+	var fetched []pendingMedia
 	for _, item := range pending {
 		localPath := c.downloadInboundFile(item.url, item.filename)
 		if localPath == "" {
@@ -883,9 +899,25 @@ func (c *OneBotChannel) fetchMedia(pending []pendingMedia, store media.MediaStor
 			}
 		}
 		refs = append(refs, ref)
-		tags.WriteString(item.tag)
+		fetched = append(fetched, item)
 	}
-	return refs, tags.String()
+	return refs, fetched
+}
+
+// withMediaTags puts the tag of each fetched media item into text where its
+// segment stood, so the agent reads each picture between the right words.
+// text is the message's text from byte base on, as the group trigger left it.
+func withMediaTags(text string, base int, fetched []pendingMedia) string {
+	var b strings.Builder
+	pos := 0
+	for _, item := range fetched {
+		at := min(max(item.at-base, pos), len(text))
+		b.WriteString(text[pos:at])
+		b.WriteString(item.tag)
+		pos = at
+	}
+	b.WriteString(text[pos:])
+	return strings.TrimSpace(b.String())
 }
 
 // downloadInboundFile downloads a media URL into the media directory,
@@ -1175,9 +1207,15 @@ func (c *OneBotChannel) handleMessage(raw *oneBotRawEvent) {
 	}
 
 	if hasMedia {
-		refs, tags := c.fetchMedia(parsed.pending, c.GetMediaStore(), scope)
+		refs, fetched := c.fetchMedia(parsed.pending, c.GetMediaStore(), scope)
 		parsed.Media = refs
-		content = strings.TrimSpace(content + tags)
+		// content is what the group trigger left of parsed.Text; where that
+		// can't be told, the tags go at the end.
+		base := -len(content)
+		if i := strings.Index(parsed.Text, content); i >= 0 {
+			base = i
+		}
+		content = withMediaTags(content, base, fetched)
 		if content == "" {
 			return
 		}
