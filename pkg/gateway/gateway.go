@@ -321,7 +321,7 @@ func Run(debug bool, homePath, configPath string, allowEmptyStartup bool) (runEr
 	// server ready so GET /ready reports "ready". The health endpoints are
 	// mounted on the shared gateway mux, so Health.Server.Start() (which would
 	// otherwise set this) is never called — we flip the flag explicitly here.
-	runningServices.HealthServer.SetConfigDigest(cfg.SourceDigest())
+	runningServices.HealthServer.SetConfigDigest(config.NewRestartSignature(cfg).Digest())
 	runningServices.HealthServer.SetReady(true)
 	publishGatewayEvent(agentLoop, runtimeevents.KindGatewayReady, startedAt, nil)
 	closeListeners = false
@@ -535,7 +535,7 @@ func executeReload(
 		// /ready reports the config applied now, so the launcher sees the
 		// gateway runs the saved config however the reload was asked for.
 		if runningServices.HealthServer != nil {
-			runningServices.HealthServer.SetConfigDigest(newCfg.SourceDigest())
+			runningServices.HealthServer.SetConfigDigest(config.NewRestartSignature(newCfg).Digest())
 		}
 		publishGatewayEvent(agentLoop, runtimeevents.KindGatewayReloadCompleted, startedAt, nil)
 	}()

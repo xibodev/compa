@@ -44,12 +44,6 @@ func loadSecurityConfig(cfg *Config, securityPath string) error {
 		}
 		return fmt.Errorf("failed to read security config: %w", err)
 	}
-	return mergeSecurityConfig(cfg, securityPath, data)
-}
-
-// mergeSecurityConfig merges the secure field values of data, the content of
-// the .security.yml at securityPath, into cfg.
-func mergeSecurityConfig(cfg *Config, securityPath string, data []byte) error {
 
 	// Save existing channels before unmarshal
 	savedChannels := make(ChannelsConfig, len(cfg.Channels))

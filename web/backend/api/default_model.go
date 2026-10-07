@@ -92,55 +92,22 @@ func (h *Handler) handlePutDefaultModel(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, defaultModelResponse{Selection: selection})
 }
 
-// modelSelection is one model selection a config holds.
-type modelSelection struct {
-	// key names the setting across edits: an agent's model is keyed by the
-	// agent's ID, which a reordered agent list keeps.
-	key string
-	// path is the setting's config path.
-	path  string
-	value string
-}
-
-// modelSelections returns the model selections cfg holds: the default, image
-// and light models and each agent's model, trimmed.
-func modelSelections(cfg *config.Config) []modelSelection {
-	if cfg == nil {
-		return nil
-	}
-	defaults := cfg.Agents.Defaults
-	selections := []modelSelection{
-		{key: "default", path: "agents.defaults.model_name", value: defaults.ModelName},
-		{key: "image", path: "agents.defaults.image_model", value: defaults.ImageModel},
-	}
-	if defaults.Routing != nil {
-		selections = append(selections, modelSelection{key: "light", path: "agents.defaults.routing.light_model", value: defaults.Routing.LightModel})
-	}
-	for i, agent := range cfg.Agents.List {
-		selections = append(selections, modelSelection{key: "agent:" + agent.ID, path: fmt.Sprintf("agents.list[%d].model", i), value: agent.Model})
-	}
-	for i := range selections {
-		selections[i].value = strings.TrimSpace(selections[i].value)
-	}
-	return selections
-}
-
 // checkChangedSelections checks each model selection cfg sets to a value
 // previous does not hold: like PUT /api/default-model, it must resolve
 // against cfg and the saved catalogs. A selection is checked when it is set,
 // so one left dangling by a provider change never blocks an unrelated edit.
 func (h *Handler) checkChangedSelections(previous, cfg *config.Config) []string {
 	held := make(map[string]string)
-	for _, selection := range modelSelections(previous) {
-		held[selection.key] = selection.value
+	for _, selection := range config.ModelSelections(previous) {
+		held[selection.Key] = selection.Value
 	}
 	var errs []string
-	for _, selection := range modelSelections(cfg) {
-		if value, ok := held[selection.key]; ok && value == selection.value {
+	for _, selection := range config.ModelSelections(cfg) {
+		if value, ok := held[selection.Key]; ok && value == selection.Value {
 			continue
 		}
-		if err := h.modelResolver.Check(cfg, selection.value); err != nil {
-			errs = append(errs, fmt.Sprintf("%s: %v", selection.path, err))
+		if err := h.modelResolver.Check(cfg, selection.Value); err != nil {
+			errs = append(errs, fmt.Sprintf("%s: %v", selection.Path, err))
 		}
 	}
 	return errs

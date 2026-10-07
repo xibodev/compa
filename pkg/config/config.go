@@ -5,8 +5,6 @@
 package config
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -73,29 +71,6 @@ type Config struct {
 	// envOverrides are the settings the environment changed while the
 	// config was loaded; SaveConfig keeps them out of the files.
 	envOverrides []envOverride
-
-	// sourceDigest identifies the files LoadConfig read; see SourceDigest.
-	sourceDigest string
-}
-
-// SourceDigest identifies the content of the config.json and .security.yml
-// LoadConfig read for c: configs loaded from the same files have the same
-// one, whatever process loaded them. It is empty for a config LoadConfig
-// didn't load.
-func (c *Config) SourceDigest() string {
-	if c == nil {
-		return ""
-	}
-	return c.sourceDigest
-}
-
-// extendSourceDigest is digest extended by the content of one more file.
-func extendSourceDigest(digest string, data []byte) string {
-	sum := sha256.New()
-	sum.Write([]byte(digest))
-	sum.Write([]byte{0})
-	sum.Write(data)
-	return hex.EncodeToString(sum.Sum(nil))
 }
 
 type EvolutionConfig struct {
@@ -1219,21 +1194,19 @@ func (c *MCPConfig) GetMaxInlineTextChars() int {
 func LoadConfig(path string) (*Config, error) {
 	updateResolver(filepath.Dir(path))
 
-	cfg, data, err := readConfigFile(path)
+	cfg, err := readConfigFile(path)
 	if err != nil {
 		return nil, err
 	}
-	cfg.sourceDigest = extendSourceDigest("", data)
 	if err = cfg.completeLoad(path); err != nil {
 		return nil, err
 	}
 	return cfg, nil
 }
 
-// readConfigFile decodes config.json over the defaults, and returns what it
-// read. A missing file, or content such as "{}" that cannot hold a setting,
-// gives the defaults.
-func readConfigFile(path string) (*Config, []byte, error) {
+// readConfigFile decodes config.json over the defaults. A missing file, or
+// content such as "{}" that cannot hold a setting, gives the defaults.
+func readConfigFile(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -1241,9 +1214,9 @@ func readConfigFile(path string) (*Config, []byte, error) {
 				"config file not found, using default config",
 				map[string]any{"path": path},
 			)
-			return DefaultConfig(), nil, nil
+			return DefaultConfig(), nil
 		}
-		return nil, nil, err
+		return nil, err
 	}
 
 	// Reject malformed JSON before the shortcut below, so a broken config.json
@@ -1252,12 +1225,12 @@ func readConfigFile(path string) (*Config, []byte, error) {
 	if e := json.Unmarshal(data, &probe); e != nil {
 		e = wrapJSONError(data, e, "config.json")
 		logger.ErrorCF("config", formatDiagnosticLogMessage("Malformed config file", e), map[string]any{"path": path})
-		return nil, nil, e
+		return nil, e
 	}
 	// Content this short, such as "{}", cannot hold a setting.
 	if len(data) <= 10 {
 		logger.Warn(fmt.Sprintf("content is [%s]", string(data)))
-		return DefaultConfig(), data, nil
+		return DefaultConfig(), nil
 	}
 
 	cfg, err := loadConfig(data)
@@ -1267,25 +1240,18 @@ func readConfigFile(path string) (*Config, []byte, error) {
 			formatDiagnosticLogMessage("Failed to load config", err),
 			map[string]any{"path": path},
 		)
-		return nil, nil, err
+		return nil, err
 	}
-	return cfg, data, nil
+	return cfg, nil
 }
 
 // completeLoad readies a config decoded from config.json at path, or the
 // defaults when there is none: it merges .security.yml, applies the
 // environment overrides, initializes the channels and validates the result.
 func (c *Config) completeLoad(path string) error {
-	secPath := securityPath(path)
-	secData, err := os.ReadFile(secPath)
-	switch {
-	case err == nil:
-		c.sourceDigest = extendSourceDigest(c.sourceDigest, secData)
-		if err := mergeSecurityConfig(c, secPath, secData); err != nil {
-			return fmt.Errorf("failed to load security config: %w", err)
-		}
-	case !errors.Is(err, os.ErrNotExist):
-		return fmt.Errorf("failed to load security config: failed to read security config: %w", err)
+	err := loadSecurityConfig(c, securityPath(path))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("failed to load security config: %w", err)
 	}
 	// A secret config.json masks but .security.yml lacks is gone; never hand
 	// out its placeholder as a value.

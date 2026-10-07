@@ -23,7 +23,7 @@ type Server struct {
 	shutdownFunc func()
 	authToken    string // optional bearer token for protected endpoints
 	// configDigest identifies the config the gateway applied last, at start
-	// or by a reload (config.Config.SourceDigest).
+	// or by a reload (config.RestartSignature.Digest).
 	configDigest string
 }
 
@@ -107,7 +107,8 @@ func (s *Server) SetReady(ready bool) {
 	s.mu.Unlock()
 }
 
-// SetConfigDigest records the SourceDigest of the config the gateway applied.
+// SetConfigDigest records the digest of the RestartSignature of the config
+// the gateway applied.
 func (s *Server) SetConfigDigest(digest string) {
 	s.mu.Lock()
 	s.configDigest = digest
