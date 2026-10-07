@@ -157,25 +157,23 @@ func (s *Store) LoadPatternRecords() ([]LearningRecord, error) {
 	return s.loadRecords(s.paths.PatternRecords)
 }
 
-// loadRecords loads the records at path. When some are past retention, the
-// file is rewritten without them.
+// loadRecords loads the records at path. When it left lines of the file out,
+// the file is rewritten without them.
 func (s *Store) loadRecords(path string) ([]LearningRecord, error) {
-	if s.now == nil {
-		records, _, err := s.loadRecordsFromPath(path)
-		return records, err
-	}
 	unlock := lockStoreFile(path)
 	defer unlock()
-	records, expired, err := s.loadRecordsFromPath(path)
-	if err != nil || !expired {
+	records, dropped, err := s.loadRecordsFromPath(path)
+	if err != nil || !dropped {
 		return records, err
 	}
 	return records, s.saveJSONLRecordsLocked(path, records)
 }
 
 // loadRecordsFromPath reads the records at path, without those past
-// retention; expired reports that it left some out.
-func (s *Store) loadRecordsFromPath(path string) (records []LearningRecord, expired bool, err error) {
+// retention or corrupt. dropped reports that it left lines out that a rewrite
+// of the file may drop: records past retention, and corrupt lines once they
+// are saved to <path>.corrupt.
+func (s *Store) loadRecordsFromPath(path string) (records []LearningRecord, dropped bool, err error) {
 	var cutoff time.Time
 	if s.now != nil {
 		cutoff = s.now().Add(-recordRetention)
@@ -186,7 +184,7 @@ func (s *Store) loadRecordsFromPath(path string) (records []LearningRecord, expi
 			return err
 		}
 		if !cutoff.IsZero() && recordExpired(record, cutoff) {
-			expired = true
+			dropped = true
 			return nil
 		}
 		records = append(records, record)
@@ -207,9 +205,11 @@ func (s *Store) loadRecordsFromPath(path string) (records []LearningRecord, expi
 				"path":  path,
 				"error": qErr.Error(),
 			})
+		} else {
+			dropped = true
 		}
 	}
-	return records, expired, nil
+	return records, dropped, nil
 }
 
 // recordExpired reports whether record last changed before cutoff. A record
@@ -222,9 +222,8 @@ func recordExpired(record LearningRecord, cutoff time.Time) bool {
 	return !changed.IsZero() && changed.Before(cutoff)
 }
 
-// quarantineLines appends lines to <path>.corrupt. The lines stay in the
-// store file until its next rewrite, which drops them; the quarantine file
-// keeps each distinct line once.
+// quarantineLines appends lines to <path>.corrupt, which keeps each distinct
+// line once.
 func quarantineLines(path string, lines [][]byte) error {
 	qPath := path + ".corrupt"
 	existing, err := os.ReadFile(qPath)
@@ -285,17 +284,17 @@ func (s *Store) SaveTaskRecords(records []LearningRecord) error {
 }
 
 // UpdateTaskRecords loads the task records, lets update change them in place,
-// and saves them when update reports a change or records expired. The file
-// stays locked throughout, so concurrent appends aren't lost.
+// and saves them when update reports a change or the load left lines out. The
+// file stays locked throughout, so concurrent appends aren't lost.
 func (s *Store) UpdateTaskRecords(update func(records []LearningRecord) bool) error {
 	unlock := lockStoreFile(s.paths.TaskRecords)
 	defer unlock()
 
-	records, expired, err := s.loadRecordsFromPath(s.paths.TaskRecords)
+	records, dropped, err := s.loadRecordsFromPath(s.paths.TaskRecords)
 	if err != nil {
 		return err
 	}
-	if !update(records) && !expired {
+	if !update(records) && !dropped {
 		return nil
 	}
 	return s.saveJSONLRecordsLocked(s.paths.TaskRecords, records)
@@ -320,7 +319,7 @@ func (s *Store) MarkTaskRecordsClustered(ids []string) error {
 	unlock := lockStoreFile(s.paths.TaskRecords)
 	defer unlock()
 
-	records, expired, err := s.loadRecordsFromPath(s.paths.TaskRecords)
+	records, dropped, err := s.loadRecordsFromPath(s.paths.TaskRecords)
 	if err != nil {
 		return err
 	}
@@ -348,7 +347,7 @@ func (s *Store) MarkTaskRecordsClustered(ids []string) error {
 		records[i].Status = RecordStatus("clustered")
 		changed = true
 	}
-	if !changed && !expired {
+	if !changed && !dropped {
 		return nil
 	}
 	return s.saveJSONLRecordsLocked(s.paths.TaskRecords, records)
