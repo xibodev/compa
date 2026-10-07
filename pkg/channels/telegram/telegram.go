@@ -21,6 +21,7 @@ import (
 	ta "github.com/mymmrac/telego/telegoapi"
 	th "github.com/mymmrac/telego/telegohandler"
 	tu "github.com/mymmrac/telego/telegoutil"
+	"github.com/valyala/fasthttp"
 
 	"github.com/xibodev/compa/v3/pkg/bus"
 	"github.com/xibodev/compa/v3/pkg/channels"
@@ -85,32 +86,48 @@ type telegramMessageParts struct {
 	mediaPaths []string
 }
 
+// errorFillingCaller gives every Telegram API response an Error. telego
+// formats each response's Error for a debug log whatever the log level, and
+// formatting a nil *Error makes fmt recover a nil dereference. On Windows hosts
+// whose CPUs have AMX, recovering such a fault can corrupt the heap
+// (https://go.dev/issue/81238), and the kernel crashes in a later GC.
+type errorFillingCaller struct{ ta.Caller }
+
+func (c errorFillingCaller) Call(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+	resp, err := c.Caller.Call(ctx, url, data)
+	if resp != nil && resp.Error == nil {
+		resp.Error = &ta.Error{}
+	}
+	return resp, err
+}
 func NewTelegramChannel(
 	bc *config.Channel,
 	telegramCfg *config.TelegramSettings,
 	bus *bus.MessageBus,
 ) (*TelegramChannel, error) {
 	channelName := bc.Name()
-	var opts []telego.BotOption
 
+	// telego's own client, unless a proxy is set.
+	var caller ta.Caller = ta.FastHTTPCaller{Client: &fasthttp.Client{}}
 	if telegramCfg.Proxy != "" {
 		proxyURL, parseErr := url.Parse(telegramCfg.Proxy)
 		if parseErr != nil {
 			return nil, fmt.Errorf("invalid proxy URL %q: %w", telegramCfg.Proxy, parseErr)
 		}
-		opts = append(opts, telego.WithHTTPClient(&http.Client{
+		caller = ta.HTTPCaller{Client: &http.Client{
 			Transport: &http.Transport{
 				Proxy: http.ProxyURL(proxyURL),
 			},
-		}))
+		}}
 	} else if os.Getenv("HTTP_PROXY") != "" || os.Getenv("HTTPS_PROXY") != "" {
 		// Use environment proxy if configured
-		opts = append(opts, telego.WithHTTPClient(&http.Client{
+		caller = ta.HTTPCaller{Client: &http.Client{
 			Transport: &http.Transport{
 				Proxy: http.ProxyFromEnvironment,
 			},
-		}))
+		}}
 	}
+	opts := []telego.BotOption{telego.WithAPICaller(errorFillingCaller{caller})}
 
 	if baseURL := strings.TrimRight(strings.TrimSpace(telegramCfg.BaseURL), "/"); baseURL != "" {
 		opts = append(opts, telego.WithAPIServer(baseURL))

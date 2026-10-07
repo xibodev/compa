@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -144,7 +145,7 @@ func newTestChannelWithConstructor(
 	t.Helper()
 
 	bot, err := telego.NewBot(testToken,
-		telego.WithAPICaller(caller),
+		telego.WithAPICaller(errorFillingCaller{caller}),
 		telego.WithRequestConstructor(constructor),
 		telego.WithDiscardLogger(),
 	)
@@ -165,6 +166,36 @@ func newTestChannelWithConstructor(
 	}
 }
 
+// Every response has an Error, so telego's debug formatting of it never
+// dereferences a nil *Error; a failed response keeps its own.
+func TestErrorFillingCaller(t *testing.T) {
+	failure := &ta.Error{ErrorCode: 400, Description: "Bad Request"}
+	responses := map[string]*ta.Response{
+		"getMe":       {Ok: true},
+		"sendMessage": {Error: failure},
+	}
+	caller := errorFillingCaller{&stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			if resp, ok := responses[path.Base(url)]; ok {
+				return resp, nil
+			}
+			return nil, errors.New("connection refused")
+		},
+	}}
+
+	resp, err := caller.Call(context.Background(), "https://api.telegram.org/bot/getMe", nil)
+	require.NoError(t, err)
+	require.NotNil(t, resp.Error)
+	assert.True(t, resp.Ok)
+
+	resp, err = caller.Call(context.Background(), "https://api.telegram.org/bot/sendMessage", nil)
+	require.NoError(t, err)
+	assert.Same(t, failure, resp.Error)
+
+	resp, err = caller.Call(context.Background(), "https://api.telegram.org/bot/getUpdates", nil)
+	assert.Nil(t, resp)
+	assert.EqualError(t, err, "connection refused")
+}
 func TestSendMedia_ImageFallbacksToDocumentOnInvalidDimensions(t *testing.T) {
 	constructor := &multipartRecordingConstructor{}
 	caller := &stubCaller{

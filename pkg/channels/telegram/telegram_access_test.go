@@ -18,7 +18,7 @@ func newAccessTestChannel(t *testing.T, allowFrom ...string) (*TelegramChannel, 
 	t.Helper()
 	getFiles := 0
 	bot, err := telego.NewBot("123456:"+strings.Repeat("a", 35),
-		telego.WithAPICaller(fileCountingCaller{getMeCaller: getMeCaller{username: "testbot"}, getFiles: &getFiles}),
+		telego.WithAPICaller(errorFillingCaller{fileCountingCaller{getMeCaller: getMeCaller{username: "testbot"}, getFiles: &getFiles}}),
 		telego.WithDiscardLogger(),
 	)
 	if err != nil {
