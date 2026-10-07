@@ -1209,11 +1209,11 @@ func (c *OneBotChannel) handleMessage(raw *oneBotRawEvent) {
 	if hasMedia {
 		refs, fetched := c.fetchMedia(parsed.pending, c.GetMediaStore(), scope)
 		parsed.Media = refs
-		// content is what the group trigger left of parsed.Text; where that
-		// can't be told, the tags go at the end.
+		// content is parsed.Text, less any prefix the group trigger took off;
+		// where that can't be told, the tags go at the end.
 		base := -len(content)
-		if i := strings.Index(parsed.Text, content); i >= 0 {
-			base = i
+		if strings.HasSuffix(parsed.Text, content) {
+			base = len(parsed.Text) - len(content)
 		}
 		content = withMediaTags(content, base, fetched)
 		if content == "" {
