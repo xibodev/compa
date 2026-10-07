@@ -362,21 +362,21 @@ func (h *Handler) handleTestCommandPatterns(w http.ResponseWriter, r *http.Reque
 
 	resp := result{Allowed: false, Blocked: false}
 
-	// Check whitelist first
-	for i, re := range allow {
+	// The blacklist outranks the whitelist, as in the exec tool: a whitelist
+	// match skips only the built-in deny patterns, which this test leaves out.
+	for i, re := range deny {
 		if re.MatchString(lower) {
-			resp.Allowed = true
-			resp.MatchedWhitelist = &req.AllowPatterns[i]
+			resp.Blocked = true
+			resp.MatchedBlacklist = &req.DenyPatterns[i]
 			writeJSON(w, http.StatusOK, resp)
 			return
 		}
 	}
 
-	// Check blacklist
-	for i, re := range deny {
+	for i, re := range allow {
 		if re.MatchString(lower) {
-			resp.Blocked = true
-			resp.MatchedBlacklist = &req.DenyPatterns[i]
+			resp.Allowed = true
+			resp.MatchedWhitelist = &req.AllowPatterns[i]
 			break
 		}
 	}

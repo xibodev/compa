@@ -1056,7 +1056,7 @@
       "custom_deny_patterns": "Blacklist příkazů",
       "custom_deny_patterns_hint": "Přidejte vlastní pravidla pro blokování příkazů, jeden regulární výraz na řádek. Příkaz odpovídající jakémukoli pravidlu bude zablokován.",
       "custom_allow_patterns": "Whitelist příkazů",
-      "custom_allow_patterns_hint": "Přidejte vlastní pravidla pro povolení příkazů, jeden regulární výraz na řádek. Příkaz odpovídající jakémukoli pravidlu přeskočí blacklist, ale ostatní bezpečnostní limity stále platí.",
+      "custom_allow_patterns_hint": "Přidejte vlastní pravidla pro povolení příkazů, jeden regulární výraz na řádek. Příkaz odpovídající jakémukoli pravidlu přeskočí vestavěné nebezpečné vzory; blacklist příkazů výše a ostatní bezpečnostní limity stále platí.",
       "custom_patterns_placeholder": "^rm\\s+-rf\\b\n^git\\s+push\\b",
       "pattern_detector_title": "Nástroj pro testování vzorů",
       "pattern_detector_hint": "Zadejte příkaz pro otestování, zda odpovídá některému vzoru blacklistu nebo whitelistu.",

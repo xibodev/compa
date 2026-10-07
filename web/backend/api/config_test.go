@@ -1110,6 +1110,33 @@ func TestHandleTestCommandPatterns_MatchesBlacklistNotWhitelist(t *testing.T) {
 	}
 }
 
+// The blacklist outranks the whitelist, as in the exec tool, where a
+// whitelist match skips only the built-in deny patterns.
+func TestHandleTestCommandPatterns_BlacklistOutranksWhitelist(t *testing.T) {
+	configPath, cleanup := setupCredentialTestEnv(t)
+	defer cleanup()
+
+	rec := testCommandPatterns(t, configPath, `{
+		"allow_patterns": ["^git\\s+push\\b"],
+		"deny_patterns": ["\\s--force\\b"],
+		"command": "git push origin main --force"
+	}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var body struct {
+		Allowed          bool    `json:"allowed"`
+		Blocked          bool    `json:"blocked"`
+		MatchedBlacklist *string `json:"matched_blacklist"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode %s: %v", rec.Body.String(), err)
+	}
+	if body.Allowed || !body.Blocked || body.MatchedBlacklist == nil || *body.MatchedBlacklist != `\s--force\b` {
+		t.Fatalf("answer = %s, want blocked by the blacklist pattern", rec.Body.String())
+	}
+}
+
 func TestHandleTestCommandPatterns_MatchesNeither(t *testing.T) {
 	configPath, cleanup := setupCredentialTestEnv(t)
 	defer cleanup()

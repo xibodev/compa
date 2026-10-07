@@ -38,6 +38,10 @@ Notable changes to Compa, newest first. Versions follow
 - **Gateway restart required** clears once the gateway reloads the saved
   config by itself, with `gateway.hot_reload` on or after `/reload` in a chat;
   it stayed until the gateway restarted.
+- A command that matches **Config** → **Run Commands** → **Command Whitelist**
+  skips the built-in dangerous patterns, as the setting says; the whitelist let
+  no command through. The **Command Blacklist** still blocks it, and the
+  setting's pattern tester now says so; it called such a command allowed.
 
 ## 3.0.0 - 2026-10-06
 
