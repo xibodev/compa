@@ -14,6 +14,7 @@ Notable changes to Compa, newest first. Versions follow
   route's next target, or fails with `agent.ErrToolsRequired` when no target
   takes tools, instead of going on without tools. See
   [Embed the Go runtime](docs/embedding.md).
+
 ### Fixed
 
 - `compa-kernel mcp add`, `mcp remove` and `mcp edit` save their change when
