@@ -2,24 +2,20 @@ package api
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"net"
 	"net/http"
 	"os"
 	"os/exec"
-	"reflect"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/xibodev/compa/v3/pkg/approval"
 	"github.com/xibodev/compa/v3/pkg/config"
 	"github.com/xibodev/compa/v3/pkg/health"
 	"github.com/xibodev/compa/v3/pkg/logger"
@@ -63,6 +59,11 @@ func refreshWebChatTokenLocked(configPath string) {
 	if err != nil {
 		return
 	}
+	gateway.webChatToken = webChatToken(cfg)
+}
+
+// webChatToken is the web chat channel's token in cfg, "" without one.
+func webChatToken(cfg *config.Config) string {
 	var webChatCfg config.WebChatSettings
 	if bc := cfg.Channels.GetByType(config.ChannelWeb); bc != nil {
 		decoded, err := bc.GetDecoded()
@@ -72,7 +73,7 @@ func refreshWebChatTokenLocked(configPath string) {
 			}
 		}
 	}
-	gateway.webChatToken = webChatCfg.Token.String()
+	return webChatCfg.Token.String()
 }
 
 // ensureWebChatTokenCachedLocked lazily fills the in-memory web chat token cache when
@@ -176,19 +177,27 @@ const gatewayReadyProbeTimeout = 800 * time.Millisecond
 // processes messages: its /ready answers 503 naming each failed check. It
 // returns the first failed check (by name) and its message, or "" when the
 // kernel is ready, has not finished starting, or does not answer; whether it
-// runs at all is decided elsewhere.
-func (h *Handler) gatewayReadinessFailure(pidData *ppid.PidFileData, cfg *config.Config) (check, message string) {
+// runs at all is decided elsewhere. configDigest is the digest of the
+// RestartSignature of the config the kernel applied last, as its /ready
+// reports it, or "".
+func (h *Handler) gatewayReadinessFailure(
+	pidData *ppid.PidFileData,
+	cfg *config.Config,
+) (check, message, configDigest string) {
 	resp, err := gatewayHealthGet(gatewayBaseURLForPidData(h, pidData, cfg)+"/ready", gatewayReadyProbeTimeout)
 	if err != nil {
-		return "", ""
+		return "", "", ""
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusServiceUnavailable {
-		return "", ""
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusServiceUnavailable {
+		return "", "", ""
 	}
 	var ready health.StatusResponse
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&ready); err != nil {
-		return "", ""
+		return "", "", ""
+	}
+	if resp.StatusCode == http.StatusOK {
+		return "", "", ready.ConfigDigest
 	}
 	names := make([]string, 0, len(ready.Checks))
 	for name, c := range ready.Checks {
@@ -197,7 +206,7 @@ func (h *Handler) gatewayReadinessFailure(pidData *ppid.PidFileData, cfg *config
 		}
 	}
 	if len(names) == 0 {
-		return "", ""
+		return "", "", ready.ConfigDigest
 	}
 	sort.Strings(names)
 	failed := ready.Checks[names[0]]
@@ -205,7 +214,7 @@ func (h *Handler) gatewayReadinessFailure(pidData *ppid.PidFileData, cfg *config
 	if message == "" {
 		message = names[0] + " check failed"
 	}
-	return names[0], message
+	return names[0], message, ready.ConfigDigest
 }
 
 // trackedGatewayReadinessFailure is gatewayReadinessFailure for the kernel
@@ -220,7 +229,8 @@ func (h *Handler) trackedGatewayReadinessFailure() (check, message string) {
 		return "", ""
 	}
 	cfg, _ := config.LoadConfig(h.configPath)
-	return h.gatewayReadinessFailure(pidData, cfg)
+	check, message, _ = h.gatewayReadinessFailure(pidData, cfg)
+	return check, message
 }
 
 // isLikelyGatewayProcess returns whether PID appears to be a compa-kernel gateway
@@ -449,304 +459,34 @@ func (h *Handler) logDefaultModelState(cfg *config.Config) {
 	}
 }
 
-// configSignature is the part of a config the restart indicator compares,
-// keyed by what it covers: the model selections, the approval policy, every
-// tool setting, the guards around the tools, and per channel its access and
-// the rest of its config, secrets included. Other settings, such as model
-// parameters, apply the next time the gateway starts without asking for it.
-type configSignature map[string]string
-
-// Keys of a configSignature. The channel keys are followed by the channel's
-// name.
-const (
-	signatureModels   = "models"
-	signatureApproval = "approval"
-	// signatureTools: every tool setting but the approval policy, MCP
-	// servers included.
-	signatureTools = "tools"
-	// signatureGuards: the workspaces and the restriction to them,
-	// isolation, and who may run commands or approve tool calls (commands,
-	// hooks).
-	signatureGuards = "guards"
-	// signatureAccess: a channel's allow_from, dm_policy and group_policy.
-	signatureAccess = "access:"
-	// signatureChannel: the rest of a channel's config, secrets included.
-	signatureChannel = "channel:"
-)
+// configSignature is the config.RestartSignature the restart indicator
+// compares.
+type configSignature config.RestartSignature
 
 func computeConfigSignature(cfg *config.Config) configSignature {
-	if cfg == nil {
-		return nil
-	}
-	tools := cfg.Tools
-	tools.Approval = approval.Policy{}
-	// An agent's model is a live model selection.
-	agents := make([]config.AgentConfig, len(cfg.Agents.List))
-	copy(agents, cfg.Agents.List)
-	for i := range agents {
-		agents[i].Model = ""
-	}
-	signature := configSignature{
-		signatureModels:   modelSelectionSignature(cfg),
-		signatureApproval: signatureJSON(cfg.Tools.Approval),
-		signatureTools:    signatureJSON(tools),
-		signatureGuards: signatureJSON(struct {
-			Workspace                 string                 `json:"workspace"`
-			RestrictToWorkspace       bool                   `json:"restrict_to_workspace"`
-			AllowReadOutsideWorkspace bool                   `json:"allow_read_outside_workspace"`
-			Agents                    []config.AgentConfig   `json:"agents"`
-			Isolation                 config.IsolationConfig `json:"isolation"`
-			Commands                  config.CommandsConfig  `json:"commands"`
-			Hooks                     config.HooksConfig     `json:"hooks"`
-		}{
-			Workspace:                 cfg.Agents.Defaults.Workspace,
-			RestrictToWorkspace:       cfg.Agents.Defaults.RestrictToWorkspace,
-			AllowReadOutsideWorkspace: cfg.Agents.Defaults.AllowReadOutsideWorkspace,
-			Agents:                    agents,
-			Isolation:                 cfg.Isolation,
-			Commands:                  cfg.Commands,
-			Hooks:                     cfg.Hooks,
-		}),
-	}
-	for name, channel := range cfg.Channels {
-		addChannelSignature(signature, name, channel)
-	}
-	return signature
+	return configSignature(config.NewRestartSignature(cfg))
 }
 
 // equal reports whether s and other cover the same config.
 func (s configSignature) equal(other configSignature) bool {
-	return maps.Equal(s, other)
+	return config.RestartSignature(s).Equal(config.RestartSignature(other))
 }
 
-// isLiveSignatureKey reports whether a change of what key covers takes
-// effect in the running gateway through its /reload, without a restart: the
-// model selections, the approval policy and the channels' access lists and
-// policies.
-func isLiveSignatureKey(key string) bool {
-	return key == signatureModels || key == signatureApproval || strings.HasPrefix(key, signatureAccess)
-}
-
-// liveEqual reports whether s and other agree on their live parts (see
-// isLiveSignatureKey).
+// liveEqual reports whether s and other agree on their live parts, those a
+// reload applies without a restart.
 func (s configSignature) liveEqual(other configSignature) bool {
-	return s.equalOn(other, isLiveSignatureKey)
+	return config.RestartSignature(s).LiveEqual(config.RestartSignature(other))
 }
 
 // equalBesidesLive reports whether s and other agree on all but their live
 // parts.
 func (s configSignature) equalBesidesLive(other configSignature) bool {
-	return s.equalOn(other, func(key string) bool { return !isLiveSignatureKey(key) })
+	return config.RestartSignature(s).EqualBesidesLive(config.RestartSignature(other))
 }
 
-// equalOn reports whether s and other agree on the keys covered selects.
-func (s configSignature) equalOn(other configSignature, covered func(key string) bool) bool {
-	for key, value := range s {
-		if otherValue, ok := other[key]; covered(key) && (!ok || otherValue != value) {
-			return false
-		}
-	}
-	for key := range other {
-		if _, ok := s[key]; covered(key) && !ok {
-			return false
-		}
-	}
-	return true
-}
-
-// modelSelectionSignatures returns the model settings the gateway reads from
-// the config it boots with — the default, image and light model selections,
-// the light-model routing and each agent's model — so changing one requires
-// a reload. Provider instances, their runtime settings, routes and catalogs
-// are left out: the gateway resolves a selection against them as saved when
-// a turn runs.
-func modelSelectionSignatures(cfg *config.Config) []string {
-	selections := modelSelections(cfg)
-	signatures := make([]string, 0, len(selections)+1)
-	for _, selection := range selections {
-		signatures = append(signatures, selection.key+"="+selection.value)
-	}
-	if routing := cfg.Agents.Defaults.Routing; routing != nil {
-		signatures = append(signatures, fmt.Sprintf(
-			"routing=%t/%s", routing.Enabled, strconv.FormatFloat(routing.Threshold, 'g', -1, 64),
-		))
-	}
-	return signatures
-}
-
-// modelSelectionSignature is modelSelectionSignatures of cfg, joined.
-func modelSelectionSignature(cfg *config.Config) string {
-	if cfg == nil {
-		return ""
-	}
-	return strings.Join(modelSelectionSignatures(cfg), ",")
-}
-
-// addChannelSignature adds the signature of the channel name to signature:
-// its access, and the rest of its config, secrets included.
-func addChannelSignature(signature configSignature, name string, channel *config.Channel) {
-	if channel == nil {
-		signature[signatureChannel+name] = "<nil>"
-		return
-	}
-	signature[signatureAccess+name] = marshalSignature(struct {
-		AllowFrom   config.FlexibleStringSlice `json:"allow_from,omitempty"`
-		DMPolicy    string                     `json:"dm_policy,omitempty"`
-		GroupPolicy string                     `json:"group_policy,omitempty"`
-	}{
-		AllowFrom:   channel.AllowFrom,
-		DMPolicy:    channel.DMPolicy,
-		GroupPolicy: channel.GroupPolicy,
-	})
-	signature[signatureChannel+name] = marshalSignature(struct {
-		Enabled            bool                      `json:"enabled"`
-		Type               string                    `json:"type"`
-		ReasoningChannelID string                    `json:"reasoning_channel_id,omitempty"`
-		GroupTrigger       config.GroupTriggerConfig `json:"group_trigger,omitempty"`
-		Typing             config.TypingConfig       `json:"typing,omitempty"`
-		Placeholder        config.PlaceholderConfig  `json:"placeholder,omitempty"`
-		Settings           json.RawMessage           `json:"settings,omitempty"`
-	}{
-		Enabled:            channel.Enabled,
-		Type:               channel.Type,
-		ReasoningChannelID: channel.ReasoningChannelID,
-		GroupTrigger:       channel.GroupTrigger,
-		Typing:             channel.Typing,
-		Placeholder:        channel.Placeholder,
-		Settings:           normalizeChannelSettings(channel),
-	})
-}
-
-// signatureJSON is value as canonical JSON, secrets included.
-func signatureJSON(value any) string {
-	return marshalSignature(canonicalizeSignatureValue(reflect.ValueOf(value)))
-}
-
-func marshalSignature(value any) string {
-	encoded, err := json.Marshal(value)
-	if err != nil {
-		return "<invalid>"
-	}
-	return string(encoded)
-}
-
-// normalizeChannelSettings is the channel's settings as canonical JSON,
-// secrets included.
-func normalizeChannelSettings(channel *config.Channel) json.RawMessage {
-	if channel == nil {
-		return nil
-	}
-
-	decoded, err := channel.GetDecoded()
-	if err == nil && decoded != nil {
-		normalized, err := json.Marshal(canonicalizeSignatureValue(reflect.ValueOf(decoded)))
-		if err == nil {
-			return normalized
-		}
-	}
-
-	return normalizeRawJSON(channel.Settings)
-}
-
-func normalizeRawJSON(raw config.RawNode) json.RawMessage {
-	if len(raw) == 0 {
-		return nil
-	}
-
-	var value any
-	if err := json.Unmarshal(raw, &value); err != nil {
-		return bytes.TrimSpace(raw)
-	}
-
-	normalized, err := json.Marshal(value)
-	if err != nil {
-		return bytes.TrimSpace(raw)
-	}
-	return normalized
-}
-
-// canonicalizeSignatureValue turns value into maps, slices and plain values
-// that encode the same way whatever the order of its maps. A secret becomes
-// its value.
-func canonicalizeSignatureValue(value reflect.Value) any {
-	if !value.IsValid() {
-		return nil
-	}
-
-	if value.CanInterface() {
-		if secret, ok := secretSignatureValue(value.Interface()); ok {
-			return secret
-		}
-	}
-
-	switch value.Kind() {
-	case reflect.Interface, reflect.Pointer:
-		if value.IsNil() {
-			return nil
-		}
-		return canonicalizeSignatureValue(value.Elem())
-	case reflect.Struct:
-		result := make(map[string]any)
-		valueType := value.Type()
-		for i := 0; i < value.NumField(); i++ {
-			field := valueType.Field(i)
-			if field.PkgPath != "" {
-				continue
-			}
-			tag := field.Tag.Get("json")
-			name := field.Name
-			if tag != "" {
-				if comma := strings.Index(tag, ","); comma >= 0 {
-					tag = tag[:comma]
-				}
-				if tag == "-" {
-					continue
-				}
-				if tag != "" {
-					name = tag
-				}
-			}
-			result[name] = canonicalizeSignatureValue(value.Field(i))
-		}
-		return result
-	case reflect.Slice, reflect.Array:
-		length := value.Len()
-		result := make([]any, 0, length)
-		for i := 0; i < length; i++ {
-			result = append(result, canonicalizeSignatureValue(value.Index(i)))
-		}
-		return result
-	case reflect.Map:
-		if value.Type().Key().Kind() != reflect.String {
-			return value.Interface()
-		}
-		result := make(map[string]any, value.Len())
-		iter := value.MapRange()
-		for iter.Next() {
-			result[iter.Key().String()] = canonicalizeSignatureValue(iter.Value())
-		}
-		return result
-	default:
-		if value.CanInterface() {
-			return value.Interface()
-		}
-		return nil
-	}
-}
-
-// secretSignatureValue returns the value of v when v is a secret.
-func secretSignatureValue(v any) (any, bool) {
-	switch typed := v.(type) {
-	case config.SecureString:
-		return typed.String(), true
-	case *config.SecureString:
-		return typed.String(), true
-	case config.SecureStrings:
-		return typed.Values(), true
-	case *config.SecureStrings:
-		return typed.Values(), true
-	}
-	return nil, false
+// digest is the signature's config.RestartSignature.Digest.
+func (s configSignature) digest() string {
+	return config.RestartSignature(s).Digest()
 }
 
 // gatewayRestartRequiredBySignature reports whether the running gateway
@@ -1412,10 +1152,13 @@ func (h *Handler) gatewayStatusData() map[string]any {
 	}
 
 	gatewayStatus, _ := data["gateway_status"].(string)
+	appliedDigest := ""
 	if gatewayStatus == "running" && pidData != nil {
 		// A kernel whose agent loop stopped still answers /health; its
 		// /ready names the failed check.
-		if check, message := h.gatewayReadinessFailure(pidData, cfg); check != "" {
+		check, message, digest := h.gatewayReadinessFailure(pidData, cfg)
+		appliedDigest = digest
+		if check != "" {
 			gatewayStatus = "error"
 			data["gateway_status"] = gatewayStatus
 			data["gateway_error"] = message
@@ -1426,15 +1169,31 @@ func (h *Handler) gatewayStatusData() map[string]any {
 	// Read before the applied signature: an apply records what it applied
 	// before it stops being pending.
 	liveApplyPending := h.pendingLiveApplies.Load() > 0
+	// The gateway reports the signature of the config it applied, however
+	// it was started or reloaded (hot reload, /reload in a chat).
+	runsSaved := appliedDigest != "" && appliedDigest == currentConfig.digest()
 	gateway.mu.Lock()
+	adopted := runsSaved && gateway.pidData != nil && gateway.pidData.PID == pidData.PID &&
+		!gateway.bootConfig.equal(currentConfig)
+	if adopted {
+		recordAppliedConfigLocked(cfg, currentConfig)
+	}
 	bootConfig := gateway.bootConfig
+	bootDefaultModel := gateway.bootDefaultModel
 	gateway.mu.Unlock()
-	data["gateway_restart_required"] = gatewayRestartRequiredBySignature(
-		bootConfig,
-		currentConfig,
-		gatewayStatus,
-		liveApplyPending,
-	)
+	if adopted {
+		delete(data, "boot_default_model")
+		if bootDefaultModel != "" {
+			data["boot_default_model"] = bootDefaultModel
+		}
+	}
+	restartRequired := gatewayRestartRequiredBySignature(bootConfig, currentConfig, gatewayStatus, liveApplyPending)
+	if appliedDigest != "" && !liveApplyPending && gatewayStatus == "running" && len(currentConfig) > 0 {
+		// What the gateway reports decides, unless a reload the launcher
+		// asked for is still bringing it the saved config.
+		restartRequired = !runsSaved
+	}
+	data["gateway_restart_required"] = restartRequired
 
 	if cfgErr != nil {
 		data["gateway_start_allowed"] = false

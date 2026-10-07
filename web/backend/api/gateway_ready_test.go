@@ -82,6 +82,50 @@ func TestGatewayStatusStaysRunningWhenReadinessPasses(t *testing.T) {
 	}
 }
 
+// The gateway says which config it applied, however it was started or
+// reloaded (hot reload, /reload in a chat): the restart indicator follows it.
+func TestGatewayStatusFollowsTheConfigTheGatewayApplied(t *testing.T) {
+	resetGatewayTestState(t)
+	configPath := gatewayModelTestConfig(t, func(cfg *config.Config) { cfg.Tools.WriteFile.Enabled = true })
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	runAsTrackedGateway(t, cfg)
+	booted := computeConfigSignature(cfg).digest()
+
+	// A change only a reload or a restart applies.
+	cfg.Tools.WriteFile.Enabled = false
+	if err := config.SaveConfig(configPath, cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	saved, err := config.LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+
+	for _, step := range []struct {
+		name   string
+		digest string
+		want   bool
+	}{
+		{"before the gateway reloads", booted, true},
+		{"after it reloaded the saved config", computeConfigSignature(saved).digest(), false},
+		{"when it runs another config than the launcher took it for", booted, true},
+	} {
+		serveKernelReadiness(http.StatusOK, `{"status":"ready","config_digest":"`+step.digest+`"}`)
+		if got := gatewayStatusBody(t, NewHandler(configPath))["gateway_restart_required"]; got != step.want {
+			t.Fatalf("%s: gateway_restart_required = %#v, want %v", step.name, got, step.want)
+		}
+	}
+	// The reload it reported was recorded as what it runs.
+	gateway.mu.Lock()
+	applied := gateway.bootConfig
+	gateway.mu.Unlock()
+	if !applied.equal(computeConfigSignature(saved)) {
+		t.Fatal("the applied signature isn't the saved config's")
+	}
+}
 func TestGatewayRestartsOnConfigChange(t *testing.T) {
 	for _, tc := range []struct {
 		status map[string]any

@@ -22,6 +22,9 @@ type Server struct {
 	reloadFunc   func(context.Context) error
 	shutdownFunc func()
 	authToken    string // optional bearer token for protected endpoints
+	// configDigest identifies the config the gateway applied last, at start
+	// or by a reload (config.RestartSignature.Digest).
+	configDigest string
 }
 
 type Check struct {
@@ -36,6 +39,9 @@ type StatusResponse struct {
 	Uptime string           `json:"uptime"`
 	PID    int              `json:"pid,omitempty"`
 	Checks map[string]Check `json:"checks,omitempty"`
+	// ConfigDigest, on /ready, identifies the config the gateway applied
+	// last: the launcher compares it with the saved config's.
+	ConfigDigest string `json:"config_digest,omitempty"`
 }
 
 func NewServer(host string, port int, token string) *Server {
@@ -98,6 +104,14 @@ func (s *Server) Stop(ctx context.Context) error {
 func (s *Server) SetReady(ready bool) {
 	s.mu.Lock()
 	s.ready = ready
+	s.mu.Unlock()
+}
+
+// SetConfigDigest records the digest of the RestartSignature of the config
+// the gateway applied.
+func (s *Server) SetConfigDigest(digest string) {
+	s.mu.Lock()
+	s.configDigest = digest
 	s.mu.Unlock()
 }
 
@@ -239,13 +253,15 @@ func (s *Server) readyHandler(w http.ResponseWriter, r *http.Request) {
 	ready := s.ready
 	checks := make(map[string]Check)
 	maps.Copy(checks, s.checks)
+	configDigest := s.configDigest
 	s.mu.RUnlock()
 
 	if !ready {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_ = json.NewEncoder(w).Encode(StatusResponse{
-			Status: "not ready",
-			Checks: checks,
+			Status:       "not ready",
+			Checks:       checks,
+			ConfigDigest: configDigest,
 		})
 		return
 	}
@@ -254,8 +270,9 @@ func (s *Server) readyHandler(w http.ResponseWriter, r *http.Request) {
 		if check.Status == "fail" {
 			w.WriteHeader(http.StatusServiceUnavailable)
 			_ = json.NewEncoder(w).Encode(StatusResponse{
-				Status: "not ready",
-				Checks: checks,
+				Status:       "not ready",
+				Checks:       checks,
+				ConfigDigest: configDigest,
 			})
 			return
 		}
@@ -264,9 +281,10 @@ func (s *Server) readyHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	uptime := time.Since(s.startTime)
 	_ = json.NewEncoder(w).Encode(StatusResponse{
-		Status: "ready",
-		Uptime: uptime.String(),
-		Checks: checks,
+		Status:       "ready",
+		Uptime:       uptime.String(),
+		Checks:       checks,
+		ConfigDigest: configDigest,
 	})
 }
 

@@ -160,18 +160,33 @@ func (h *Handler) applyLiveConfig() {
 		logger.WarnC("gateway", fmt.Sprintf("The saved changes could not be applied without a restart: %v", err))
 		return
 	}
+	// A reload rebuilds the agents and their tools from the saved config and
+	// restarts each channel whose config, secrets included, changed. It read
+	// the files as they are now, which may hold a newer save than cfg: cfg is
+	// recorded unless the gateway reports applying another config.
+	_, _, appliedDigest := h.gatewayReadinessFailure(pidData, cfg)
 	gateway.mu.Lock()
-	if gateway.pidData != nil && gateway.pidData.PID == pidData.PID {
-		gateway.bootDefaultModel = strings.TrimSpace(cfg.Agents.Defaults.GetModelName())
-		// A reload rebuilds the agents and their tools from the saved config
-		// and restarts each channel whose config, secrets included, changed:
-		// the gateway runs the saved config now.
-		gateway.bootConfig = saved
-		// The web chat channel runs with its saved token now.
-		refreshWebChatTokenLocked(h.configPath)
+	samePID := gateway.pidData != nil && gateway.pidData.PID == pidData.PID
+	recorded := samePID && (appliedDigest == "" || appliedDigest == saved.digest())
+	if recorded {
+		recordAppliedConfigLocked(cfg, saved)
 	}
 	gateway.mu.Unlock()
-	logger.InfoC("gateway", "Applied the saved changes to the running gateway")
+	switch {
+	case recorded:
+		logger.InfoC("gateway", "Applied the saved changes to the running gateway")
+	case samePID:
+		logger.InfoC("gateway", "The gateway reloaded a config other than the one saved before it")
+	}
+}
+
+// recordAppliedConfigLocked records that the running gateway applied cfg,
+// whose signature is signature: the default model it boots turns with, its
+// config, and the web chat token it accepts. The caller holds gateway.mu.
+func recordAppliedConfigLocked(cfg *config.Config, signature configSignature) {
+	gateway.bootDefaultModel = strings.TrimSpace(cfg.Agents.Defaults.GetModelName())
+	gateway.bootConfig = signature
+	gateway.webChatToken = webChatToken(cfg)
 }
 
 // reloadGateway asks the gateway pidData describes to reload its config and

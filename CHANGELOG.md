@@ -35,6 +35,9 @@ Notable changes to Compa, newest first. Versions follow
 - OneBot downloads the pictures, videos, files and voice messages of a message
   sent in its string format, with CQ codes, and reads its reply and escaped
   characters; the agent got the codes as text.
+- **Gateway restart required** clears once the gateway reloads the saved
+  config by itself, with `gateway.hot_reload` on or after `/reload` in a chat;
+  it stayed until the gateway restarted.
 
 ## 3.0.0 - 2026-10-06
 
