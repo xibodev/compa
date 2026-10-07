@@ -22,6 +22,8 @@ Notable changes to Compa, newest first. Versions follow
   event the homeserver still refuses as too large isn't retried.
 - A placeholder whose edit into the reply is refused is deleted when the reply
   is sent as a new message; it stayed in the chat.
+- OneBot keeps each picture, video, file or voice message where it was among
+  the words; it put them all after the text.
 
 ## 2.1.1 - 2026-10-06
 
