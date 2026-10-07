@@ -32,7 +32,7 @@ func newTestTelegramBot(t *testing.T, username string) *telego.Bot {
 
 	token := "123456:" + strings.Repeat("a", 35)
 	bot, err := telego.NewBot(token,
-		telego.WithAPICaller(getMeCaller{username: username}),
+		telego.WithAPICaller(errorFillingCaller{getMeCaller{username: username}}),
 		telego.WithDiscardLogger(),
 	)
 	if err != nil {
@@ -165,7 +165,7 @@ func TestHandleMessage_GroupIgnoredBeforeDownloadingMedia(t *testing.T) {
 	ch, messageBus := newGroupMentionOnlyChannel(t, "testbot")
 	getFiles := 0
 	bot, err := telego.NewBot("123456:"+strings.Repeat("a", 35),
-		telego.WithAPICaller(fileCountingCaller{getMeCaller: getMeCaller{username: "testbot"}, getFiles: &getFiles}),
+		telego.WithAPICaller(errorFillingCaller{fileCountingCaller{getMeCaller: getMeCaller{username: "testbot"}, getFiles: &getFiles}}),
 		telego.WithDiscardLogger(),
 	)
 	if err != nil {

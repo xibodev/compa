@@ -19,6 +19,9 @@ Notable changes to Compa, newest first. Versions follow
 
 - `compa-kernel mcp add`, `mcp remove` and `mcp edit` save their change when
   a server has its own `call_timeout_seconds`; they refused every change.
+- On Windows computers whose processor has AMX, such as recent Intel Xeon,
+  `compa-kernel` could crash a while after Telegram connected, with
+  `fatal error: found pointer to free object`.
 
 ## 3.0.0 - 2026-10-06
 
