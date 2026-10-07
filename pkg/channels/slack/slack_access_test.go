@@ -4,6 +4,9 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -13,6 +16,7 @@ import (
 
 	"github.com/xibodev/compa/v2/pkg/bus"
 	"github.com/xibodev/compa/v2/pkg/config"
+	"github.com/xibodev/compa/v2/pkg/media"
 	"github.com/xibodev/compa/v2/pkg/pairing"
 )
 
@@ -140,6 +144,30 @@ func TestChannelMentionIsAnsweredOnce(t *testing.T) {
 	}
 }
 
+// The app_mention event answers a channel message that mentions the bot, so
+// it brings the message's files; a mention with only a file is answered too.
+func TestChannelMentionKeepsItsFiles(t *testing.T) {
+	ch, messageBus, _ := newAccessTestChannel(t, "UOWNER")
+	ch.SetMediaStore(media.NewFileMediaStore())
+	path := filepath.Join(t.TempDir(), "screenshot.png")
+	if err := os.WriteFile(path, []byte("png"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fetchFile = func(*SlackChannel, slack.File) string { return path }
+
+	ch.handleAppMention(&slackevents.AppMentionEvent{
+		Channel: "C100", User: "UOWNER", Text: "<@UBOT>", TimeStamp: "1700000000.000400",
+		Files: []slack.File{{ID: "F1", Name: "screenshot.png"}},
+	})
+
+	msg, ok := receiveInbound(messageBus, time.Second)
+	if !ok {
+		t.Fatal("a mention with only a file was not answered")
+	}
+	if len(msg.Media) != 1 || !strings.Contains(msg.Content, "[file: screenshot.png]") {
+		t.Fatalf("published %q with media %v, want the file", msg.Content, msg.Media)
+	}
+}
 func TestSend_EscapesModelText(t *testing.T) {
 	var (
 		mu   sync.Mutex

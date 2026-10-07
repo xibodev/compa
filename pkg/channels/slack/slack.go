@@ -408,33 +408,8 @@ func (c *SlackChannel) handleMessageEvent(ev *slackevents.MessageEvent) {
 	}
 
 	var mediaPaths []string
-
-	scope := channels.BuildMediaScope("slack", chatID, messageTS)
-
-	// Helper to register a local file with the media store
-	storeMedia := func(localPath, filename string) string {
-		if store := c.GetMediaStore(); store != nil {
-			ref, err := store.Store(localPath, media.MediaMeta{
-				Filename:      filename,
-				Source:        "slack",
-				CleanupPolicy: media.CleanupPolicyDeleteOnCleanup,
-			}, scope)
-			if err == nil {
-				return ref
-			}
-		}
-		return localPath // fallback
-	}
-
-	if ev.Message != nil && len(ev.Message.Files) > 0 {
-		for _, file := range ev.Message.Files {
-			localPath := fetchFile(c, file)
-			if localPath == "" {
-				continue
-			}
-			mediaPaths = append(mediaPaths, storeMedia(localPath, file.Name))
-			content += fmt.Sprintf("\n[file: %s]", file.Name)
-		}
+	if ev.Message != nil {
+		content, mediaPaths = c.downloadFiles(ev.Message.Files, content, channels.BuildMediaScope("slack", chatID, messageTS))
 	}
 
 	if strings.TrimSpace(content) == "" {
@@ -514,7 +489,10 @@ func (c *SlackChannel) handleAppMention(ev *slackevents.AppMentionEvent) {
 		Timestamp: messageTS,
 	})
 
-	content := c.stripBotMention(ev.Text)
+	// A channel message that mentions the bot is answered here, so its files
+	// come from this event.
+	content, mediaPaths := c.downloadFiles(ev.Files, c.stripBotMention(ev.Text),
+		channels.BuildMediaScope("slack", chatID, messageTS))
 
 	if strings.TrimSpace(content) == "" {
 		return
@@ -542,7 +520,32 @@ func (c *SlackChannel) handleAppMention(ev *slackevents.AppMentionEvent) {
 		Raw:       metadata,
 	}
 
-	c.HandleInboundContext(c.ctx, chatID, content, nil, inboundCtx, mentionSender)
+	c.HandleInboundContext(c.ctx, chatID, content, mediaPaths, inboundCtx, mentionSender)
+}
+
+// downloadFiles fetches files into the media store, adding a "[file: name]"
+// line to content for each, and returns the content and their refs.
+func (c *SlackChannel) downloadFiles(files []slack.File, content, scope string) (string, []string) {
+	var mediaPaths []string
+	for _, file := range files {
+		localPath := fetchFile(c, file)
+		if localPath == "" {
+			continue
+		}
+		ref := localPath
+		if store := c.GetMediaStore(); store != nil {
+			if stored, err := store.Store(localPath, media.MediaMeta{
+				Filename:      file.Name,
+				Source:        "slack",
+				CleanupPolicy: media.CleanupPolicyDeleteOnCleanup,
+			}, scope); err == nil {
+				ref = stored
+			}
+		}
+		mediaPaths = append(mediaPaths, ref)
+		content += fmt.Sprintf("\n[file: %s]", file.Name)
+	}
+	return content, mediaPaths
 }
 
 func (c *SlackChannel) handleSlashCommand(event socketmode.Event) {
