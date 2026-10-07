@@ -16,6 +16,12 @@ Notable changes to Compa, newest first. Versions follow
 - With **Remote Images** on **On click**, a click loads an image in that
   message only; other messages with the same image still ask. It loaded
   everywhere the image appeared until the page reloaded.
+- Matrix keeps its events under the size limit, in encrypted rooms too: it
+  splits replies smaller, fits tool feedback and its animated edits into one
+  event, and sends a reply too large to edit into one event anew at once. An
+  event the homeserver still refuses as too large isn't retried.
+- A placeholder whose edit into the reply is refused is deleted when the reply
+  is sent as a new message; it stayed in the chat.
 
 ## 2.1.1 - 2026-10-06
 

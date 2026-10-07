@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -33,6 +34,7 @@ import (
 	"github.com/xibodev/compa/v2/pkg/identity"
 	"github.com/xibodev/compa/v2/pkg/logger"
 	"github.com/xibodev/compa/v2/pkg/media"
+	"github.com/xibodev/compa/v2/pkg/utils"
 )
 
 const (
@@ -415,6 +417,7 @@ func (c *MatrixChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]st
 
 	isToolFeedback := outboundMessageIsToolFeedback(msg)
 	if isToolFeedback {
+		content = c.fitToolFeedback(content)
 		if msgID, handled, err := c.progress.Update(ctx, msg.ChatID, content); handled {
 			if err != nil {
 				return nil, err
@@ -428,6 +431,7 @@ func (c *MatrixChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]st
 			return msgIDs, nil
 		}
 	}
+	feedback := content
 	if isToolFeedback {
 		content = channels.InitialAnimatedToolFeedbackContent(content)
 	}
@@ -449,12 +453,15 @@ func (c *MatrixChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]st
 				return msgIDs, channels.PartlyDelivered(fmt.Errorf("matrix send: part %d of %d: %w",
 					len(msgIDs)+1, len(chunks), err))
 			}
+			if errors.Is(err, mautrix.MTooLarge) {
+				return nil, fmt.Errorf("matrix send: %w: %v", channels.ErrSendFailed, err)
+			}
 			return msgIDs, fmt.Errorf("matrix send: %w", channels.ErrTemporary)
 		}
 		msgIDs = append(msgIDs, resp.EventID.String())
 	}
 	if isToolFeedback {
-		c.RecordToolFeedbackMessage(msg.ChatID, msgIDs[0], msg.Content)
+		c.RecordToolFeedbackMessage(msg.ChatID, msgIDs[0], feedback)
 	} else if hasTrackedMsg {
 		c.dismissTrackedToolFeedbackMessage(ctx, msg.ChatID, trackedMsgID)
 	}
@@ -462,8 +469,13 @@ func (c *MatrixChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]st
 }
 
 // maxEventContentBytes keeps a message event under Matrix's 65,536-byte
-// event limit, leaving room for the fields the server adds.
-const maxEventContentBytes = 60000
+// event limit even when it is encrypted, which wraps the event in base64 (a
+// third more), and leaves room for the fields the server adds.
+const maxEventContentBytes = 44000
+
+// maxEventIDBytes is the longest event ID Matrix allows; an edit names the
+// event it replaces.
+const maxEventIDBytes = 255
 
 // splitForEvent splits text into parts whose message events, with the
 // formatted body, fit maxEventContentBytes. The manager splits by
@@ -495,6 +507,53 @@ func (c *MatrixChannel) eventBytes(text string) int {
 	return len(encoded)
 }
 
+// editBytes is the encoded size of the event that edits a message to text: it
+// carries the text and, unless the text is long, a fallback copy of it.
+func (c *MatrixChannel) editBytes(text string) int {
+	content := c.messageContent(text)
+	content.SetEdit(id.EventID("$" + strings.Repeat("x", maxEventIDBytes-1)))
+	encoded, err := json.Marshal(content)
+	if err != nil {
+		return 2 * len(text)
+	}
+	return len(encoded)
+}
+
+// fitToolFeedback shortens tool feedback so that the progress message, and
+// each animated edit of it, fits one event. The manager splits by characters,
+// and a progress message isn't split.
+func (c *MatrixChannel) fitToolFeedback(content string) string {
+	content = strings.TrimSpace(content)
+	// Room for a longer animation frame, in each copy of the text.
+	margin := 16 * channels.MaxToolFeedbackAnimationFrameLength()
+	fits := func(text string) bool {
+		return c.editBytes(channels.InitialAnimatedToolFeedbackContent(text))+margin <= maxEventContentBytes
+	}
+	if content == "" || fits(content) {
+		return content
+	}
+	best := string([]rune(content)[:1])
+	for low, high := 1, utf8.RuneCountInString(content); low <= high; {
+		mid := (low + high) / 2
+		candidate := utils.FitToolFeedbackMessage(content, mid)
+		// Truncation can be switched off for debugging; the event must fit anyway.
+		if runes := []rune(candidate); len(runes) > mid {
+			candidate = string(runes[:mid])
+		}
+		if candidate != "" && fits(candidate) {
+			best, low = candidate, mid+1
+		} else {
+			high = mid - 1
+		}
+	}
+	return best
+}
+
+// PrepareToolFeedbackMessageContent fits tool feedback that the manager puts
+// into a placeholder, as Send does.
+func (c *MatrixChannel) PrepareToolFeedbackMessageContent(content string) string {
+	return c.fitToolFeedback(content)
+}
 func (c *MatrixChannel) messageContent(text string) *event.MessageEventContent {
 	mc := &event.MessageEventContent{MsgType: event.MsgText, Body: text}
 	if c.config.MessageFormat != "plain" {
@@ -607,7 +666,7 @@ func (c *MatrixChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMess
 				"type":  part.Type,
 				"error": err.Error(),
 			})
-			return failed(fmt.Errorf("matrix upload media: %w", channels.ErrTemporary))
+			return failed(matrixMediaError("matrix upload media", err))
 		}
 
 		msgType := matrixOutboundMsgType(part.Type, filename, contentType)
@@ -627,7 +686,7 @@ func (c *MatrixChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMess
 				"type":    msgType,
 				"error":   err.Error(),
 			})
-			return failed(fmt.Errorf("matrix send media: %w", channels.ErrTemporary))
+			return failed(matrixMediaError("matrix send media", err))
 		}
 		sent = true
 		if sendResp != nil {
@@ -640,6 +699,15 @@ func (c *MatrixChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMess
 	}
 
 	return eventIDs, nil
+}
+
+// matrixMediaError classifies a failed media upload or event: one the
+// homeserver refused as too large fails the same way when sent again.
+func matrixMediaError(what string, err error) error {
+	if errors.Is(err, mautrix.MTooLarge) {
+		return fmt.Errorf("%s: %w: %v", what, channels.ErrSendFailed, err)
+	}
+	return fmt.Errorf("%s: %w", what, channels.ErrTemporary)
 }
 
 // StartTyping implements channels.TypingCapable.
@@ -698,6 +766,9 @@ func (c *MatrixChannel) SendPlaceholder(ctx context.Context, chatID string) (str
 		MsgType: event.MsgNotice,
 		Body:    text,
 	})
+	if errors.Is(err, mautrix.MTooLarge) {
+		return "", fmt.Errorf("matrix placeholder: %w: %v", channels.ErrSendFailed, err)
+	}
 	if err != nil {
 		return "", err
 	}
@@ -717,8 +788,15 @@ func (c *MatrixChannel) EditMessage(ctx context.Context, chatID string, messageI
 
 	editContent := c.messageContent(content)
 	editContent.SetEdit(id.EventID(messageID))
+	// The homeserver would refuse it; the caller sends the text anew instead.
+	if encoded, err := json.Marshal(editContent); err == nil && len(encoded) > maxEventContentBytes {
+		return fmt.Errorf("matrix edit of %d bytes is too large for one event: %w", len(encoded), channels.ErrSendFailed)
+	}
 
 	_, err := c.client.SendMessageEvent(ctx, roomID, event.EventMessage, editContent)
+	if errors.Is(err, mautrix.MTooLarge) {
+		return fmt.Errorf("matrix edit: %w: %v", channels.ErrSendFailed, err)
+	}
 	return err
 }
 
