@@ -109,6 +109,33 @@ describe("reply markdown", () => {
     renderMessage(`${image}\n\nmore text`, revealed)
     expect(screen.getByRole("img", { name: "a chart" })).toBeInTheDocument()
   })
+
+  it("asks again when a clicked image's address changes", async () => {
+    vi.stubGlobal("fetch", launcherConfig())
+    const revealed = new Set<string>()
+    const view = renderMessage(
+      "![a chart](https://tracker.example/first.png)",
+      revealed,
+    )
+    fireEvent.click(screen.getByRole("button", { name: "a chart" }))
+    await screen.findByRole("img", { name: "a chart" })
+
+    view.rerender(
+      <QueryClientProvider client={new QueryClient()}>
+        <RevealedImagesContext.Provider value={revealed}>
+          <ReactMarkdown
+            remarkPlugins={MARKDOWN_REMARK_PLUGINS}
+            rehypePlugins={MARKDOWN_REHYPE_PLUGINS}
+            components={MARKDOWN_COMPONENTS}
+          >
+            {"![a chart](https://tracker.example/second.png)"}
+          </ReactMarkdown>
+        </RevealedImagesContext.Provider>
+      </QueryClientProvider>,
+    )
+    expect(screen.getByRole("button", { name: "a chart" })).toBeInTheDocument()
+    expect(document.querySelector("img")).toBeNull()
+  })
   it("names an image without alt text by its site", () => {
     vi.stubGlobal("fetch", launcherConfig())
     renderMarkdown("![](https://cdn.example/a.png)")

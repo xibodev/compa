@@ -36,9 +36,10 @@ export function MarkdownImage({
   const mode = useRemoteImageMode()
   const source = typeof src === "string" ? src : ""
   const revealedInMessage = useContext(RevealedImagesContext)
-  const [revealed, setRevealed] = useState(
-    () => revealedInMessage?.has(source) ?? false,
-  )
+  // The address clicked here: an image whose address changes asks again.
+  const [clicked, setClicked] = useState("")
+  const revealed =
+    clicked === source || (revealedInMessage?.has(source) ?? false)
 
   if (!source) return null
 
@@ -60,7 +61,7 @@ export function MarkdownImage({
         title={source}
         onClick={() => {
           revealedInMessage?.add(source)
-          setRevealed(true)
+          setClicked(source)
         }}
       >
         <IconPhoto className="size-4" />
