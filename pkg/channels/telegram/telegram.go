@@ -574,9 +574,11 @@ func (c *TelegramChannel) EditMessage(ctx context.Context, chatID string, messag
 			)
 			return nil // Swallow to prevent Manager fallback to a new SendMessage
 		}
+		// Classified as a send's: when Telegram refuses the edit, the
+		// manager sends the reply anew and deletes the placeholder.
+		return c.classifySendError(err)
 	}
-
-	return c.safeErr(err)
+	return nil
 }
 
 // DeleteMessage implements channels.MessageDeleter.

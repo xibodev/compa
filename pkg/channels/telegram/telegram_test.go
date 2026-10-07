@@ -900,6 +900,37 @@ func TestSend_RateLimitCarriesRetryAfter(t *testing.T) {
 	assert.Equal(t, 7*time.Second, limited.RetryAfter)
 }
 
+// A refused edit is permanent, so the manager deletes the placeholder it
+// couldn't edit and sends the reply anew; after an error the edit may have
+// survived, it doesn't.
+func TestEditMessage_ClassifiesRefusals(t *testing.T) {
+	tests := []struct {
+		name string
+		resp *ta.Response
+		want error
+	}{
+		{"message gone", apiErrorResponse(400, "Bad Request: message to edit not found", 0), channels.ErrSendFailed},
+		{"blocked by the user", apiErrorResponse(403, "Forbidden: bot was blocked by the user", 0), channels.ErrSendFailed},
+		{"rate limited", apiErrorResponse(429, "Too Many Requests: retry after 7", 7), channels.ErrRateLimit},
+		{"server error", apiErrorResponse(502, "Bad Gateway", 0), channels.ErrTemporary},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			caller := &stubCaller{
+				callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+					return tt.resp, nil
+				},
+			}
+
+			err := newTestChannel(t, caller).EditMessage(context.Background(), "12345", "7", "reply")
+
+			require.ErrorIs(t, err, tt.want)
+			if tt.want != channels.ErrSendFailed {
+				assert.NotErrorIs(t, err, channels.ErrSendFailed)
+			}
+		})
+	}
+}
 func TestSend_ParseErrorFallsBackToPlainText(t *testing.T) {
 	caller := &stubCaller{
 		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
