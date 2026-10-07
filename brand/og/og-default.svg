@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 630" width="1200" height="630" role="img" aria-labelledby="title description">
+  <title id="title">Compa</title>
+  <desc id="description">A personal AI assistant that runs on your computer. A web app for everyday use and an embeddable Go runtime.</desc>
+  <rect width="1200" height="630" fill="#111215"/>
+  <rect x="744" y="72" width="384" height="486" rx="40" fill="#171719"/>
+  <rect x="744" y="72" width="10" height="486" rx="5" fill="#2749AD"/>
+
+  <g transform="translate(60 47) scale(.48)">
+    <path d="M72 20 H36 C27.16 20 20 27.16 20 36 V64 C20 72.84 27.16 80 36 80 H72 V68 H38 C34.69 68 32 65.31 32 62 V38 C32 34.69 34.69 32 38 32 H72 Z" fill="#9CABFF"/>
+    <path d="M66 38 H46 C41.58 38 38 41.58 38 46 V54 C38 58.42 41.58 62 46 62 H66 V53 H48 C46.9 53 46 52.1 46 51 V49 C46 47.9 46.9 47 48 47 H66 Z" fill="#E8ECFF" opacity=".48"/>
+    <rect x="72" y="44" width="12" height="12" rx="2.5" fill="#E8ECFF"/>
+  </g>
+  <text x="110" y="91" fill="#E8ECFF" font-family="Arial, sans-serif" font-size="42" font-weight="600" letter-spacing="-1.8">compa</text>
+
+  <text x="64" y="212" fill="#9CABFF" font-family="Arial, sans-serif" font-size="17" font-weight="600" letter-spacing="2.4">EVERYDAY HELP / YOU STAY IN CHARGE</text>
+  <text x="60" y="286" fill="#E8ECFF" font-family="Arial, sans-serif" font-size="57" font-weight="600" letter-spacing="-2.5">
+    <tspan x="60" dy="0">A personal AI</tspan>
+    <tspan x="60" dy="68">assistant that runs</tspan>
+    <tspan x="60" dy="68">on your computer.</tspan>
+  </text>
+  <text x="64" y="536" fill="#9CABFF" font-family="Arial, sans-serif" font-size="25" font-weight="400">
+    <tspan x="64" dy="0">A web app for everyday use</tspan>
+    <tspan x="64" dy="34">and an embeddable Go runtime.</tspan>
+  </text>
+
+  <g transform="translate(766 123) scale(3.4)">
+    <path d="M72 20 H36 C27.16 20 20 27.16 20 36 V64 C20 72.84 27.16 80 36 80 H72 V68 H38 C34.69 68 32 65.31 32 62 V38 C32 34.69 34.69 32 38 32 H72 Z" fill="#9CABFF"/>
+    <path d="M66 38 H46 C41.58 38 38 41.58 38 46 V54 C38 58.42 41.58 62 46 62 H66 V53 H48 C46.9 53 46 52.1 46 51 V49 C46 47.9 46.9 47 48 47 H66 Z" fill="#E8ECFF" opacity=".48"/>
+    <rect x="72" y="44" width="12" height="12" rx="2.5" fill="#E8ECFF"/>
+  </g>
+  <text x="800" y="500" fill="#9CABFF" font-family="ui-monospace, Consolas, monospace" font-size="16" letter-spacing="1">ASSISTANT / GO RUNTIME</text>
+</svg>

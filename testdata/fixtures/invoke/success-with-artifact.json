@@ -1,0 +1,31 @@
+{
+  "protocol": "xibodev.module/v1",
+  "module": "fake",
+  "operation": "invoke",
+  "request_id": "req_0000000000000000000000000000fake",
+  "ok": true,
+  "result": {
+    "report": "generated"
+  },
+  "warnings": [],
+  "execution": {
+    "local": true,
+    "network": false,
+    "external_writes": false,
+    "provider": "local",
+    "estimated_cost": 0,
+    "actual_cost": 0,
+    "artifacts": [
+      {
+        "id": "artifact_report_1",
+        "kind": "fake.report/v1",
+        "path": "reports/report-1.json",
+        "root": "workspace",
+        "media_type": "application/json",
+        "bytes": 128,
+        "digest": "sha256:47e852b4bfb727713c496456010997cbe42fc585ff6471fff5f496314cc54a9f",
+        "title": "Fake report"
+      }
+    ]
+  }
+}

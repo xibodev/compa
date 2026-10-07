@@ -1,0 +1,116 @@
+{
+  "instances": [
+    {
+      "id": "first",
+      "provider_kind": "openai",
+      "adapter": "openai-compatible",
+      "protocol": "openai",
+      "endpoint": "https://first.test/v1",
+      "auth_configured": true,
+      "header_names": [],
+      "setting_names": [],
+      "state": "enabled"
+    },
+    {
+      "id": "second",
+      "provider_kind": "openai",
+      "adapter": "openai-compatible",
+      "protocol": "openai",
+      "endpoint": "https://second.test/v1",
+      "auth_configured": true,
+      "header_names": [],
+      "setting_names": [],
+      "state": "enabled"
+    },
+    {
+      "id": "disabled",
+      "provider_kind": "openai",
+      "adapter": "openai-compatible",
+      "protocol": "openai",
+      "endpoint": "https://disabled.test/v1",
+      "auth_configured": true,
+      "header_names": [],
+      "setting_names": [],
+      "state": "disabled"
+    },
+    {
+      "id": "ext-gamma",
+      "provider_kind": "extension",
+      "adapter": "extension",
+      "protocol": "chat_completions",
+      "endpoint": "http://127.0.0.1:18888",
+      "auth_configured": false,
+      "header_names": [],
+      "setting_names": [],
+      "state": "disabled",
+      "display_name": "Gamma Account",
+      "managed_by": "extension",
+      "credential_kind": "oauth",
+      "credential_ready": false
+    }
+  ],
+  "targets": [
+    {
+      "target": "first/shared",
+      "instance_id": "first",
+      "model_id": "shared",
+      "provider_kind": "openai",
+      "fetched_at": "2026-01-01T00:00:00Z"
+    },
+    {
+      "target": "second/shared",
+      "instance_id": "second",
+      "model_id": "shared",
+      "provider_kind": "openai",
+      "fetched_at": "2026-01-01T00:00:00Z"
+    }
+  ],
+  "catalogs": [
+    {
+      "instance_id": "first",
+      "provider_kind": "openai",
+      "models": [{ "id": "shared" }],
+      "fetched_at": "2026-01-01T00:00:00Z"
+    },
+    {
+      "instance_id": "second",
+      "provider_kind": "openai",
+      "models": [{ "id": "shared" }],
+      "fetched_at": "2026-01-01T00:00:00Z"
+    },
+    {
+      "instance_id": "disabled",
+      "provider_kind": "openai",
+      "models": [{ "id": "hidden" }],
+      "fetched_at": "2026-01-01T00:00:00Z"
+    }
+  ],
+  "routes": [
+    { "name": "primary", "targets": ["second/shared", "first/shared"] }
+  ],
+  "active_models": ["first/shared"],
+  "default_model": "",
+  "providers": [
+    {
+      "id": "mystery",
+      "display_name": "Mystery protocol",
+      "compatibility": "discovery_only"
+    }
+  ],
+  "free_test": {
+    "ok": false,
+    "total": 1,
+    "catalog_discovered": 1,
+    "verified": 0,
+    "instances": [],
+    "outcomes": [
+      {
+        "registry_id": "busy_free",
+        "provider_id": "busy-free",
+        "status": "failed",
+        "error_class": "rate_limited",
+        "error": "429 Too Many Requests: free tier busy"
+      }
+    ]
+  }
+}

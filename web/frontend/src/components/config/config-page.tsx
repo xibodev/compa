@@ -1,0 +1,1108 @@
+import {
+  IconArrowRight,
+  IconCode,
+  IconDeviceFloppy,
+  IconMicrophone,
+  IconTag,
+} from "@tabler/icons-react"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
+import { Link } from "@tanstack/react-router"
+import { type ReactNode, useEffect, useEffectEvent, useState } from "react"
+import { useTranslation } from "react-i18next"
+import { toast } from "sonner"
+
+import { patchAppConfig, resetAppConfig } from "@/api/channels"
+import { launcherFetch } from "@/api/http"
+import { postLauncherDashboardSetup } from "@/api/launcher-auth"
+import {
+  type AutoStartStatus,
+  type LauncherConfig,
+  getAutoStartStatus,
+  getLauncherConfig,
+  getSystemVersionInfo,
+  setAutoStartEnabled as updateAutoStartEnabled,
+  setLauncherConfig as updateLauncherConfig,
+} from "@/api/system"
+import { ConfigChangeNotice } from "@/components/config-change-notice"
+import {
+  AgentDefaultsSection,
+  ApprovalsSection,
+  CronSection,
+  DevicesSection,
+  EvolutionSection,
+  ExecSection,
+  LauncherSection,
+  LoggingSection,
+  MCPSection,
+  RuntimeSection,
+} from "@/components/config/config-sections"
+import {
+  type ApprovalRuleForm,
+  type CoreConfigForm,
+  EMPTY_FORM,
+  EMPTY_LAUNCHER_FORM,
+  type LauncherForm,
+  type MCPServerForm,
+  type TurnProfileForm,
+  buildFormFromConfig,
+  parseCIDRText,
+  parseFloatField,
+  parseIntField,
+  parseJSONObjectField,
+  parseMultilineList,
+  unmaskSecretValues,
+} from "@/components/config/form-model"
+import { PageHeader } from "@/components/page-header"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog"
+import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import { UnsavedChangesGuard } from "@/components/unsaved-changes-guard"
+import { showSaveSuccessOrRestartToast } from "@/lib/restart-required"
+import { isReleaseVersion } from "@/lib/version"
+import { refreshGatewayState } from "@/store/gateway"
+
+type ConfigGroupKey = "access" | "agent" | "tools" | "advanced"
+
+const CONFIG_GROUPS: readonly ConfigGroupKey[] = [
+  "access",
+  "agent",
+  "tools",
+  "advanced",
+]
+
+const groupElementId = (group: ConfigGroupKey) => `config-${group}`
+
+/** A titled group of settings cards, which the page's contents jump to. */
+function ConfigGroup({
+  group,
+  children,
+}: {
+  group: ConfigGroupKey
+  children: ReactNode
+}) {
+  const { t } = useTranslation()
+  return (
+    <section
+      id={groupElementId(group)}
+      aria-labelledby={`${groupElementId(group)}-title`}
+      className="scroll-mt-16 space-y-4"
+    >
+      <div>
+        <h2
+          id={`${groupElementId(group)}-title`}
+          className="text-foreground text-lg font-semibold tracking-tight"
+        >
+          {t(`pages.config.groups.${group}.title`)}
+        </h2>
+        <p className="text-muted-foreground text-sm">
+          {t(`pages.config.groups.${group}.description`)}
+        </p>
+      </div>
+      {children}
+    </section>
+  )
+}
+
+function launcherFormFromConfig(config: LauncherConfig): LauncherForm {
+  return {
+    port: String(config.port),
+    publicAccess: config.public,
+    allowLANWithoutPassword: config.allow_lan_without_password === true,
+    allowedCIDRsText: (config.allowed_cidrs ?? []).join("\n"),
+    allowedHostsText: (config.allowed_hosts ?? []).join("\n"),
+    allowLocalhostBypass: config.allow_localhost_bypass ?? true,
+    trustedProxyCIDRsText: (config.trusted_proxy_cidrs ?? []).join("\n"),
+    remoteImages: config.remote_images === "always" ? "always" : "click",
+    dashboardPassword: "",
+    dashboardPasswordConfirm: "",
+    dashboardPasswordCurrent: "",
+  }
+}
+
+function buildStringMapMergePatch(
+  next: Record<string, string>,
+  previous: Record<string, string>,
+): Record<string, string | null> {
+  const patch: Record<string, string | null> = { ...next }
+
+  for (const key of Object.keys(previous)) {
+    if (!(key in next)) {
+      patch[key] = null
+    }
+  }
+
+  return patch
+}
+
+function buildTurnProfilePatch(
+  profile: TurnProfileForm,
+): Record<string, unknown> {
+  const result: Record<string, unknown> = {
+    enabled: profile.enabled,
+    history: { mode: profile.historyMode },
+    system_prompt: { mode: profile.systemPromptMode },
+    skills: { mode: profile.skillsMode },
+    tools: { mode: profile.toolsMode },
+  }
+
+  if (profile.skillsMode === "custom") {
+    result.skills = {
+      mode: "custom",
+      allow: parseMultilineList(profile.skillsAllowText),
+    }
+  }
+  if (profile.toolsMode === "custom") {
+    result.tools = {
+      mode: "custom",
+      allow: parseMultilineList(profile.toolsAllowText),
+    }
+  }
+
+  return result
+}
+
+/**
+ * A rule as tools.approval.rules holds it: only the fields it sets, or, for
+ * a rule the form could not show, the rule as it came.
+ */
+function buildApprovalRulePatch(rule: ApprovalRuleForm): unknown {
+  if ("kept" in rule) {
+    return rule.kept
+  }
+  const result: Record<string, unknown> = {}
+  const tool = rule.tool.trim()
+  const source = rule.source.trim()
+  if (tool) result.tool = tool
+  if (source) result.source = source
+  if (rule.origin.length > 0) result.origin = rule.origin
+  if (rule.hints.length > 0) result.hints = rule.hints
+  result.action = rule.action
+  return result
+}
+
+export function ConfigPage() {
+  const { t } = useTranslation()
+  const queryClient = useQueryClient()
+  const [form, setForm] = useState<CoreConfigForm>(EMPTY_FORM)
+  const [baseline, setBaseline] = useState<CoreConfigForm>(EMPTY_FORM)
+  const [launcherForm, setLauncherForm] =
+    useState<LauncherForm>(EMPTY_LAUNCHER_FORM)
+  const [launcherBaseline, setLauncherBaseline] =
+    useState<LauncherForm>(EMPTY_LAUNCHER_FORM)
+  const [autoStartEnabled, setAutoStartEnabled] = useState(false)
+  const [autoStartBaseline, setAutoStartBaseline] = useState(false)
+  const [saving, setSaving] = useState(false)
+  const [showFactoryResetDialog, setShowFactoryResetDialog] = useState(false)
+
+  const { data, isLoading, error } = useQuery({
+    queryKey: ["config"],
+    queryFn: async () => {
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), 5000)
+      try {
+        const res = await launcherFetch("/api/config", {
+          signal: controller.signal,
+        })
+        if (!res.ok) {
+          throw new Error("Failed to load config")
+        }
+        return res.json()
+      } finally {
+        clearTimeout(timer)
+      }
+    },
+  })
+
+  const { data: launcherConfig, isLoading: isLauncherLoading } = useQuery({
+    queryKey: ["system", "launcher-config"],
+    queryFn: getLauncherConfig,
+  })
+
+  const { data: versionInfo } = useQuery({
+    queryKey: ["system", "version"],
+    queryFn: getSystemVersionInfo,
+    staleTime: 5 * 60 * 1000,
+  })
+
+  const {
+    data: autoStartStatus,
+    isLoading: isAutoStartLoading,
+    error: autoStartError,
+  } = useQuery({
+    queryKey: ["system", "autostart"],
+    queryFn: getAutoStartStatus,
+  })
+
+  const configDirty = JSON.stringify(form) !== JSON.stringify(baseline)
+  const launcherSettingsDirty =
+    launcherForm.port !== launcherBaseline.port ||
+    launcherForm.publicAccess !== launcherBaseline.publicAccess ||
+    launcherForm.allowLANWithoutPassword !==
+      launcherBaseline.allowLANWithoutPassword ||
+    launcherForm.allowedCIDRsText !== launcherBaseline.allowedCIDRsText ||
+    launcherForm.allowedHostsText !== launcherBaseline.allowedHostsText ||
+    launcherForm.allowLocalhostBypass !==
+      launcherBaseline.allowLocalhostBypass ||
+    launcherForm.trustedProxyCIDRsText !==
+      launcherBaseline.trustedProxyCIDRsText ||
+    launcherForm.remoteImages !== launcherBaseline.remoteImages
+  const launcherPasswordDirty =
+    launcherForm.dashboardPassword.trim() !== "" ||
+    launcherForm.dashboardPasswordConfirm.trim() !== ""
+  const launcherDirty = launcherSettingsDirty || launcherPasswordDirty
+  const autoStartDirty = autoStartEnabled !== autoStartBaseline
+  const isDirty = configDirty || launcherDirty || autoStartDirty
+
+  // Fresh server data replaces a form only while it holds no edits: a
+  // refetch or a gateway restart must not wipe what the user typed. Reset
+  // applies the latest data.
+  const applyConfig = (loaded: unknown) => {
+    const parsed = buildFormFromConfig(loaded)
+    setForm(parsed)
+    setBaseline(parsed)
+  }
+  const applyLauncherConfig = (loaded: LauncherConfig) => {
+    const parsed = launcherFormFromConfig(loaded)
+    setLauncherForm(parsed)
+    setLauncherBaseline(parsed)
+  }
+  const applyAutoStart = (loaded: AutoStartStatus) => {
+    setAutoStartEnabled(loaded.enabled)
+    setAutoStartBaseline(loaded.enabled)
+  }
+
+  const onConfigLoaded = useEffectEvent((loaded: unknown) => {
+    if (!configDirty) applyConfig(loaded)
+  })
+  const onLauncherConfigLoaded = useEffectEvent((loaded: LauncherConfig) => {
+    if (!launcherDirty) applyLauncherConfig(loaded)
+  })
+  const onAutoStartLoaded = useEffectEvent((loaded: AutoStartStatus) => {
+    if (!autoStartDirty) applyAutoStart(loaded)
+  })
+
+  useEffect(() => {
+    if (data) onConfigLoaded(data)
+  }, [data])
+
+  useEffect(() => {
+    if (launcherConfig) onLauncherConfigLoaded(launcherConfig)
+  }, [launcherConfig])
+
+  useEffect(() => {
+    if (autoStartStatus) onAutoStartLoaded(autoStartStatus)
+  }, [autoStartStatus])
+
+  const autoStartSupported = autoStartStatus?.supported !== false
+  const autoStartHint = autoStartError
+    ? t("pages.config.autostart_load_error")
+    : !autoStartSupported
+      ? t("pages.config.autostart_unsupported")
+      : t("pages.config.autostart_hint")
+
+  const updateField = <K extends keyof CoreConfigForm>(
+    key: K,
+    value: CoreConfigForm[K],
+  ) => {
+    setForm((prev) => ({ ...prev, [key]: value }))
+  }
+
+  const updateLauncherField = <K extends keyof LauncherForm>(
+    key: K,
+    value: LauncherForm[K],
+  ) => {
+    setLauncherForm((prev) => ({ ...prev, [key]: value }))
+  }
+
+  const handleMCPServerAdd = () => {
+    const nextIndex = form.mcpServers.length + 1
+    const server: MCPServerForm = {
+      id: `mcp-${Date.now()}-${nextIndex}`,
+      name: "",
+      enabled: true,
+      deferredOverride: null,
+      type: "stdio",
+      url: "",
+      command: "",
+      argsText: "",
+      envText: "{}",
+      envFile: "",
+      headersText: "{}",
+    }
+    updateField("mcpServers", [...form.mcpServers, server])
+  }
+
+  const handleMCPServerRemove = (id: string) => {
+    updateField(
+      "mcpServers",
+      form.mcpServers.filter((server) => server.id !== id),
+    )
+  }
+
+  const handleMCPServerFieldChange = <K extends keyof MCPServerForm>(
+    id: string,
+    key: K,
+    value: MCPServerForm[K],
+  ) => {
+    updateField(
+      "mcpServers",
+      form.mcpServers.map((server) =>
+        server.id === id ? { ...server, [key]: value } : server,
+      ),
+    )
+  }
+
+  const handleTurnProfileFieldChange = <K extends keyof TurnProfileForm>(
+    key: K,
+    value: TurnProfileForm[K],
+  ) => {
+    updateField("turnProfile", { ...form.turnProfile, [key]: value })
+  }
+
+  // A new rule goes last: the first rule a call matches decides it.
+  const handleApprovalRuleAdd = () => {
+    const rule: ApprovalRuleForm = {
+      id: `approval-rule-${Date.now()}-${form.approvalRules.length + 1}`,
+      tool: "",
+      source: "",
+      origin: [],
+      hints: [],
+      action: "ask",
+    }
+    updateField("approvalRules", [...form.approvalRules, rule])
+  }
+
+  const handleApprovalRuleRemove = (id: string) => {
+    updateField(
+      "approvalRules",
+      form.approvalRules.filter((rule) => rule.id !== id),
+    )
+  }
+
+  const handleApprovalRuleFieldChange = <K extends keyof ApprovalRuleForm>(
+    id: string,
+    key: K,
+    value: ApprovalRuleForm[K],
+  ) => {
+    updateField(
+      "approvalRules",
+      form.approvalRules.map((rule) =>
+        rule.id === id ? { ...rule, [key]: value } : rule,
+      ),
+    )
+  }
+
+  const handleReset = () => {
+    if (data) applyConfig(data)
+    else setForm(baseline)
+    if (launcherConfig) applyLauncherConfig(launcherConfig)
+    else setLauncherForm(launcherBaseline)
+    if (autoStartStatus) applyAutoStart(autoStartStatus)
+    else setAutoStartEnabled(autoStartBaseline)
+    toast.info(t("pages.config.reset_success"))
+  }
+
+  const handleFactoryReset = async () => {
+    try {
+      await resetAppConfig()
+      const fresh = await launcherFetch("/api/config").then((r) => r.json())
+      const parsed = buildFormFromConfig(fresh)
+      setForm(parsed)
+      setBaseline(parsed)
+      await queryClient.invalidateQueries({ queryKey: ["config"] })
+      await refreshGatewayState()
+      toast.success(t("pages.config.factory_reset_success"))
+    } catch (err) {
+      toast.error(
+        err instanceof Error
+          ? err.message
+          : t("pages.config.factory_reset_error"),
+      )
+    } finally {
+      setShowFactoryResetDialog(false)
+    }
+  }
+
+  const headersLabel = (name: string) =>
+    t("pages.config.errors.mcp_server_headers", { name })
+  const envLabel = (name: string) =>
+    t("pages.config.errors.mcp_server_env", { name })
+
+  const handleSave = async () => {
+    try {
+      setSaving(true)
+      const password = launcherForm.dashboardPassword.trim()
+      const confirm = launcherForm.dashboardPasswordConfirm.trim()
+      const currentPassword = launcherForm.dashboardPasswordCurrent.trim()
+      if (launcherPasswordDirty) {
+        if (!password) {
+          throw new Error(t("pages.config.dashboard_password_required"))
+        }
+        if (password !== confirm) {
+          throw new Error(t("pages.config.dashboard_password_mismatch"))
+        }
+        if (Array.from(password).length < 8) {
+          throw new Error(t("pages.config.dashboard_password_min_length"))
+        }
+        if (!currentPassword) {
+          throw new Error(t("pages.config.dashboard_password_current_required"))
+        }
+      }
+
+      if (configDirty) {
+        const workspace = form.workspace.trim()
+        const dmScope = form.dmScope.trim()
+
+        if (!workspace) {
+          throw new Error(t("pages.config.errors.workspace_required"))
+        }
+        if (!dmScope) {
+          throw new Error(t("pages.config.errors.session_scope_required"))
+        }
+
+        if (
+          form.mcpEnabled &&
+          form.mcpDiscoveryEnabled &&
+          !form.mcpDiscoveryUseBM25 &&
+          !form.mcpDiscoveryUseRegex
+        ) {
+          throw new Error(t("pages.config.errors.mcp_discovery_method"))
+        }
+
+        // Errors name each field by its label on this page.
+        const maxTokens = parseIntField(
+          form.maxTokens,
+          t("pages.config.max_tokens"),
+          { min: 1 },
+        )
+        const contextWindow = form.contextWindow.trim()
+          ? parseIntField(
+              form.contextWindow,
+              t("pages.config.context_window"),
+              {
+                min: 1,
+              },
+            )
+          : undefined
+        const maxToolIterations = parseIntField(
+          form.maxToolIterations,
+          t("pages.config.max_tool_iterations"),
+          { min: 1 },
+        )
+        const toolFeedbackMaxArgsLength = parseIntField(
+          form.toolFeedbackMaxArgsLength,
+          t("pages.config.tool_feedback_max_args_length"),
+          { min: 0 },
+        )
+        const summarizeMessageThreshold = parseIntField(
+          form.summarizeMessageThreshold,
+          t("pages.config.summarize_threshold"),
+          { min: 1 },
+        )
+        const summarizeTokenPercent = parseIntField(
+          form.summarizeTokenPercent,
+          t("pages.config.summarize_token_percent"),
+          { min: 1, max: 100 },
+        )
+        const turnProfile = buildTurnProfilePatch(form.turnProfile)
+        const heartbeatInterval = parseIntField(
+          form.heartbeatInterval,
+          t("pages.config.heartbeat_interval"),
+          { min: 1 },
+        )
+        const cronExecTimeoutMinutes = parseIntField(
+          form.cronExecTimeoutMinutes,
+          t("pages.config.cron_exec_timeout"),
+          { min: 0 },
+        )
+        const evolutionMinTaskCount = parseIntField(
+          form.evolutionMinTaskCount,
+          t("pages.config.evolution_min_task_count"),
+          { min: 1 },
+        )
+        const evolutionMinSuccessRatio = parseFloatField(
+          form.evolutionMinSuccessRatio,
+          t("pages.config.evolution_min_success_ratio"),
+          { min: 0.01, max: 1 },
+        )
+        const logMaxSizeMB = parseIntField(
+          form.logMaxSizeMB,
+          t("pages.config.log_max_size_mb"),
+          { min: 1 },
+        )
+        const logMaxFiles = parseIntField(
+          form.logMaxFiles,
+          t("pages.config.log_max_files"),
+          { min: 1 },
+        )
+        const mcpDiscoveryValidationEnabled =
+          form.mcpEnabled && form.mcpDiscoveryEnabled
+        const mcpDiscoveryPatch: Record<string, unknown> = {
+          enabled: form.mcpDiscoveryEnabled,
+          use_bm25: form.mcpDiscoveryUseBM25,
+          use_regex: form.mcpDiscoveryUseRegex,
+        }
+
+        if (mcpDiscoveryValidationEnabled) {
+          mcpDiscoveryPatch.ttl = parseIntField(
+            form.mcpDiscoveryTTL,
+            t("pages.config.mcp_discovery_ttl"),
+            { min: 1 },
+          )
+          mcpDiscoveryPatch.max_search_results = parseIntField(
+            form.mcpDiscoveryMaxSearchResults,
+            t("pages.config.mcp_discovery_max_results"),
+            { min: 1 },
+          )
+        }
+        const execConfigPatch: Record<string, unknown> = {
+          enabled: form.execEnabled,
+        }
+
+        let mcpServersPatch: Record<string, Record<string, unknown> | null> = {}
+        if (form.mcpEnabled) {
+          const baselineServerNames = new Set(
+            baseline.mcpServers
+              .map((server) => server.name.trim())
+              .filter((name) => name !== ""),
+          )
+
+          const normalizedServers = form.mcpServers
+            .map((server) => ({
+              ...server,
+              name: server.name.trim(),
+              url: server.url.trim(),
+              command: server.command.trim(),
+              envFile: server.envFile.trim(),
+            }))
+            .filter((server) => server.name !== "")
+
+          const serverNameCounts = new Map<string, number>()
+          for (const server of normalizedServers) {
+            serverNameCounts.set(
+              server.name,
+              (serverNameCounts.get(server.name) ?? 0) + 1,
+            )
+          }
+
+          const duplicateNames = Array.from(serverNameCounts.entries())
+            .filter(([, count]) => count > 1)
+            .map(([name]) => name)
+            .sort((a, b) => a.localeCompare(b))
+
+          if (duplicateNames.length > 0) {
+            throw new Error(
+              t("pages.config.errors.mcp_server_duplicates", {
+                names: duplicateNames.join(", "),
+              }),
+            )
+          }
+
+          const currentServerNames = new Set(
+            normalizedServers.map((server) => server.name),
+          )
+
+          const removedServerEntries = Array.from(baselineServerNames)
+            .filter((name) => !currentServerNames.has(name))
+            .map((name) => [name, null] as const)
+
+          const baselineServersByName = new Map(
+            baseline.mcpServers
+              .map((server) => ({
+                ...server,
+                name: server.name.trim(),
+              }))
+              .filter((server) => server.name !== "")
+              .map((server) => [server.name, server] as const),
+          )
+
+          const upsertServerEntries = normalizedServers.map((server) => {
+            const deferredPatch = { deferred: server.deferredOverride }
+            const baselineServer = baselineServersByName.get(server.name)
+            const shouldValidateServer = server.enabled
+
+            if (server.type !== "stdio") {
+              if (shouldValidateServer && server.url === "") {
+                throw new Error(
+                  t("pages.config.errors.mcp_server_url_required", {
+                    name: server.name,
+                  }),
+                )
+              }
+
+              if (shouldValidateServer) {
+                try {
+                  const parsedURL = new URL(server.url)
+                  if (
+                    parsedURL.protocol !== "http:" &&
+                    parsedURL.protocol !== "https:"
+                  ) {
+                    throw new Error("invalid protocol")
+                  }
+                } catch {
+                  throw new Error(
+                    t("pages.config.errors.mcp_server_url_invalid", {
+                      name: server.name,
+                    }),
+                  )
+                }
+              }
+
+              const baselineHeaders = baselineServer
+                ? parseJSONObjectField(
+                    baselineServer.headersText,
+                    headersLabel(server.name),
+                  )
+                : {}
+
+              return [
+                server.name,
+                {
+                  ...deferredPatch,
+                  enabled: server.enabled,
+                  type: server.type,
+                  url: server.url,
+                  headers: buildStringMapMergePatch(
+                    unmaskSecretValues(
+                      shouldValidateServer
+                        ? parseJSONObjectField(
+                            server.headersText,
+                            headersLabel(server.name),
+                          )
+                        : baselineHeaders,
+                    ),
+                    baselineHeaders,
+                  ),
+                  command: null,
+                  args: null,
+                  env: null,
+                  env_file: null,
+                },
+              ] as const
+            }
+
+            if (shouldValidateServer && server.command === "") {
+              throw new Error(
+                t("pages.config.errors.mcp_server_command_required", {
+                  name: server.name,
+                }),
+              )
+            }
+
+            const baselineEnv = baselineServer
+              ? parseJSONObjectField(
+                  baselineServer.envText,
+                  envLabel(server.name),
+                )
+              : {}
+
+            return [
+              server.name,
+              {
+                ...deferredPatch,
+                enabled: server.enabled,
+                type: "stdio",
+                command: server.command,
+                args: parseMultilineList(server.argsText),
+                env: buildStringMapMergePatch(
+                  unmaskSecretValues(
+                    shouldValidateServer
+                      ? parseJSONObjectField(
+                          server.envText,
+                          envLabel(server.name),
+                        )
+                      : baselineEnv,
+                  ),
+                  baselineEnv,
+                ),
+                env_file: server.envFile === "" ? null : server.envFile,
+                url: null,
+                headers: null,
+              },
+            ] as const
+          })
+
+          mcpServersPatch = Object.fromEntries([
+            ...upsertServerEntries,
+            ...removedServerEntries,
+          ])
+        }
+
+        if (form.execEnabled) {
+          execConfigPatch.allow_remote = form.allowRemote
+          execConfigPatch.enable_deny_patterns = form.enableDenyPatterns
+          execConfigPatch.custom_allow_patterns = parseMultilineList(
+            form.customAllowPatternsText,
+          )
+          execConfigPatch.timeout_seconds = parseIntField(
+            form.execTimeoutSeconds,
+            t("pages.config.exec_timeout_seconds"),
+            { min: 0 },
+          )
+
+          if (form.enableDenyPatterns) {
+            execConfigPatch.custom_deny_patterns = parseMultilineList(
+              form.customDenyPatternsText,
+            )
+          }
+        }
+
+        await patchAppConfig({
+          agents: {
+            defaults: {
+              workspace,
+              restrict_to_workspace: form.restrictToWorkspace,
+              split_on_marker: form.splitOnMarker,
+              tool_feedback: {
+                enabled: form.toolFeedbackEnabled,
+                max_args_length: toolFeedbackMaxArgsLength,
+                separate_messages: form.toolFeedbackSeparateMessages,
+              },
+              max_tokens: maxTokens,
+              context_window: contextWindow,
+              max_tool_iterations: maxToolIterations,
+              summarize_message_threshold: summarizeMessageThreshold,
+              summarize_token_percent: summarizeTokenPercent,
+              turn_profile: turnProfile,
+            },
+          },
+          session: {
+            dm_scope: dmScope,
+          },
+          commands: {
+            owner_only: form.commandsOwnerOnly,
+          },
+          logging: {
+            redact_secrets: form.logRedactSecrets,
+            max_size_mb: logMaxSizeMB,
+            max_files: logMaxFiles,
+          },
+          evolution: {
+            enabled: form.evolutionEnabled,
+            mode: form.evolutionMode,
+            state_dir:
+              form.evolutionStateDir.trim() === ""
+                ? null
+                : form.evolutionStateDir.trim(),
+            min_task_count: evolutionMinTaskCount,
+            min_success_ratio: evolutionMinSuccessRatio,
+            cold_path_trigger: form.evolutionColdPathTrigger,
+            cold_path_times: parseMultilineList(
+              form.evolutionColdPathTimesText,
+            ),
+          },
+          tools: {
+            // The whole list goes: a merge patch replaces an array.
+            approval: {
+              default: form.approvalDefault,
+              rules: form.approvalRules.map(buildApprovalRulePatch),
+            },
+            cron: {
+              allow_command: form.allowCommand,
+              exec_timeout_minutes: cronExecTimeoutMinutes,
+            },
+            exec: execConfigPatch,
+            mcp: {
+              enabled: form.mcpEnabled,
+              discovery: mcpDiscoveryPatch,
+              servers: mcpServersPatch,
+            },
+          },
+          heartbeat: {
+            enabled: form.heartbeatEnabled,
+            interval: heartbeatInterval,
+          },
+          devices: {
+            enabled: form.devicesEnabled,
+            monitor_usb: form.monitorUSB,
+          },
+        })
+
+        setBaseline(form)
+        queryClient.invalidateQueries({ queryKey: ["config"] })
+      }
+
+      let savedLauncherForm: LauncherForm | null = null
+      if (launcherSettingsDirty) {
+        const port = parseIntField(
+          launcherForm.port,
+          t("pages.config.server_port"),
+          { min: 1, max: 65535 },
+        )
+        const allowedCIDRs = parseCIDRText(launcherForm.allowedCIDRsText)
+        const allowedHosts = parseCIDRText(launcherForm.allowedHostsText)
+        const trustedProxyCIDRs = parseCIDRText(
+          launcherForm.trustedProxyCIDRsText,
+        )
+        const savedLauncherConfig = await updateLauncherConfig({
+          port,
+          public: launcherForm.publicAccess,
+          allowed_cidrs: allowedCIDRs,
+          allow_localhost_bypass: launcherForm.allowLocalhostBypass,
+          trusted_proxy_cidrs: trustedProxyCIDRs,
+          allowed_hosts: allowedHosts,
+          allow_lan_without_password: launcherForm.allowLANWithoutPassword,
+          remote_images: launcherForm.remoteImages,
+        })
+        const parsedLauncher = launcherFormFromConfig(savedLauncherConfig)
+        savedLauncherForm = parsedLauncher
+        setLauncherForm(parsedLauncher)
+        setLauncherBaseline(parsedLauncher)
+        queryClient.setQueryData(
+          ["system", "launcher-config"],
+          savedLauncherConfig,
+        )
+      }
+
+      if (launcherPasswordDirty) {
+        const result = await postLauncherDashboardSetup(password, confirm, {
+          currentPassword,
+        })
+        if (!result.ok) {
+          throw new Error(
+            result.status === 403
+              ? t("pages.config.dashboard_password_current_wrong")
+              : result.error,
+          )
+        }
+
+        const clearedLauncherForm = savedLauncherForm ?? {
+          ...launcherForm,
+          dashboardPassword: "",
+          dashboardPasswordConfirm: "",
+          dashboardPasswordCurrent: "",
+        }
+        setLauncherForm(clearedLauncherForm)
+        if (savedLauncherForm) {
+          setLauncherBaseline(savedLauncherForm)
+        }
+      }
+
+      if (autoStartDirty) {
+        if (!autoStartSupported) {
+          throw new Error(t("pages.config.autostart_unsupported"))
+        }
+        const status = await updateAutoStartEnabled(autoStartEnabled)
+        setAutoStartEnabled(status.enabled)
+        setAutoStartBaseline(status.enabled)
+        queryClient.setQueryData(["system", "autostart"], status)
+      }
+
+      const gateway = await refreshGatewayState({ force: true })
+      showSaveSuccessOrRestartToast(
+        t,
+        t("pages.config.save_success"),
+        t("navigation.config"),
+        gateway?.restartRequired === true,
+      )
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : t("pages.config.save_error"),
+      )
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  const factoryResetButton = (
+    <AlertDialog
+      open={showFactoryResetDialog}
+      onOpenChange={setShowFactoryResetDialog}
+    >
+      <AlertDialogTrigger asChild>
+        <Button variant="destructive" disabled={saving}>
+          {t("pages.config.factory_reset")}
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>
+            {t("pages.config.factory_reset_confirm_title")}
+          </AlertDialogTitle>
+          <AlertDialogDescription>
+            {t("pages.config.factory_reset_confirm_desc")}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
+          <AlertDialogAction onClick={handleFactoryReset}>
+            {t("pages.config.factory_reset_confirm")}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  )
+
+  const actionButtons = (
+    <div className="flex justify-end gap-2">
+      {factoryResetButton}
+      <Button
+        variant="outline"
+        onClick={handleReset}
+        disabled={!isDirty || saving}
+      >
+        {t("common.reset")}
+      </Button>
+      <Button onClick={handleSave} disabled={!isDirty || saving}>
+        <IconDeviceFloppy className="size-4" />
+        {saving ? t("common.saving") : t("common.save")}
+      </Button>
+    </div>
+  )
+
+  return (
+    <div className="flex h-full flex-col">
+      <UnsavedChangesGuard when={isDirty} />
+      <PageHeader
+        title={t("navigation.config")}
+        titleExtra={
+          isReleaseVersion(versionInfo?.version) && (
+            <Badge
+              variant="secondary"
+              className="gap-1 font-mono text-[11px] font-normal opacity-80"
+            >
+              <IconTag className="size-3 opacity-70" />
+              {versionInfo?.version}
+            </Badge>
+          )
+        }
+        children={
+          <Button variant="outline" asChild>
+            <Link to="/config/raw" aria-label={t("pages.config.open_raw")}>
+              <IconCode className="size-4" />
+              <span className="hidden sm:inline">
+                {t("pages.config.open_raw")}
+              </span>
+            </Link>
+          </Button>
+        }
+      />
+      <div className="flex-1 overflow-auto p-3 lg:p-6">
+        <div className="mx-auto w-full max-w-[1000px] space-y-6">
+          {isLoading ? (
+            <div className="text-muted-foreground py-6 text-sm">
+              {t("labels.loading")}
+            </div>
+          ) : error ? (
+            <div className="space-y-4">
+              <div className="text-destructive py-6 text-sm">
+                {t("pages.config.load_error")}
+              </div>
+              <div className="flex justify-end">{factoryResetButton}</div>
+            </div>
+          ) : (
+            <div className="space-y-10">
+              <nav
+                aria-label={t("pages.config.onThisPage")}
+                className="bg-background/95 supports-backdrop-filter:bg-background/80 sticky -top-3 z-10 -mx-1 flex flex-wrap items-center gap-1.5 px-1 py-2 backdrop-blur lg:-top-6"
+              >
+                {CONFIG_GROUPS.map((group) => (
+                  <button
+                    key={group}
+                    type="button"
+                    className="bg-muted text-muted-foreground hover:text-foreground rounded-full px-3 py-1 text-xs font-medium transition-colors"
+                    onClick={() =>
+                      document
+                        .getElementById(groupElementId(group))
+                        ?.scrollIntoView({ behavior: "smooth", block: "start" })
+                    }
+                  >
+                    {t(`pages.config.groups.${group}.title`)}
+                  </button>
+                ))}
+                <Link
+                  to="/config/voice"
+                  className="text-muted-foreground hover:text-foreground inline-flex items-center gap-1 rounded-full border px-3 py-1 text-xs font-medium transition-colors"
+                >
+                  <IconMicrophone className="size-3.5" />
+                  {t("navigation.voice")}
+                  <IconArrowRight className="size-3" />
+                </Link>
+              </nav>
+
+              <ConfigGroup group="access">
+                <LauncherSection
+                  launcherForm={launcherForm}
+                  onFieldChange={updateLauncherField}
+                  disabled={saving || isLauncherLoading}
+                />
+              </ConfigGroup>
+
+              <ConfigGroup group="agent">
+                <AgentDefaultsSection
+                  form={form}
+                  onFieldChange={updateField}
+                  onTurnProfileFieldChange={handleTurnProfileFieldChange}
+                />
+                <RuntimeSection form={form} onFieldChange={updateField} />
+              </ConfigGroup>
+
+              <ConfigGroup group="tools">
+                <ExecSection form={form} onFieldChange={updateField} />
+                <ApprovalsSection
+                  form={form}
+                  onFieldChange={updateField}
+                  onAddRule={handleApprovalRuleAdd}
+                  onRemoveRule={handleApprovalRuleRemove}
+                  onRuleFieldChange={handleApprovalRuleFieldChange}
+                />
+                <CronSection form={form} onFieldChange={updateField} />
+                <MCPSection
+                  form={form}
+                  onFieldChange={updateField}
+                  onAddServer={handleMCPServerAdd}
+                  onRemoveServer={handleMCPServerRemove}
+                  onServerFieldChange={handleMCPServerFieldChange}
+                />
+              </ConfigGroup>
+
+              <ConfigGroup group="advanced">
+                <EvolutionSection form={form} onFieldChange={updateField} />
+                <DevicesSection
+                  form={form}
+                  onFieldChange={updateField}
+                  autoStartEnabled={autoStartEnabled}
+                  autoStartHint={autoStartHint}
+                  autoStartDisabled={
+                    isAutoStartLoading ||
+                    Boolean(autoStartError) ||
+                    !autoStartSupported ||
+                    saving
+                  }
+                  onAutoStartChange={setAutoStartEnabled}
+                />
+                <LoggingSection form={form} onFieldChange={updateField} />
+              </ConfigGroup>
+
+              {!isDirty && actionButtons}
+            </div>
+          )}
+        </div>
+      </div>
+      {isDirty && (
+        <div className="border-border/70 bg-background/95 supports-backdrop-filter:bg-background/80 shrink-0 border-t px-3 py-3 shadow-[0_-12px_30px_rgba(15,23,42,0.10)] backdrop-blur lg:px-6">
+          <div className="mx-auto flex w-full max-w-[1000px] flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex-1">
+              <ConfigChangeNotice
+                kind="save"
+                title={t("common.saveChangesTitle")}
+                description={t("pages.config.unsaved_changes")}
+              />
+            </div>
+            {actionButtons}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}

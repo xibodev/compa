@@ -1,0 +1,277 @@
+{
+  "protocol": "xibodev.module/v1",
+  "module": "fake",
+  "operation": "describe",
+  "request_id": "",
+  "ok": true,
+  "result": {
+    "module": "fake",
+    "name": "Fake Module",
+    "version": "1.0.0",
+    "protocol_versions": [
+      "xibodev.module/v1"
+    ],
+    "capabilities": [
+      {
+        "id": "fake.echo",
+        "title": "Echo",
+        "summary": "Echo structured input back, deterministically.",
+        "request_schema": "fake.echo.request/v1",
+        "result_schema": "fake.echo.result/v1",
+        "artifact_schemas": [],
+        "effects": {
+          "local": true,
+          "network": false,
+          "external_writes": false,
+          "provider": "local",
+          "cost_known": true
+        },
+        "skills": [
+          "fake.echo-usage"
+        ],
+        "long_running": false
+      },
+      {
+        "id": "fake.report",
+        "title": "Report",
+        "summary": "Write a deterministic report artifact into the workspace root.",
+        "request_schema": "fake.report.request/v1",
+        "result_schema": "fake.report.result/v1",
+        "artifact_schemas": [
+          "fake.report/v1"
+        ],
+        "effects": {
+          "local": true,
+          "network": false,
+          "external_writes": true,
+          "provider": "local",
+          "cost_known": true
+        },
+        "skills": [],
+        "long_running": false
+      },
+      {
+        "id": "fake.slow",
+        "title": "Slow job",
+        "summary": "Start a long-running job and return a handle to poll.",
+        "request_schema": "fake.slow.request/v1",
+        "result_schema": "fake.slow.result/v1",
+        "artifact_schemas": [],
+        "effects": {
+          "local": true,
+          "network": false,
+          "external_writes": false,
+          "provider": "local",
+          "cost_known": true
+        },
+        "skills": [],
+        "long_running": true,
+        "poll_capability": "fake.jobs.status"
+      },
+      {
+        "id": "fake.jobs.status",
+        "title": "Job status",
+        "summary": "Poll a job handle for completion, cost, and artifacts.",
+        "request_schema": "fake.jobs.status.request/v1",
+        "result_schema": "fake.jobs.status.result/v1",
+        "artifact_schemas": [],
+        "effects": {
+          "local": true,
+          "network": false,
+          "external_writes": false,
+          "provider": "local",
+          "cost_known": true
+        },
+        "skills": [],
+        "long_running": false
+      }
+    ],
+    "request_schemas": {
+      "fake.echo.request/v1": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "repeat": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "additionalProperties": false
+      },
+      "fake.jobs.status.request/v1": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "job_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id"
+        ],
+        "additionalProperties": false
+      },
+      "fake.report.request/v1": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "additionalProperties": false
+      },
+      "fake.slow.request/v1": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "duration_ms": {
+            "type": "integer"
+          }
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    "result_schemas": {
+      "fake.echo.result/v1": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "echoed": {
+            "type": "string"
+          },
+          "count": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "echoed"
+        ],
+        "additionalProperties": false
+      },
+      "fake.jobs.status.result/v1": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "job_id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id",
+          "state"
+        ],
+        "additionalProperties": false
+      },
+      "fake.report.result/v1": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "report": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "report"
+        ],
+        "additionalProperties": false
+      },
+      "fake.slow.result/v1": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "job_id": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "job_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "artifact_schemas": {
+      "fake.report/v1": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "rows": {
+            "type": "array"
+          }
+        },
+        "required": [
+          "title"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "agent_overlays": [
+      {
+        "id": "fake.overlay",
+        "title": "Fake module guidance",
+        "path": "agents/fake.md",
+        "digest": "sha256:415febebf6ebf1734db8cbe43f4cdebda153380291edc62737070b3fb391a502",
+        "tokens": 120
+      }
+    ],
+    "skills": [
+      {
+        "id": "fake.echo-usage",
+        "title": "Using fake.echo",
+        "summary": "When and how to call fake.echo.",
+        "path": "skills/echo-usage/SKILL.md",
+        "digest": "sha256:0f6e37625662d9e4ab74db001995185068958af40fb99896df449bab401d3589",
+        "tokens": 240
+      }
+    ],
+    "permissions": {
+      "filesystem_read": [
+        "seed_in"
+      ],
+      "filesystem_write": [
+        "workspace"
+      ],
+      "network": [],
+      "credentials": [],
+      "paid_providers": [],
+      "publish": false,
+      "subprocess": []
+    },
+    "requirements": [
+      {
+        "kind": "binary",
+        "name": "ffmpeg",
+        "available": false,
+        "detail": "ffmpeg was not found on PATH; install it to enable fake.report"
+      }
+    ]
+  },
+  "warnings": [],
+  "execution": {
+    "local": true,
+    "network": false,
+    "external_writes": false,
+    "provider": "local",
+    "estimated_cost": 0,
+    "actual_cost": 0,
+    "artifacts": []
+  }
+}

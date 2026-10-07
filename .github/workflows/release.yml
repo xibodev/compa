@@ -1,0 +1,483 @@
+# Build and publish a GitHub release of Compa with shell installers.
+#
+# Pushing a tag vMAJOR.MINOR.PATCH that points at the head of main runs
+# ci.yml, builds compa and compa-kernel for six platforms, packages one archive
+# per platform with SHA256SUMS and both installers, attests their build
+# provenance, stages them on a draft release, checks the digest of every
+# uploaded asset, and publishes it. Then:
+#
+#   irm https://github.com/xibodev/compa/releases/latest/download/install.ps1 | iex
+#   curl -fsSL https://github.com/xibodev/compa/releases/latest/download/install.sh | sh
+#
+# Running it by hand (workflow_dispatch) is a dry run: it builds and packages
+# everything as a workflow artifact and never touches releases.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to build, vMAJOR.MINOR.PATCH (a dry run that never publishes)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  # The staging and publishing jobs have no checkout to infer a repository from.
+  GH_REPO: ${{ github.repository }}
+
+concurrency:
+  group: release-pipeline
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    name: validate release identity
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.identity.outputs.tag }}
+      version: ${{ steps.identity.outputs.version }}
+      short_commit: ${{ steps.identity.outputs.short_commit }}
+      build_time: ${{ steps.identity.outputs.build_time }}
+    steps:
+      # All branches and tags, to compare the tag with main and older tags.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate the version and the tagged commit
+        id: identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_TAG: ${{ github.event_name == 'push' && github.ref_name || inputs.version }}
+        run: |
+          set -euo pipefail
+          semver='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'
+          if ! printf '%s' "$REQUESTED_TAG" | grep -Eq "$semver"; then
+            echo "version must match vMAJOR.MINOR.PATCH, not '$REQUESTED_TAG'" >&2
+            exit 1
+          fi
+          if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            releases=$(gh api --paginate --slurp "repos/$GH_REPO/releases?per_page=100")
+            matches=$(printf '%s' "$releases" | jq --arg tag "$REQUESTED_TAG" '[.[][] | select(.tag_name == $tag)]')
+            published=$(printf '%s' "$matches" | jq '[.[] | select(.draft == false)] | length')
+            drafts=$(printf '%s' "$matches" | jq '[.[] | select(.draft == true)] | length')
+            test "$published" -eq 0 || {
+              echo "$REQUESTED_TAG is already published; published releases are immutable" >&2
+              exit 1
+            }
+            test "$drafts" -le 1 || {
+              echo "more than one draft release exists for $REQUESTED_TAG; refusing to guess which to resume" >&2
+              exit 1
+            }
+            main=$(git rev-parse --verify refs/remotes/origin/main)
+            if [ "$drafts" -eq 1 ]; then
+              # Resuming a staged draft: its commit only has to still be on main.
+              git merge-base --is-ancestor "$GITHUB_SHA" "$main" || {
+                echo "the draft release's commit is no longer on main" >&2
+                exit 1
+              }
+            else
+              test "$main" = "$GITHUB_SHA" || {
+                echo "$REQUESTED_TAG points at $GITHUB_SHA, but main is at $main; tag the current head of main" >&2
+                exit 1
+              }
+            fi
+            previous=$(git tag --list 'v*' | grep -E "$semver" | grep -vFx "$REQUESTED_TAG" | sort -V | tail -n 1 || true)
+            if [ -n "$previous" ] && [ "$(printf '%s\n%s\n' "$previous" "$REQUESTED_TAG" | sort -V | tail -n 1)" != "$REQUESTED_TAG" ]; then
+              echo "$REQUESTED_TAG must be newer than $previous" >&2
+              exit 1
+            fi
+          fi
+          {
+            echo "tag=$REQUESTED_TAG"
+            echo "version=${REQUESTED_TAG#v}"
+            echo "short_commit=$(printf '%s' "$GITHUB_SHA" | cut -c1-8)"
+            echo "build_time=$(date -u -d "$(git show -s --format=%cI "$GITHUB_SHA")" +%Y-%m-%dT%H:%M:%SZ)"
+          } >> "$GITHUB_OUTPUT"
+
+  ci:
+    needs: validate
+    uses: ./.github/workflows/ci.yml
+
+  ui:
+    name: build the web UI
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
+        with:
+          package_json_file: web/frontend/package.json
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: web/frontend/pnpm-lock.yaml
+
+      # build:backend writes web/backend/dist, which compa embeds when it links.
+      - name: Build
+        working-directory: web/frontend
+        run: |
+          set -euo pipefail
+          pnpm install --frozen-lockfile
+          pnpm run build:backend
+          test -f ../backend/dist/index.html
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ui-dist
+          path: web/backend/dist
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+
+  build:
+    name: build ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: [validate, ci, ui]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { goos: windows, goarch: amd64, runner: ubuntu-latest }
+          - { goos: windows, goarch: arm64, runner: ubuntu-latest }
+          - { goos: linux, goarch: amd64, runner: ubuntu-latest }
+          - { goos: linux, goarch: arm64, runner: ubuntu-latest }
+          # compa's macOS tray icon (fyne.io/systray) needs cgo, so darwin
+          # builds run on macOS; clang's -arch cross-compiles either CPU.
+          - { goos: darwin, goarch: amd64, runner: macos-latest, clang_arch: x86_64 }
+          - { goos: darwin, goarch: arm64, runner: macos-latest, clang_arch: arm64 }
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: 1.26.6
+          cache-dependency-path: go.sum
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: ui-dist
+          path: web/backend/dist
+
+      - name: Build compa and compa-kernel
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CLANG_ARCH: ${{ matrix.clang_arch }}
+          VERSION: ${{ needs.validate.outputs.version }}
+          COMMIT: ${{ needs.validate.outputs.short_commit }}
+          BUILD_TIME: ${{ needs.validate.outputs.build_time }}
+        run: |
+          set -euo pipefail
+          test -f web/backend/dist/index.html
+          pkg=github.com/xibodev/compa/v3/pkg/config
+          go_version=$(go env GOVERSION | cut -d ' ' -f 1)
+          ldflags="-s -w -X $pkg.Version=$VERSION -X $pkg.GitCommit=$COMMIT -X $pkg.BuildTime=$BUILD_TIME -X $pkg.GoVersion=$go_version"
+          ext=""
+          if [ "$GOOS" = windows ]; then ext=".exe"; fi
+          out="out/${GOOS}_${GOARCH}"
+          mkdir -p "$out"
+
+          CGO_ENABLED=0 go build -trimpath -tags goolm,stdjson -ldflags "$ldflags" -o "$out/compa-kernel$ext" ./cmd/compa-kernel
+          if [ "$GOOS" = darwin ]; then
+            CGO_ENABLED=1 CC="clang -arch $CLANG_ARCH" MACOSX_DEPLOYMENT_TARGET=12.0 \
+              go build -trimpath -tags goolm,stdjson -ldflags "$ldflags" -o "$out/compa" ./web/backend
+            launcher_cgo=1
+          else
+            # On Windows compa is a GUI program: it lives in the tray, so no
+            # console window opens when it starts at login; -console attaches
+            # to the terminal it was started from.
+            launcher_ldflags="$ldflags"
+            if [ "$GOOS" = windows ]; then launcher_ldflags="$ldflags -H windowsgui"; fi
+            CGO_ENABLED=0 go build -trimpath -tags goolm,stdjson -ldflags "$launcher_ldflags" -o "$out/compa$ext" ./web/backend
+            launcher_cgo=0
+          fi
+          # Without cgo a darwin compa silently falls back to running with no
+          # tray icon; refuse to ship that, or a cgo build anywhere else.
+          go version -m "$out/compa$ext" | grep -Eq "^[[:space:]]+build[[:space:]]+CGO_ENABLED=${launcher_cgo}\$"
+          go version -m "$out/compa-kernel$ext" | grep -Eq '^[[:space:]]+build[[:space:]]+CGO_ENABLED=0$'
+
+          # Run the kernel wherever the runner can, and always for linux/amd64.
+          if [ "$GOOS/$GOARCH" = "$(go env GOHOSTOS)/$(go env GOHOSTARCH)" ]; then
+            output=$("$out/compa-kernel$ext" version)
+            printf '%s\n' "$output"
+            printf '%s\n' "$output" | grep -F "compa-kernel $VERSION (git: $COMMIT)"
+            printf '%s\n' "$output" | grep -F "Build: $BUILD_TIME"
+          elif [ "$GOOS/$GOARCH" = linux/amd64 ]; then
+            echo "linux/amd64 must build on a linux/amd64 runner so its version can be checked" >&2
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: bin-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: out/${{ matrix.goos }}_${{ matrix.goarch }}/*
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+
+  package:
+    name: archives / checksums / installers
+    needs: [validate, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      # Build provenance attestations.
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: bin-*
+          path: bins
+
+      - name: Package release assets
+        env:
+          TAG: ${{ needs.validate.outputs.tag }}
+          VERSION: ${{ needs.validate.outputs.version }}
+          BUILD_TIME: ${{ needs.validate.outputs.build_time }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          targets="windows/amd64 windows/arm64 linux/amd64 linux/arm64 darwin/amd64 darwin/arm64"
+          for target in $targets; do
+            os=${target%/*}
+            arch=${target#*/}
+            ext=""
+            if [ "$os" = windows ]; then ext=".exe"; fi
+            stage="stage/${os}_${arch}"
+            mkdir -p "$stage"
+            # Artifacts do not keep file modes, so set them here.
+            install -m 0755 "bins/bin-$os-$arch/compa$ext" "bins/bin-$os-$arch/compa-kernel$ext" "$stage/"
+            install -m 0644 LICENSE NOTICE "$stage/"
+            files="compa$ext compa-kernel$ext LICENSE NOTICE"
+            if [ "$os" = windows ]; then
+              install -m 0644 web/backend/icon.ico "$stage/compa.ico"
+              files="$files compa.ico"
+            fi
+            name="compa_${VERSION}_${os}_${arch}"
+            (
+              cd "$stage"
+              # shellcheck disable=SC2086 # one file per word
+              touch -d "$BUILD_TIME" $files
+              if [ "$os" = windows ]; then
+                # shellcheck disable=SC2086
+                zip -X -q "../../dist/$name.zip" $files
+              else
+                # shellcheck disable=SC2086
+                tar --sort=name --mtime="$BUILD_TIME" --owner=0 --group=0 --numeric-owner -cf - $files |
+                  gzip -9 -n > "../../dist/$name.tar.gz"
+              fi
+            )
+          done
+
+          # Each installer installs the release it is attached to.
+          for script in install.ps1 install.sh; do
+            sed "s/__COMPA_VERSION__/$TAG/g" "scripts/install/$script" > "dist/$script"
+            if grep -q '__COMPA_VERSION__' "dist/$script"; then
+              echo "dist/$script still holds its version placeholder" >&2
+              exit 1
+            fi
+            grep -Fq "'$TAG'" "dist/$script"
+          done
+          # The installers as published still parse.
+          sh -n dist/install.sh
+          # shellcheck disable=SC2016 # PowerShell code, expanded by pwsh
+          pwsh -NoProfile -Command '$errors = $null
+            [void][Management.Automation.Language.Parser]::ParseFile((Resolve-Path dist/install.ps1), [ref]$null, [ref]$errors)
+            if ($errors) { $errors | Out-String | Write-Error; exit 1 }'
+          chmod 0644 dist/*
+
+          cd dist
+          for zip in *.zip; do
+            contents=$(unzip -Z1 "$zip" | LC_ALL=C sort | tr '\n' ' ')
+            test "$contents" = "LICENSE NOTICE compa-kernel.exe compa.exe compa.ico " || {
+              echo "$zip holds $contents" >&2
+              exit 1
+            }
+          done
+          for tgz in *.tar.gz; do
+            contents=$(tar -tzf "$tgz" | LC_ALL=C sort | tr '\n' ' ')
+            modes=$(tar -tvzf "$tgz" | awk '$6 == "compa" || $6 == "compa-kernel" { print $1 }' | sort -u)
+            test "$contents" = "LICENSE NOTICE compa compa-kernel " && test "$modes" = "-rwxr-xr-x" || {
+              echo "$tgz holds $contents with modes $modes" >&2
+              exit 1
+            }
+          done
+          find . -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort | xargs sha256sum > ../checksums
+          mv ../checksums SHA256SUMS
+          sha256sum -c SHA256SUMS
+          test "$(find . -maxdepth 1 -type f -name '*.zip' | wc -l)" -eq 2
+          test "$(find . -maxdepth 1 -type f -name '*.tar.gz' | wc -l)" -eq 4
+          test "$(find . -maxdepth 1 -type f | wc -l)" -eq 9
+          cat SHA256SUMS
+
+      # Check one with: gh attestation verify <file> --repo xibodev/compa
+      - name: Attest build provenance
+        if: github.event_name == 'push' && github.ref_type == 'tag'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/*.zip
+            dist/*.tar.gz
+            dist/install.ps1
+            dist/install.sh
+            dist/SHA256SUMS
+
+      # Kept for dry runs too, so the would-be assets can be inspected.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-assets-${{ needs.validate.outputs.tag }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+          overwrite: true
+
+  release-stage:
+    name: stage draft release
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: [validate, package]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    outputs:
+      release_id: ${{ steps.stage.outputs.release_id }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-assets-${{ needs.validate.outputs.tag }}
+          path: dist
+
+      - name: Verify downloaded checksums
+        working-directory: dist
+        run: sha256sum -c SHA256SUMS
+
+      - name: Stage and verify the draft release
+        id: stage
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.validate.outputs.tag }}
+        run: |
+          set -euo pipefail
+          releases=$(gh api --paginate --slurp "repos/$GH_REPO/releases?per_page=100")
+          matches=$(printf '%s' "$releases" | jq --arg tag "$TAG" '[.[][] | select(.tag_name == $tag)]')
+          published_count=$(printf '%s' "$matches" | jq '[.[] | select(.draft == false)] | length')
+          draft_count=$(printf '%s' "$matches" | jq '[.[] | select(.draft == true)] | length')
+          test "$published_count" -eq 0 || {
+            echo "a published release already exists for $TAG" >&2
+            exit 1
+          }
+          case "$draft_count" in
+          0)
+            created=$(gh api --method POST "repos/$GH_REPO/releases" \
+              -f tag_name="$TAG" \
+              -f name="Compa $TAG" \
+              -F draft=true \
+              -F generate_release_notes=true)
+            release_id=$(printf '%s' "$created" | jq -r .id)
+            ;;
+          1)
+            # A draft left by an earlier attempt at this tag: finish it.
+            release_id=$(printf '%s' "$matches" | jq -r '[.[] | select(.draft == true)][0].id')
+            ;;
+          *)
+            echo "more than one draft release exists for $TAG; refusing to guess which to use" >&2
+            exit 1
+            ;;
+          esac
+
+          # A resumed draft starts from no assets, so it holds exactly this build.
+          mapfile -t asset_ids < <(gh api --paginate --slurp \
+            "repos/$GH_REPO/releases/$release_id/assets?per_page=100" | jq -r '.[][] | .id')
+          for asset_id in "${asset_ids[@]}"; do
+            gh api --method DELETE "repos/$GH_REPO/releases/assets/$asset_id"
+          done
+          gh release upload "$TAG" dist/*
+
+          local_manifest=$(mktemp)
+          remote_manifest=$(mktemp)
+          trap 'rm -f "$local_manifest" "$remote_manifest"' EXIT
+          for file in dist/*; do
+            printf '%s  %s\n' "$(sha256sum "$file" | cut -d' ' -f1)" "$(basename "$file")"
+          done | sort -k2,2 > "$local_manifest"
+          gh api --paginate --slurp "repos/$GH_REPO/releases/$release_id/assets?per_page=100" |
+            jq -r '.[][] | select(.digest != null) | "\(.digest | sub("^sha256:"; ""))  \(.name)"' |
+            sort -k2,2 > "$remote_manifest"
+          diff -u "$local_manifest" "$remote_manifest"
+          echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
+
+  release-publish:
+    name: publish GitHub release
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    needs: [validate, release-stage]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-assets-${{ needs.validate.outputs.tag }}
+          path: dist
+
+      - name: Verify downloaded checksums
+        working-directory: dist
+        run: sha256sum -c SHA256SUMS
+
+      - name: Publish the staged release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.validate.outputs.tag }}
+          RELEASE_ID: ${{ needs.release-stage.outputs.release_id }}
+        run: |
+          set -euo pipefail
+          release=$(gh api "repos/$GH_REPO/releases/$RELEASE_ID")
+          test "$(printf '%s' "$release" | jq -r .tag_name)" = "$TAG"
+          test "$(printf '%s' "$release" | jq -r .draft)" = "true"
+
+          local_manifest=$(mktemp)
+          remote_manifest=$(mktemp)
+          trap 'rm -f "$local_manifest" "$remote_manifest"' EXIT
+          for file in dist/*; do
+            printf '%s  %s\n' "$(sha256sum "$file" | cut -d' ' -f1)" "$(basename "$file")"
+          done | sort -k2,2 > "$local_manifest"
+          gh api --paginate --slurp "repos/$GH_REPO/releases/$RELEASE_ID/assets?per_page=100" |
+            jq -r '.[][] | select(.digest != null) | "\(.digest | sub("^sha256:"; ""))  \(.name)"' |
+            sort -k2,2 > "$remote_manifest"
+          diff -u "$local_manifest" "$remote_manifest"
+
+          published=$(gh api --method PATCH "repos/$GH_REPO/releases/$RELEASE_ID" -F draft=false -f make_latest=true)
+          test "$(printf '%s' "$published" | jq -r .draft)" = "false"
+          test "$(printf '%s' "$published" | jq -r .tag_name)" = "$TAG"
+
+          # The install commands download from releases/latest.
+          for _ in 1 2 3 4 5; do
+            latest=$(gh api "repos/$GH_REPO/releases/latest" --jq .tag_name || true)
+            if [ "$latest" = "$TAG" ]; then exit 0; fi
+            sleep 5
+          done
+          echo "published $TAG, but releases/latest still points at '$latest'" >&2
+          exit 1

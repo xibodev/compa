@@ -1,0 +1,953 @@
+// Compa - Ultra-lightweight personal AI agent
+
+package agent
+
+import (
+	"context"
+	"fmt"
+	"reflect"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/xibodev/compa/v3/pkg/approval"
+	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v3/pkg/logger"
+	"github.com/xibodev/compa/v3/pkg/providers"
+	"github.com/xibodev/compa/v3/pkg/session"
+	"github.com/xibodev/compa/v3/pkg/tools"
+)
+
+// =============================================================================
+// TurnPhase - represents the current phase of a turn
+// =============================================================================
+
+type TurnPhase string
+
+const (
+	TurnPhaseSetup      TurnPhase = "setup"
+	TurnPhaseRunning    TurnPhase = "running"
+	TurnPhaseTools      TurnPhase = "tools"
+	TurnPhaseFinalizing TurnPhase = "finalizing"
+	TurnPhaseCompleted  TurnPhase = "completed"
+	TurnPhaseAborted    TurnPhase = "aborted"
+)
+
+// =============================================================================
+// Control signals - returned from Pipeline methods to drive runTurn's coordinator loop
+// =============================================================================
+
+type Control int
+
+const (
+	// ControlContinue tells the coordinator to jump back to the top of the turn loop
+	// (equivalent to the original "goto turnLoop").
+	ControlContinue Control = iota
+	// ControlBreak tells the coordinator to exit the turn loop and proceed to Finalize.
+	ControlBreak
+	// ControlToolLoop tells the coordinator to execute the tool loop.
+	ControlToolLoop
+)
+
+// ToolControl signals returned from ExecuteTools to drive tool loop iteration.
+type ToolControl int
+
+const (
+	// ToolControlContinue tells the tool loop to jump to the next iteration
+	// (pendingMessages arrived, SubTurn results, etc.).
+	ToolControlContinue ToolControl = iota
+	// ToolControlBreak tells the tool loop to exit and return to the coordinator.
+	ToolControlBreak
+)
+
+// =============================================================================
+// turnResult - returned from runTurn
+// =============================================================================
+
+type turnResult struct {
+	finalContent       string
+	modelName          string
+	requestedSelection string
+	servedTarget       string
+	servedIdentity     string
+	status             TurnEndStatus
+}
+
+// =============================================================================
+// ActiveTurnInfo - public info about an active turn
+// =============================================================================
+
+type ActiveTurnInfo struct {
+	TurnID       string
+	AgentID      string
+	SessionKey   string
+	Channel      string
+	ChatID       string
+	UserMessage  string
+	Phase        TurnPhase
+	Iteration    int
+	StartedAt    time.Time
+	Depth        int
+	ParentTurnID string
+	ChildTurnIDs []string
+}
+
+// =============================================================================
+// turnExecution - mutable state that persists across turn loop iterations
+// =============================================================================
+
+type turnExecution struct {
+	// Core message state (accumulates throughout the turn)
+	messages         []providers.Message // built from ContextBuilder, grows per-iteration
+	pendingMessages  []providers.Message // steering/SubTurn messages awaiting injection
+	history          []providers.Message // from ContextManager.Assemble
+	summary          string
+	currentTurnStart int
+
+	// Turn output
+	finalContent string
+
+	// Iteration tracking
+	iteration int
+
+	// Per-iteration state set by Pipeline.PreLLM
+	activeCandidates []providers.FallbackCandidate
+	activeModel      string
+	activeCallSpec   *providers.CallSpec
+	activeProvider   providers.LLMProvider
+	usedLight        bool
+
+	// LLM call per-iteration state
+	response            *providers.LLMResponse
+	normalizedToolCalls []providers.ToolCall
+	allResponsesHandled bool
+	streamingPublisher  *streamingChunkPublisher
+	streamingFallback   bool
+	suppressReasoning   bool
+	callMessages        []providers.Message
+	providerToolDefs    []providers.ToolDefinition
+	llmModel            string
+	llmModelName        string
+	llmOpts             map[string]any
+	useNativeSearch     bool
+	ownedProviders      []providers.LLMProvider
+
+	// agent is the agent the turn runs as; its candidates' providers and
+	// request specs serve the turn unless it runs on its own resolution.
+	agent *AgentInstance
+	// instanceResolution is the turn's own resolution — the message's
+	// selection, or a hook's rewrite — when it does not run on the agent's
+	// model. The turn owns it: its providers are built on first use and
+	// closed when the turn ends.
+	instanceResolution *providers.InstanceResolution
+	instanceProviders  map[string]providers.LLMProvider
+	instanceConfigs    map[string]*providers.CallSpec
+	// requestedSelection is the message's own model selection; empty for a
+	// turn on the agent's model. servedTarget and servedIdentity report the
+	// target that answered such a turn.
+	requestedSelection string
+	servedTarget       string
+	servedIdentity     string
+	// hookSelection is the selection a before_llm hook rewrote the turn to.
+	hookSelection string
+	// lastServed is the target that answered the turn's last model call.
+	lastServed string
+
+	// Abort signaling for coordinator (set by Pipeline methods)
+	abortedByHardAbort bool // true when hard abort triggered during LLM/tools
+	abortedByHook      bool // true when HookActionAbortTurn triggered
+}
+
+func (exec *turnExecution) closeOwnedProviders() {
+	if exec == nil {
+		return
+	}
+	closeUniqueStatefulProviders(exec.ownedProviders...)
+	exec.ownedProviders = nil
+}
+
+// useResolution makes resolution the turn's own: its candidates' providers
+// and request specs come from it, and the turn closes the providers it
+// builds.
+func (exec *turnExecution) useResolution(resolution *providers.InstanceResolution) {
+	exec.instanceResolution = resolution
+	exec.instanceProviders = make(map[string]providers.LLMProvider)
+	exec.instanceConfigs = make(map[string]*providers.CallSpec)
+}
+
+// inResolution reports whether candidate is a target of the turn's own
+// resolution.
+func (exec *turnExecution) inResolution(candidate providers.FallbackCandidate) bool {
+	return exec.instanceResolution != nil && candidateIn(exec.instanceResolution.Candidates, candidate)
+}
+
+// providerFor returns the provider candidate runs on: from the turn's own
+// resolution when candidate is one of its targets, else the agent's.
+func (exec *turnExecution) providerFor(candidate providers.FallbackCandidate) (providers.LLMProvider, error) {
+	if exec.inResolution(candidate) {
+		return exec.instanceProvider(candidate)
+	}
+	return exec.agent.providerForCandidate(candidate)
+}
+
+// configFor returns the request spec of candidate, or nil when it has none
+// (an embedder-injected provider's).
+func (exec *turnExecution) configFor(candidate providers.FallbackCandidate) *providers.CallSpec {
+	if exec.inResolution(candidate) {
+		modelCfg, err := exec.instanceConfig(candidate)
+		if err != nil {
+			return nil
+		}
+		return modelCfg
+	}
+	return exec.agent.configForCandidate(candidate)
+}
+
+// noteServed records that candidate answered the turn's latest model call.
+func (exec *turnExecution) noteServed(candidate providers.FallbackCandidate) {
+	exec.lastServed = candidate.DisplayName
+	if exec.requestedSelection != "" {
+		exec.servedTarget = candidate.DisplayName
+		exec.servedIdentity = candidate.StableKey()
+	}
+}
+
+// serveResult makes the candidate that served a multi-candidate call the
+// turn's active model and logs a failover that got there.
+func (exec *turnExecution) serveResult(result providers.FailoverResult) {
+	candidate := result.Candidate
+	if len(result.Attempts) > 1 {
+		logger.InfoCF("agent", "Failover: served by a later candidate", map[string]any{
+			"agent_id": exec.agent.ID,
+			"served":   candidate.DisplayName,
+			"attempts": failoverTrace(result),
+		})
+	}
+	exec.noteServed(candidate)
+	exec.serveCandidate(candidate)
+	exec.llmModel = candidate.Model
+}
+
+// failoverTrace summarizes the candidates a call reached, for logs.
+func failoverTrace(result providers.FailoverResult) []string {
+	trace := make([]string, 0, len(result.Attempts))
+	for _, attempt := range result.Attempts {
+		switch {
+		case attempt.Unavailable:
+			trace = append(trace, fmt.Sprintf("%s: unavailable until %s", attempt.Candidate.DisplayName, attempt.Until.Format(time.RFC3339)))
+		case attempt.Err != nil:
+			trace = append(trace, fmt.Sprintf("%s: %s (%s): %v", attempt.Candidate.DisplayName, attempt.Disposition, attempt.Class, attempt.Err))
+		default:
+			trace = append(trace, attempt.Candidate.DisplayName+": served")
+		}
+	}
+	return trace
+}
+
+// serveCandidate makes candidate the turn's active model: the one its next
+// single call, streaming check and thinking options use.
+func (exec *turnExecution) serveCandidate(candidate providers.FallbackCandidate) {
+	if provider, err := exec.providerFor(candidate); err == nil {
+		exec.activeProvider = provider
+	}
+	exec.activeCallSpec = exec.configFor(candidate)
+	exec.activeModel = candidate.Model
+	exec.llmModelName = candidate.DisplayName
+}
+
+func (exec *turnExecution) instanceProvider(candidate providers.FallbackCandidate) (providers.LLMProvider, error) {
+	key := candidate.StableKey()
+	if provider := exec.instanceProviders[key]; provider != nil {
+		return provider, nil
+	}
+	provider, err := exec.instanceResolution.ProviderForCandidate(candidate)
+	if err != nil {
+		return nil, err
+	}
+	exec.instanceProviders[key] = provider
+	exec.ownedProviders = append(exec.ownedProviders, provider)
+	return provider, nil
+}
+
+func (exec *turnExecution) instanceConfig(candidate providers.FallbackCandidate) (*providers.CallSpec, error) {
+	key := candidate.StableKey()
+	if modelCfg := exec.instanceConfigs[key]; modelCfg != nil {
+		return modelCfg, nil
+	}
+	modelCfg, err := exec.instanceResolution.CallSpecForCandidate(candidate)
+	if err != nil {
+		return nil, err
+	}
+	exec.instanceConfigs[key] = modelCfg
+	return modelCfg, nil
+}
+
+// newTurnExecution creates a turnExecution initialized from turnState and options.
+func newTurnExecution(
+	agent *AgentInstance,
+	opts processOptions,
+	history []providers.Message,
+	summary string,
+	messages []providers.Message,
+) *turnExecution {
+	return &turnExecution{
+		agent:            agent,
+		history:          history,
+		summary:          summary,
+		messages:         messages,
+		pendingMessages:  append([]providers.Message(nil), opts.InitialSteeringMessages...),
+		currentTurnStart: len(messages),
+		iteration:        0,
+	}
+}
+
+// =============================================================================
+// turnState - the full state for a turn, constructed once per turn
+// =============================================================================
+
+type turnState struct {
+	mu sync.RWMutex
+
+	agent   *AgentInstance
+	opts    processOptions
+	profile config.EffectiveTurnProfile
+	scope   turnEventScope
+
+	turnID            string
+	agentID           string
+	sessionKey        string
+	activeSkills      []string
+	attemptedSkills   []string
+	skillContextTrace []SkillContextSnapshot
+	toolKinds         []string
+	toolExecutions    []ToolExecutionRecord
+	turnCtx           *TurnContext
+
+	channel     string
+	chatID      string
+	workspace   string
+	userMessage string
+	media       []string
+	// origin is where the turn came from, for the approval policy: set when
+	// the turn starts (runTurn); a sub-turn takes its parent's.
+	origin approval.Origin
+
+	phase        TurnPhase
+	iteration    int
+	startedAt    time.Time
+	finalContent string
+
+	hardAbort      bool
+	providerCancel context.CancelFunc
+	turnCancel     context.CancelFunc
+
+	restorePointHistory []providers.Message
+	restorePointSummary string
+	persistedMessages   []providers.Message
+
+	// SubTurn support
+	depth                int                    // SubTurn depth (0 for root turn)
+	parentTurnID         string                 // Parent turn ID (empty for root turn)
+	childTurnIDs         []string               // Child turn IDs
+	pendingResults       chan *tools.ToolResult // Channel for SubTurn results
+	concurrencySem       chan struct{}          // Semaphore for limiting concurrent SubTurns
+	isFinished           atomic.Bool            // Whether this turn has finished
+	session              session.SessionStore   // Session store reference
+	initialHistoryLength int                    // Snapshot of history length at turn start
+
+	// Additional SubTurn fields
+	ctx             context.Context    // Context for this turn
+	cancelFunc      context.CancelFunc // Cancel function for this turn's context
+	critical        bool               // Whether this SubTurn should continue after parent ends
+	parentTurnState *turnState         // Reference to parent turnState
+	parentEnded     atomic.Bool        // Whether parent has ended
+	closeOnce       sync.Once          // Ensures the finished channel is closed once
+	finishedChan    chan struct{}      // Closed when turn finishes
+
+	lastUsage *providers.UsageInfo // Last LLM usage info
+
+	// Back-reference to the owning AgentLoop, set for root turns and SubTurns
+	// alike: the hard abort cascade and the tools offered to the turn use it.
+	al *AgentLoop
+}
+
+// =============================================================================
+// turnState constructors and active turn management
+// =============================================================================
+
+func newTurnState(agent *AgentInstance, opts processOptions, scope turnEventScope) *turnState {
+	ts := &turnState{
+		agent:        agent,
+		opts:         opts,
+		profile:      opts.TurnProfile,
+		scope:        scope,
+		turnID:       scope.turnID,
+		agentID:      agent.ID,
+		sessionKey:   opts.Dispatch.SessionKey,
+		activeSkills: activeSkillNames(agent, opts),
+		turnCtx:      cloneTurnContext(scope.context),
+		channel:      opts.Dispatch.Channel(),
+		chatID:       opts.Dispatch.ChatID(),
+		workspace:    agent.Workspace,
+		userMessage:  opts.Dispatch.UserMessage,
+		media:        append([]string(nil), opts.Dispatch.Media...),
+		phase:        TurnPhaseSetup,
+		startedAt:    time.Now(),
+	}
+
+	// Bind session store and capture initial history length for rollback logic
+	if agent != nil && agent.Sessions != nil {
+		ts.session = agent.Sessions
+		history := agent.Sessions.GetHistory(opts.Dispatch.SessionKey)
+		ts.initialHistoryLength = len(history)
+		ts.restorePointHistory = append([]providers.Message(nil), history...)
+		ts.restorePointSummary = agent.Sessions.GetSummary(opts.Dispatch.SessionKey)
+	}
+
+	return ts
+}
+
+func (al *AgentLoop) registerActiveTurn(ts *turnState) {
+	al.activeTurnStates.Store(ts.sessionKey, ts)
+}
+
+func (al *AgentLoop) clearActiveTurn(ts *turnState) {
+	al.releaseSessionTurnState(ts.sessionKey, ts)
+}
+
+func (al *AgentLoop) releaseSessionTurnState(sessionKey string, expected *turnState) {
+	if expected == nil {
+		al.activeTurnStates.Delete(sessionKey)
+		return
+	}
+	if actual, ok := al.activeTurnStates.Load(sessionKey); ok && actual == expected {
+		al.activeTurnStates.Delete(sessionKey)
+	}
+}
+
+func (al *AgentLoop) getActiveTurnState(sessionKey string) *turnState {
+	if val, ok := al.activeTurnStates.Load(sessionKey); ok {
+		if ts, ok := val.(*turnState); ok {
+			return ts
+		}
+		// Unexpected non-*turnState value — treat as "no active turn" to avoid
+		// panics. This should not happen under normal operation.
+	}
+	return nil
+}
+
+func (al *AgentLoop) GetActiveTurnBySession(sessionKey string) *ActiveTurnInfo {
+	ts := al.getActiveTurnState(sessionKey)
+	if ts == nil {
+		return nil
+	}
+	info := ts.snapshot()
+	return &info
+}
+
+// =============================================================================
+// turnState - getters and setters
+// =============================================================================
+
+func (ts *turnState) snapshot() ActiveTurnInfo {
+	ts.mu.RLock()
+	defer ts.mu.RUnlock()
+
+	return ActiveTurnInfo{
+		TurnID:       ts.turnID,
+		AgentID:      ts.agentID,
+		SessionKey:   ts.sessionKey,
+		Channel:      ts.channel,
+		ChatID:       ts.chatID,
+		UserMessage:  ts.userMessage,
+		Phase:        ts.phase,
+		Iteration:    ts.iteration,
+		StartedAt:    ts.startedAt,
+		Depth:        ts.depth,
+		ParentTurnID: ts.parentTurnID,
+		ChildTurnIDs: append([]string(nil), ts.childTurnIDs...),
+	}
+}
+
+func (ts *turnState) setPhase(phase TurnPhase) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	ts.phase = phase
+}
+
+func (ts *turnState) setIteration(iteration int) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	ts.iteration = iteration
+}
+
+func (ts *turnState) currentIteration() int {
+	ts.mu.RLock()
+	defer ts.mu.RUnlock()
+	return ts.iteration
+}
+
+func (ts *turnState) setFinalContent(content string) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	ts.finalContent = content
+}
+
+func (ts *turnState) finalContentLen() int {
+	ts.mu.RLock()
+	defer ts.mu.RUnlock()
+	return len(ts.finalContent)
+}
+
+func (ts *turnState) finalContentSnapshot() string {
+	ts.mu.RLock()
+	defer ts.mu.RUnlock()
+	return ts.finalContent
+}
+
+func (ts *turnState) recordToolKind(tool string) {
+	tool = strings.TrimSpace(tool)
+	if tool == "" {
+		return
+	}
+
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+
+	for _, existing := range ts.toolKinds {
+		if existing == tool {
+			return
+		}
+	}
+	ts.toolKinds = append(ts.toolKinds, tool)
+}
+
+func (ts *turnState) toolKindsSnapshot() []string {
+	ts.mu.RLock()
+	defer ts.mu.RUnlock()
+	return append([]string(nil), ts.toolKinds...)
+}
+
+func (ts *turnState) recordToolExecution(tool string, success bool, errorSummary string, skillNames []string) {
+	tool = strings.TrimSpace(tool)
+	if tool == "" {
+		return
+	}
+
+	ts.recordToolKind(tool)
+
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	ts.toolExecutions = append(ts.toolExecutions, ToolExecutionRecord{
+		Name:         tool,
+		Success:      success,
+		ErrorSummary: strings.TrimSpace(errorSummary),
+		SkillNames:   append([]string(nil), skillNames...),
+	})
+}
+
+func (ts *turnState) toolExecutionsSnapshot() []ToolExecutionRecord {
+	ts.mu.RLock()
+	defer ts.mu.RUnlock()
+	if len(ts.toolExecutions) == 0 {
+		return nil
+	}
+
+	out := make([]ToolExecutionRecord, 0, len(ts.toolExecutions))
+	for _, exec := range ts.toolExecutions {
+		out = append(out, ToolExecutionRecord{
+			Name:         exec.Name,
+			Success:      exec.Success,
+			ErrorSummary: exec.ErrorSummary,
+			SkillNames:   append([]string(nil), exec.SkillNames...),
+		})
+	}
+	return out
+}
+
+func (ts *turnState) recordAttemptedSkills(skillNames []string) {
+	if len(skillNames) == 0 {
+		return
+	}
+
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+
+	for _, skillName := range skillNames {
+		skillName = strings.TrimSpace(skillName)
+		if skillName == "" {
+			continue
+		}
+		seen := false
+		for _, existing := range ts.attemptedSkills {
+			if existing == skillName {
+				seen = true
+				break
+			}
+		}
+		if seen {
+			continue
+		}
+		ts.attemptedSkills = append(ts.attemptedSkills, skillName)
+	}
+}
+
+func (ts *turnState) attemptedSkillsSnapshot() []string {
+	ts.mu.RLock()
+	defer ts.mu.RUnlock()
+	return append([]string(nil), ts.attemptedSkills...)
+}
+
+func (ts *turnState) recordSkillContextSnapshot(trigger string, skillNames []string) {
+	if len(skillNames) == 0 {
+		return
+	}
+
+	filtered := make([]string, 0, len(skillNames))
+	for _, skillName := range skillNames {
+		skillName = strings.TrimSpace(skillName)
+		if skillName == "" {
+			continue
+		}
+		filtered = append(filtered, skillName)
+	}
+	if len(filtered) == 0 {
+		return
+	}
+
+	ts.recordAttemptedSkills(filtered)
+
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	ts.skillContextTrace = append(ts.skillContextTrace, SkillContextSnapshot{
+		Sequence:   len(ts.skillContextTrace) + 1,
+		Trigger:    trigger,
+		SkillNames: append([]string(nil), filtered...),
+	})
+}
+
+func (ts *turnState) latestSkillContextSnapshot() []string {
+	ts.mu.RLock()
+	defer ts.mu.RUnlock()
+	if len(ts.skillContextTrace) == 0 {
+		return nil
+	}
+	return append([]string(nil), ts.skillContextTrace[len(ts.skillContextTrace)-1].SkillNames...)
+}
+
+func (ts *turnState) skillContextSnapshotsSnapshot() []SkillContextSnapshot {
+	ts.mu.RLock()
+	defer ts.mu.RUnlock()
+	if len(ts.skillContextTrace) == 0 {
+		return nil
+	}
+
+	snapshots := make([]SkillContextSnapshot, 0, len(ts.skillContextTrace))
+	for _, snapshot := range ts.skillContextTrace {
+		snapshots = append(snapshots, SkillContextSnapshot{
+			Sequence:   snapshot.Sequence,
+			Trigger:    snapshot.Trigger,
+			SkillNames: append([]string(nil), snapshot.SkillNames...),
+		})
+	}
+	return snapshots
+}
+
+func (ts *turnState) setTurnCancel(cancel context.CancelFunc) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	ts.turnCancel = cancel
+}
+
+func (ts *turnState) setProviderCancel(cancel context.CancelFunc) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	ts.providerCancel = cancel
+}
+
+func (ts *turnState) clearProviderCancel(_ context.CancelFunc) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	ts.providerCancel = nil
+}
+
+func (ts *turnState) requestHardAbort() bool {
+	ts.mu.Lock()
+	if ts.hardAbort {
+		ts.mu.Unlock()
+		return false
+	}
+	ts.hardAbort = true
+	turnCancel := ts.turnCancel
+	providerCancel := ts.providerCancel
+	ts.mu.Unlock()
+
+	if providerCancel != nil {
+		providerCancel()
+	}
+	if turnCancel != nil {
+		turnCancel()
+	}
+	return true
+}
+
+func (ts *turnState) hardAbortRequested() bool {
+	ts.mu.RLock()
+	defer ts.mu.RUnlock()
+	return ts.hardAbort
+}
+
+func (ts *turnState) eventMeta(source, tracePath string) HookMeta {
+	snap := ts.snapshot()
+	return HookMeta{
+		AgentID:     snap.AgentID,
+		TurnID:      snap.TurnID,
+		SessionKey:  snap.SessionKey,
+		Iteration:   snap.Iteration,
+		Source:      source,
+		TracePath:   tracePath,
+		turnContext: cloneTurnContext(ts.turnCtx),
+	}
+}
+
+func (ts *turnState) captureRestorePoint(history []providers.Message, summary string) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	ts.restorePointHistory = append([]providers.Message(nil), history...)
+	ts.restorePointSummary = summary
+}
+
+func (ts *turnState) recordPersistedMessage(msg providers.Message) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	ts.persistedMessages = append(ts.persistedMessages, msg)
+}
+
+func (ts *turnState) persistedMessagesSnapshot() []providers.Message {
+	ts.mu.RLock()
+	defer ts.mu.RUnlock()
+	return append([]providers.Message(nil), ts.persistedMessages...)
+}
+
+func (ts *turnState) refreshRestorePointFromSession(agent *AgentInstance) {
+	history := agent.Sessions.GetHistory(ts.sessionKey)
+	summary := agent.Sessions.GetSummary(ts.sessionKey)
+
+	persisted := ts.persistedMessagesSnapshot()
+
+	if matched := matchingTurnMessageTail(history, persisted); matched > 0 {
+		history = append([]providers.Message(nil), history[:len(history)-matched]...)
+	}
+
+	ts.captureRestorePoint(history, summary)
+}
+
+// ingestMessage calls the ContextManager's Ingest method for a persisted message.
+// Errors are logged but never block the turn.
+func (ts *turnState) ingestMessage(ctx context.Context, al *AgentLoop, msg providers.Message) {
+	if al.currentContextManager() == nil {
+		return
+	}
+	if err := al.currentContextManager().Ingest(ctx, &IngestRequest{
+		SessionKey: ts.sessionKey,
+		Message:    msg,
+	}); err != nil {
+		logger.WarnCF("agent", "Context manager ingest failed", map[string]any{
+			"session_key": ts.sessionKey,
+			"error":       err.Error(),
+		})
+	}
+}
+
+func (ts *turnState) restoreSession(agent *AgentInstance) error {
+	ts.mu.RLock()
+	history := append([]providers.Message(nil), ts.restorePointHistory...)
+	summary := ts.restorePointSummary
+	ts.mu.RUnlock()
+
+	agent.Sessions.SetHistory(ts.sessionKey, history)
+	agent.Sessions.SetSummary(ts.sessionKey, summary)
+	return agent.Sessions.Save(ts.sessionKey)
+}
+
+func matchingTurnMessageTail(history, persisted []providers.Message) int {
+	maxMatch := min(len(history), len(persisted))
+	for size := maxMatch; size > 0; size-- {
+		if messageSlicesEquivalent(history[len(history)-size:], persisted[len(persisted)-size:]) {
+			return size
+		}
+	}
+	return 0
+}
+
+func splitHistoryForActiveTurn(
+	history []providers.Message,
+	persisted []providers.Message,
+) ([]providers.Message, []providers.Message) {
+	matched := matchingTurnMessageTail(history, persisted)
+	if matched <= 0 {
+		return append([]providers.Message(nil), history...), nil
+	}
+
+	stable := append([]providers.Message(nil), history[:len(history)-matched]...)
+	protected := append([]providers.Message(nil), history[len(history)-matched:]...)
+	return stable, protected
+}
+
+func messageSlicesEquivalent(a, b []providers.Message) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if !messagesEquivalent(a[i], b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func messagesEquivalent(a, b providers.Message) bool {
+	return reflect.DeepEqual(normalizeMessageForComparison(a), normalizeMessageForComparison(b))
+}
+
+func normalizeMessageForComparison(msg providers.Message) providers.Message {
+	msg.PromptLayer = ""
+	msg.PromptSlot = ""
+	msg.PromptSource = ""
+
+	if len(msg.Media) == 0 {
+		msg.Media = nil
+	}
+	if len(msg.Attachments) == 0 {
+		msg.Attachments = nil
+	}
+	if len(msg.SystemParts) == 0 {
+		msg.SystemParts = nil
+	} else {
+		msg.SystemParts = append([]providers.ContentBlock(nil), msg.SystemParts...)
+		for i := range msg.SystemParts {
+			msg.SystemParts[i].PromptLayer = ""
+			msg.SystemParts[i].PromptSlot = ""
+			msg.SystemParts[i].PromptSource = ""
+		}
+	}
+	if len(msg.ToolCalls) == 0 {
+		msg.ToolCalls = nil
+	} else {
+		msg.ToolCalls = append([]providers.ToolCall(nil), msg.ToolCalls...)
+		for i := range msg.ToolCalls {
+			msg.ToolCalls[i].Name = ""
+			msg.ToolCalls[i].Arguments = nil
+			msg.ToolCalls[i].ThoughtSignature = ""
+			if msg.ToolCalls[i].Function != nil {
+				fn := *msg.ToolCalls[i].Function
+				fn.ThoughtSignature = ""
+				msg.ToolCalls[i].Function = &fn
+			}
+		}
+	}
+
+	return msg
+}
+
+// =============================================================================
+// SubTurn-related methods
+// =============================================================================
+
+// Finish marks the turn as finished and closes its finished channel. The
+// pendingResults channel stays open: a sub-turn may be sending on it at this
+// moment, and deliverSubTurnResult stops on Finished() instead; closing it
+// would race with that send.
+func (ts *turnState) Finish(isHardAbort bool) {
+	ts.isFinished.Store(true)
+
+	// Signal the end exactly once.
+	ts.closeOnce.Do(func() {
+		ts.mu.Lock()
+		if ts.finishedChan == nil {
+			ts.finishedChan = make(chan struct{})
+		}
+		close(ts.finishedChan)
+		ts.mu.Unlock()
+	})
+
+	// Any graceful finish must signal direct children so nested SubTurns can
+	// observe parent completion and decide whether to stop or continue.
+	if !isHardAbort {
+		ts.parentEnded.Store(true)
+	}
+
+	// Cancel the turn context
+	if ts.cancelFunc != nil {
+		ts.cancelFunc()
+	}
+
+	// Hard abort cascades to all child turns
+	if isHardAbort && ts.al != nil {
+		ts.mu.RLock()
+		children := append([]string(nil), ts.childTurnIDs...)
+		ts.mu.RUnlock()
+		for _, childID := range children {
+			if val, ok := ts.al.activeTurnStates.Load(childID); ok {
+				if child, ok := val.(*turnState); ok {
+					child.Finish(true)
+				}
+			}
+		}
+	}
+}
+
+// Finished returns whether the turn has finished
+func (ts *turnState) Finished() chan struct{} {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	if ts.finishedChan == nil {
+		ts.finishedChan = make(chan struct{})
+	}
+	return ts.finishedChan
+}
+
+// IsParentEnded checks if the parent turn has ended
+func (ts *turnState) IsParentEnded() bool {
+	if ts.parentTurnState == nil {
+		return false
+	}
+	return ts.parentTurnState.parentEnded.Load()
+}
+
+// GetLastUsage returns the last LLM usage info
+func (ts *turnState) GetLastUsage() *providers.UsageInfo {
+	ts.mu.RLock()
+	defer ts.mu.RUnlock()
+	return ts.lastUsage
+}
+
+// SetLastUsage sets the last LLM usage info
+func (ts *turnState) SetLastUsage(usage *providers.UsageInfo) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	ts.lastUsage = usage
+}
+
+// =============================================================================
+// Context helper functions for turnState
+// =============================================================================
+
+type turnStateKeyType struct{}
+
+var turnStateKey = turnStateKeyType{}
+
+func withTurnState(ctx context.Context, ts *turnState) context.Context {
+	return context.WithValue(ctx, turnStateKey, ts)
+}
+
+func turnStateFromContext(ctx context.Context) *turnState {
+	ts, _ := ctx.Value(turnStateKey).(*turnState)
+	return ts
+}
+
+// TurnStateFromContext retrieves turnState from context (exported for tools)
+func TurnStateFromContext(ctx context.Context) *turnState {
+	return turnStateFromContext(ctx)
+}

@@ -1,0 +1,21 @@
+{
+  "protocol": "xibodev.module/v1",
+  "module": "fake",
+  "operation": "invoke",
+  "request_id": "req_0000000000000000000000000000fake",
+  "ok": true,
+  "result": {
+    "provider": "unpriced-provider",
+    "will_call_provider": true
+  },
+  "warnings": [],
+  "execution": {
+    "local": false,
+    "network": true,
+    "external_writes": false,
+    "provider": "unpriced-provider",
+    "estimated_cost": null,
+    "actual_cost": null,
+    "artifacts": []
+  }
+}

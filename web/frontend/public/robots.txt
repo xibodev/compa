@@ -1,0 +1,9 @@
+# Compa is a local-first launcher dashboard. It is not a public site
+# and nothing here should ever be indexed.
+#
+# This file exists because the server already served /robots.txt without a
+# session, so a crawler reaching an exposed instance got a 404 and its own
+# default policy -- which is to crawl. Shipping an explicit refusal is the
+# whole point of the path being public.
+User-agent: *
+Disallow: /

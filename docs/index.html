@@ -1,0 +1,408 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Compa: a personal AI assistant that runs on your computer</title>
+  <meta name="description" content="Compa is a personal AI assistant that runs on your computer, with a web app for everyday use and an embeddable Go runtime for developers.">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#F7F5EF">
+  <link rel="canonical" href="https://xibodev.github.io/compa/">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23111215'/%3E%3Cg transform='translate(6.4 6.4) scale(.512)'%3E%3Cpath d='M72 20 H36 C27.16 20 20 27.16 20 36 V64 C20 72.84 27.16 80 36 80 H72 V68 H38 C34.69 68 32 65.31 32 62 V38 C32 34.69 34.69 32 38 32 H72 Z' fill='%239CABFF'/%3E%3Cpath d='M66 38 H46 C41.58 38 38 41.58 38 46 V54 C38 58.42 41.58 62 46 62 H66 V53 H48 C46.9 53 46 52.1 46 51 V49 C46 47.9 46.9 47 48 47 H66 Z' fill='%23E8ECFF' opacity='.48'/%3E%3Crect x='72' y='44' width='12' height='12' rx='2.5' fill='%23E8ECFF'/%3E%3C/g%3E%3C/svg%3E">
+
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Compa">
+  <meta property="og:title" content="Compa: a personal AI assistant that runs on your computer">
+  <meta property="og:description" content="A web app for everyday use and an embeddable Go runtime for developers.">
+  <meta property="og:url" content="https://xibodev.github.io/compa/">
+  <meta property="og:image" content="https://xibodev.github.io/compa/og.png">
+  <meta property="og:image:type" content="image/png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="Compa. A personal AI assistant that runs on your computer. A web app for everyday use and an embeddable Go runtime.">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:image" content="https://xibodev.github.io/compa/og.png">
+
+  <style>
+    /* Colors and type from brand/tokens.css. */
+    :root {
+      --compa-cobalt: #3d63d8;
+      --compa-deep: #2749ad;
+      --compa-dark-surface-text: #9cabff;
+      --compa-soft: #e8ecff;
+      --compa-core-night: #111215;
+      --compa-canvas: #f7f5ef;
+      --compa-surface: #ffffff;
+      --compa-ink: #171719;
+      --compa-muted: #666976;
+      --compa-line: #d9d7d0;
+      --compa-font-sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      --compa-font-mono: ui-monospace, "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      --compa-motion-fast: 160ms;
+      --compa-motion-easing: cubic-bezier(0.2, 0.8, 0.2, 1);
+    }
+
+    *, *::before, *::after { box-sizing: border-box; }
+    html { background: var(--compa-canvas); }
+    body {
+      margin: 0;
+      color: var(--compa-ink);
+      background: var(--compa-canvas);
+      font-family: var(--compa-font-sans);
+      font-size: 1rem;
+      line-height: 1.6;
+      -webkit-text-size-adjust: 100%;
+    }
+    img { display: block; max-width: 100%; height: auto; }
+    h1, h2, h3 { margin: 0; line-height: 1.15; }
+    p { margin: 0; }
+    code, pre { font-family: var(--compa-font-mono); }
+
+    a { color: inherit; text-decoration-color: var(--compa-cobalt); text-decoration-thickness: 1.5px; text-underline-offset: .2em; }
+    a:hover { text-decoration-thickness: 2.5px; }
+    :focus-visible { outline: 2px solid var(--compa-cobalt); outline-offset: 3px; border-radius: 4px; }
+
+    .wrap { width: 100%; max-width: 1080px; margin: 0 auto; padding: 0 1.25rem; }
+
+    .skip {
+      position: absolute;
+      left: 1rem;
+      top: -4rem;
+      padding: .5rem .9rem;
+      color: var(--compa-surface);
+      background: var(--compa-deep);
+      border-radius: 6px;
+      z-index: 10;
+    }
+    .skip:focus { top: 1rem; }
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      margin: -1px;
+      padding: 0;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    /* Header */
+    .site-header { border-bottom: 1px solid var(--compa-line); }
+    .bar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: .75rem 1.5rem;
+      padding-top: 1rem;
+      padding-bottom: 1rem;
+    }
+    .brand { display: inline-block; border-radius: 6px; }
+    .brand img { width: 136px; }
+    .nav { display: flex; flex-wrap: wrap; gap: .25rem 1.25rem; font-size: .9375rem; font-weight: 600; }
+    .nav a { color: var(--compa-muted); text-decoration: none; }
+    .nav a:hover { color: var(--compa-ink); text-decoration: underline; }
+
+    /* Hero */
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 2.5rem;
+      padding-top: clamp(2.5rem, 7vw, 5rem);
+      padding-bottom: clamp(2.5rem, 6vw, 4.5rem);
+    }
+    .eyebrow {
+      color: var(--compa-muted);
+      font-size: .8125rem;
+      font-weight: 600;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+    h1 {
+      max-width: 18ch;
+      margin-top: .9rem;
+      font-size: clamp(2.3rem, 5.6vw, 4rem);
+      font-weight: 680;
+      letter-spacing: -.035em;
+      line-height: 1.04;
+    }
+    .lede { max-width: 36rem; margin-top: 1.25rem; color: var(--compa-muted); font-size: 1.125rem; }
+
+    .install h2 { font-size: 1.125rem; font-weight: 650; }
+    .cmd { margin-top: 1rem; }
+    .cmd-head {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: .5rem 1rem;
+      margin-bottom: .45rem;
+    }
+    .cmd h3 { font-size: .9375rem; font-weight: 600; }
+    .cmd pre {
+      margin: 0;
+      padding: .85rem 1rem;
+      color: var(--compa-soft);
+      background: var(--compa-core-night);
+      border-radius: 10px;
+      font-size: .9375rem;
+      line-height: 1.55;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    .copy {
+      padding: .25rem .75rem;
+      color: var(--compa-ink);
+      background: var(--compa-surface);
+      border: 1px solid var(--compa-line);
+      border-radius: 6px;
+      font: 600 .8125rem/1.4 var(--compa-font-sans);
+      cursor: pointer;
+      transition: border-color var(--compa-motion-fast) var(--compa-motion-easing);
+    }
+    .copy:hover { border-color: var(--compa-ink); }
+    .next { max-width: 52rem; margin-top: 1rem; color: var(--compa-muted); }
+    .next + .next { margin-top: .35rem; }
+    .next a, .next code { color: var(--compa-ink); }
+
+    .visual { display: none; }
+    @media (min-width: 880px) {
+      .hero { grid-template-columns: minmax(0, 1.2fr) minmax(0, .8fr); align-items: center; }
+      .install { grid-column: 1 / -1; }
+      .visual {
+        position: relative;
+        display: grid;
+        place-items: center;
+        min-height: 340px;
+      }
+      .visual::before, .visual::after {
+        content: "";
+        position: absolute;
+        border: 1px solid var(--compa-line);
+        border-radius: 50%;
+      }
+      .visual::before { width: 300px; height: 300px; }
+      .visual::after { width: 216px; height: 216px; }
+      .visual img { position: relative; z-index: 1; width: 164px; }
+      .visual .tag {
+        position: absolute;
+        z-index: 2;
+        right: 8%;
+        bottom: 10%;
+        padding: .35rem .6rem;
+        color: var(--compa-deep);
+        background: var(--compa-surface);
+        border: 1px solid var(--compa-line);
+        border-radius: 6px;
+        font: .8125rem/1.3 var(--compa-font-mono);
+      }
+    }
+
+    /* Sections */
+    .section { padding-top: 3rem; padding-bottom: 3rem; border-top: 1px solid var(--compa-line); }
+    .section > h2 { font-size: clamp(1.6rem, 3vw, 2.1rem); font-weight: 680; letter-spacing: -.025em; }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr));
+      gap: 1rem;
+      margin: 1.75rem 0 0;
+      padding: 0;
+      list-style: none;
+    }
+    .card {
+      padding: 1.25rem 1.3rem 1.35rem;
+      background: var(--compa-surface);
+      border: 1px solid var(--compa-line);
+      border-radius: 12px;
+    }
+    .card h3 { font-size: 1.0625rem; font-weight: 650; }
+    .card p { margin-top: .5rem; color: var(--compa-muted); font-size: .9375rem; }
+    .card code { color: var(--compa-ink); font-size: .875em; }
+    .languages { margin-top: 1.25rem; color: var(--compa-muted); font-size: .9375rem; }
+
+    .data {
+      margin-top: 1.5rem;
+      padding: 1.4rem 1.5rem;
+      background: var(--compa-surface);
+      border: 1px solid var(--compa-line);
+      border-left: 4px solid var(--compa-cobalt);
+      border-radius: 12px;
+    }
+    .data ul { margin: 0; padding-left: 1.2rem; }
+    .data li + li { margin-top: .55rem; }
+    .data code { font-size: .875em; }
+    .data a { color: var(--compa-deep); }
+    .data .more { margin-top: 1rem; font-weight: 600; }
+
+    .docs { margin: 1.5rem 0 0; padding: 0; list-style: none; display: grid; gap: .75rem; }
+    .docs li {
+      display: grid;
+      gap: .15rem 1.25rem;
+      padding: .9rem 1.1rem;
+      background: var(--compa-surface);
+      border: 1px solid var(--compa-line);
+      border-radius: 10px;
+    }
+    @media (min-width: 640px) { .docs li { grid-template-columns: 15rem minmax(0, 1fr); align-items: baseline; } }
+    .docs a { color: var(--compa-deep); font-weight: 650; }
+    .docs span { color: var(--compa-muted); }
+    .repo { margin-top: 1.25rem; }
+
+    /* Footer */
+    .site-footer { border-top: 1px solid var(--compa-line); }
+    .foot {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: .75rem 1rem;
+      padding-top: 1.5rem;
+      padding-bottom: 2rem;
+      color: var(--compa-muted);
+      font-size: .9375rem;
+    }
+    .foot img { width: 32px; }
+    .foot a { color: var(--compa-ink); }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { transition: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+
+  <header class="site-header">
+    <div class="wrap bar">
+      <a class="brand" href="./"><img src="compa-logo.svg" alt="Compa" width="340" height="100"></a>
+      <nav class="nav" aria-label="Main">
+        <a href="#install">Install</a>
+        <a href="#features">Features</a>
+        <a href="#your-data">Your data</a>
+        <a href="#docs">Docs</a>
+        <a href="https://github.com/xibodev/compa">GitHub</a>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <section class="wrap hero" aria-labelledby="title">
+      <div>
+        <p class="eyebrow">Everyday help · You stay in charge</p>
+        <h1 id="title">A personal AI assistant that runs on your computer.</h1>
+        <p class="lede">Chat with Compa in your browser, using the models you choose. It can work with files, run commands, search the web and answer in your chat apps. Developers can embed its Go runtime.</p>
+      </div>
+
+      <div class="visual" aria-hidden="true">
+        <img src="compa-mark.svg" alt="" width="100" height="100">
+        <span class="tag">~/.compa</span>
+      </div>
+
+      <div class="install" id="install">
+        <h2>Install</h2>
+        <div class="cmd" data-copy="Windows">
+          <div class="cmd-head"><h3>Windows (PowerShell)</h3></div>
+          <pre><code>irm https://github.com/<wbr>xibodev/<wbr>compa/<wbr>releases/<wbr>latest/<wbr>download/<wbr>install.ps1 | iex</code></pre>
+        </div>
+        <div class="cmd" data-copy="macOS and Linux">
+          <div class="cmd-head"><h3>macOS and Linux</h3></div>
+          <pre><code>curl -fsSL https://github.com/<wbr>xibodev/<wbr>compa/<wbr>releases/<wbr>latest/<wbr>download/<wbr>install.sh | sh</code></pre>
+        </div>
+        <p class="next">On your desktop, Compa starts and opens its setup page in your browser; if you closed it, choose Open Console in Compa's tray menu. Set a password, then on Models press Try free providers or connect a provider, and start chatting. It runs on Windows 10 or later, macOS 12 or later and Linux.</p>
+        <p class="next">Options, updates and uninstalling: <a href="https://github.com/xibodev/compa/blob/main/docs/install.md">the install guide</a>.</p>
+        <p class="sr-only" aria-live="polite" id="copy-status"></p>
+      </div>
+    </section>
+
+    <section class="wrap section" id="features" aria-labelledby="features-title">
+      <h2 id="features-title">What it does</h2>
+      <ul class="grid">
+        <li class="card">
+          <h3>Chat that can act</h3>
+          <p>Compa can read, write and edit files in its workspace, run shell commands, search the web, read pages and schedule jobs. Replies can show each tool it called.</p>
+        </li>
+        <li class="card">
+          <h3>The models you choose</h3>
+          <p>Connect OpenAI, Anthropic, Google Gemini, OpenRouter, Groq, Mistral AI and others with an API key, use an Ollama or LocalAI server on your computer or network, or add any OpenAI- or Anthropic-compatible endpoint. Try free providers tests keyless ones for you. A route tries its models in order until one answers.</p>
+        </li>
+        <li class="card">
+          <h3>Voice</h3>
+          <p>Dictate messages and hear replies with the speech models of your providers, push-to-talk or hands-free.</p>
+        </li>
+        <li class="card">
+          <h3>Your chat apps</h3>
+          <p>Talk to Compa from Telegram, Discord, Slack, WhatsApp, Matrix and more. Chat in the browser works without any of them.</p>
+        </li>
+        <li class="card">
+          <h3>Skills and modules</h3>
+          <p>Add skills from the skill hub, or install modules: separate programs that add capabilities. A module capability that needs approval runs only when you approve it.</p>
+        </li>
+        <li class="card">
+          <h3>An embeddable Go runtime</h3>
+          <p><code>compa-kernel</code> works on its own in a terminal, and <code>pkg/agent</code> runs the same agent loop inside your own Go program.</p>
+        </li>
+      </ul>
+      <p class="languages">The web UI is in English, <span lang="cs">Čeština</span>, <span lang="pt-BR">Português (Brasil)</span>, <span lang="zh-Hans">简体中文</span> and <span lang="bn">বাংলা</span>.</p>
+    </section>
+
+    <section class="wrap section" id="your-data" aria-labelledby="data-title">
+      <h2 id="data-title">Your data</h2>
+      <div class="data">
+        <ul>
+          <li>Compa keeps its settings, chats and keys in <code>~/.compa</code> on your computer.</li>
+          <li>Your messages go to the model providers you choose. Free providers are third-party services, and web search, chat apps and the skill hub reach their own services when you use them.</li>
+          <li>A password protects the web UI, which listens only on this computer unless you turn on LAN access.</li>
+          <li>Tools run as your user account. File tools stay inside the workspace by default: a guard, not a sandbox.</li>
+        </ul>
+        <p class="more"><a href="https://github.com/xibodev/compa/blob/main/docs/troubleshooting.md#privacy-and-security">Privacy and security in detail</a></p>
+      </div>
+    </section>
+
+    <section class="wrap section" id="docs" aria-labelledby="docs-title">
+      <h2 id="docs-title">Documentation</h2>
+      <ul class="docs">
+        <li><a href="https://github.com/xibodev/compa/blob/main/docs/install.md">Install</a><span>Installers, updates, uninstalling, ports and LAN access.</span></li>
+        <li><a href="https://github.com/xibodev/compa/blob/main/docs/use.md">Use Compa</a><span>Models, chat, voice, channels, skills, modules and logs.</span></li>
+        <li><a href="https://github.com/xibodev/compa/blob/main/docs/troubleshooting.md">Troubleshooting</a><span>Common problems, then privacy and security.</span></li>
+        <li><a href="https://github.com/xibodev/compa/blob/main/docs/cli.md">Command line</a><span>The <code>compa</code> options and <code>compa-kernel</code> commands.</span></li>
+        <li><a href="https://github.com/xibodev/compa/blob/main/docs/embedding.md">Embed the Go runtime</a><span>Run the agent loop inside your own Go program.</span></li>
+      </ul>
+      <p class="repo"><a href="https://github.com/xibodev/compa">Source code on GitHub</a> · <a href="https://github.com/xibodev/compa/releases">Releases</a></p>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="wrap foot">
+      <img src="compa-mark.svg" alt="" width="100" height="100">
+      <p>Compa is open source under the <a href="https://github.com/xibodev/compa/blob/main/LICENSE">MIT License</a>. “Compa” is Mexican Spanish slang for pal.</p>
+    </div>
+  </footer>
+
+  <script>
+    // Adds a Copy button to each install command. Without JavaScript or the
+    // Clipboard API the commands stay plain, selectable text.
+    (function () {
+      if (!navigator.clipboard || !navigator.clipboard.writeText) return;
+      var status = document.getElementById("copy-status");
+      document.querySelectorAll("[data-copy]").forEach(function (cmd) {
+        var name = cmd.getAttribute("data-copy");
+        var code = cmd.querySelector("code");
+        var button = document.createElement("button");
+        button.type = "button";
+        button.className = "copy";
+        button.textContent = "Copy";
+        button.setAttribute("aria-label", "Copy the " + name + " install command");
+        button.addEventListener("click", function () {
+          navigator.clipboard.writeText(code.textContent.trim()).then(function () {
+            button.textContent = "Copied";
+            status.textContent = "Copied the " + name + " install command.";
+            setTimeout(function () { button.textContent = "Copy"; }, 2000);
+          });
+        });
+        cmd.querySelector(".cmd-head").appendChild(button);
+      });
+    })();
+  </script>
+</body>
+</html>
