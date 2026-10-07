@@ -2567,30 +2567,38 @@ func TestRunWorker_FinalizedStreamSuppressesMarkerSplitBeforeSending(t *testing.
 }
 
 func TestPreSend_PlaceholderEditFails_FallsThrough(t *testing.T) {
-	m := newTestManager()
-
-	ch := &mockDeletingMessageEditor{mockMessageEditor: mockMessageEditor{
-		mockChannel: mockChannel{
-			sendFn: func(_ context.Context, _ bus.OutboundMessage) error {
-				return nil
+	// A refused edit leaves the placeholder behind, so it is deleted; after
+	// another error the edit may have landed, so the placeholder stays.
+	for _, tc := range []struct {
+		editErr error
+		deletes int
+	}{
+		{editErr: fmt.Errorf("too large: %w", ErrSendFailed), deletes: 1},
+		{editErr: fmt.Errorf("timed out"), deletes: 0},
+	} {
+		m := newTestManager()
+		ch := &mockDeletingMessageEditor{mockMessageEditor: mockMessageEditor{
+			mockChannel: mockChannel{
+				sendFn: func(_ context.Context, _ bus.OutboundMessage) error {
+					return nil
+				},
 			},
-		},
-		editFn: func(_ context.Context, _, _, _ string) error {
-			return fmt.Errorf("edit failed")
-		},
-	}}
+			editFn: func(_ context.Context, _, _, _ string) error {
+				return tc.editErr
+			},
+		}}
 
-	m.RecordPlaceholder("test", "123", "456")
+		m.RecordPlaceholder("test", "123", "456")
 
-	msg := testOutboundMessage(bus.OutboundMessage{Channel: "test", ChatID: "123", Content: "hello"})
-	_, edited := m.preSend(context.Background(), "test", msg, ch)
+		msg := testOutboundMessage(bus.OutboundMessage{Channel: "test", ChatID: "123", Content: "hello"})
+		_, edited := m.preSend(context.Background(), "test", msg, ch)
 
-	if edited {
-		t.Fatal("expected preSend to return false when edit fails")
-	}
-	// The message is sent anew, so the placeholder is deleted.
-	if ch.deleteCalls != 1 || ch.deletedMessageID != "456" {
-		t.Fatalf("deleted %d messages, last %q; want the placeholder 456", ch.deleteCalls, ch.deletedMessageID)
+		if edited {
+			t.Fatalf("%v: expected preSend to return false when edit fails", tc.editErr)
+		}
+		if ch.deleteCalls != tc.deletes {
+			t.Fatalf("%v: deleted %d messages, want %d", tc.editErr, ch.deleteCalls, tc.deletes)
+		}
 	}
 }
 

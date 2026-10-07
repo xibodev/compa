@@ -469,8 +469,13 @@ func (c *MatrixChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]st
 }
 
 // maxEventContentBytes keeps a message event under Matrix's 65,536-byte
-// event limit, leaving room for the fields the server adds.
-const maxEventContentBytes = 60000
+// event limit even when it is encrypted, which wraps the event in base64 (a
+// third more), and leaves room for the fields the server adds.
+const maxEventContentBytes = 44000
+
+// maxEventIDBytes is the longest event ID Matrix allows; an edit names the
+// event it replaces.
+const maxEventIDBytes = 255
 
 // splitForEvent splits text into parts whose message events, with the
 // formatted body, fit maxEventContentBytes. The manager splits by
@@ -506,7 +511,7 @@ func (c *MatrixChannel) eventBytes(text string) int {
 // carries the text and, unless the text is long, a fallback copy of it.
 func (c *MatrixChannel) editBytes(text string) int {
 	content := c.messageContent(text)
-	content.SetEdit(id.EventID("$"))
+	content.SetEdit(id.EventID("$" + strings.Repeat("x", maxEventIDBytes-1)))
 	encoded, err := json.Marshal(content)
 	if err != nil {
 		return 2 * len(text)
@@ -527,10 +532,15 @@ func (c *MatrixChannel) fitToolFeedback(content string) string {
 	if content == "" || fits(content) {
 		return content
 	}
-	best := utils.Truncate(content, 1)
+	best := string([]rune(content)[:1])
 	for low, high := 1, utf8.RuneCountInString(content); low <= high; {
 		mid := (low + high) / 2
-		if candidate := utils.FitToolFeedbackMessage(content, mid); candidate != "" && fits(candidate) {
+		candidate := utils.FitToolFeedbackMessage(content, mid)
+		// Truncation can be switched off for debugging; the event must fit anyway.
+		if runes := []rune(candidate); len(runes) > mid {
+			candidate = string(runes[:mid])
+		}
+		if candidate != "" && fits(candidate) {
 			best, low = candidate, mid+1
 		} else {
 			high = mid - 1
@@ -656,7 +666,7 @@ func (c *MatrixChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMess
 				"type":  part.Type,
 				"error": err.Error(),
 			})
-			return failed(fmt.Errorf("matrix upload media: %w", channels.ErrTemporary))
+			return failed(matrixMediaError("matrix upload media", err))
 		}
 
 		msgType := matrixOutboundMsgType(part.Type, filename, contentType)
@@ -676,7 +686,7 @@ func (c *MatrixChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMess
 				"type":    msgType,
 				"error":   err.Error(),
 			})
-			return failed(fmt.Errorf("matrix send media: %w", channels.ErrTemporary))
+			return failed(matrixMediaError("matrix send media", err))
 		}
 		sent = true
 		if sendResp != nil {
@@ -689,6 +699,15 @@ func (c *MatrixChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMess
 	}
 
 	return eventIDs, nil
+}
+
+// matrixMediaError classifies a failed media upload or event: one the
+// homeserver refused as too large fails the same way when sent again.
+func matrixMediaError(what string, err error) error {
+	if errors.Is(err, mautrix.MTooLarge) {
+		return fmt.Errorf("%s: %w: %v", what, channels.ErrSendFailed, err)
+	}
+	return fmt.Errorf("%s: %w", what, channels.ErrTemporary)
 }
 
 // StartTyping implements channels.TypingCapable.
@@ -747,6 +766,9 @@ func (c *MatrixChannel) SendPlaceholder(ctx context.Context, chatID string) (str
 		MsgType: event.MsgNotice,
 		Body:    text,
 	})
+	if errors.Is(err, mautrix.MTooLarge) {
+		return "", fmt.Errorf("matrix placeholder: %w: %v", channels.ErrSendFailed, err)
+	}
 	if err != nil {
 		return "", err
 	}
@@ -772,6 +794,9 @@ func (c *MatrixChannel) EditMessage(ctx context.Context, chatID string, messageI
 	}
 
 	_, err := c.client.SendMessageEvent(ctx, roomID, event.EventMessage, editContent)
+	if errors.Is(err, mautrix.MTooLarge) {
+		return fmt.Errorf("matrix edit: %w: %v", channels.ErrSendFailed, err)
+	}
 	return err
 }
 
