@@ -74,7 +74,8 @@ const mcpConfigSchemaJSON = `{
                     "additionalProperties": { "type": "string" }
                   },
                   "trusted": { "type": "boolean" },
-                  "cwd": { "type": "string" }
+                  "cwd": { "type": "string" },
+                  "call_timeout_seconds": { "type": "integer" }
                 },
                 "required": ["enabled"],
                 "anyOf": [

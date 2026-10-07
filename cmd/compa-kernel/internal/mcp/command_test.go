@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"strings"
@@ -346,6 +347,45 @@ func TestSaveValidatedConfigNormalizesStreamableHTTPAlias(t *testing.T) {
 	assert.Equal(t, "streamable-http", cfg.Tools.MCP.Servers["context7"].Type)
 }
 
+// A server's own call limit doesn't stop the mcp commands from saving.
+func TestMCPAddKeepsAnotherServersCallTimeout(t *testing.T) {
+	configPath := setupMCPConfigEnv(t)
+	writeMCPConfig(t, configPath, &config.Config{
+		Tools: config.ToolsConfig{
+			MCP: config.MCPConfig{
+				ToolConfig: config.ToolConfig{Enabled: true},
+				Servers: map[string]config.MCPServerConfig{
+					"one": {Enabled: true, Type: "stdio", Command: "npx", CallTimeoutSeconds: 600},
+				},
+			},
+		},
+	})
+
+	_, err := executeCommand(NewMCPCommand(), []string{"add", "two", "npx", "-y", "server-two"}, "")
+	require.NoError(t, err)
+
+	cfg := readMCPConfig(t, configPath)
+	assert.Equal(t, 600, cfg.Tools.MCP.Servers["one"].CallTimeoutSeconds)
+	assert.Equal(t, "npx", cfg.Tools.MCP.Servers["two"].Command)
+}
+
+// The schema refuses keys it doesn't list, so it lists every key of a
+// server entry.
+func TestMCPConfigSchemaListsEveryServerKey(t *testing.T) {
+	var schema map[string]any
+	require.NoError(t, json.Unmarshal([]byte(mcpConfigSchemaJSON), &schema))
+	listed := schema
+	for _, key := range []string{"tools", "mcp", "servers"} {
+		listed = listed["properties"].(map[string]any)[key].(map[string]any)
+	}
+	listed = listed["additionalProperties"].(map[string]any)["properties"].(map[string]any)
+
+	fields := reflect.TypeFor[config.MCPServerConfig]()
+	for i := range fields.NumField() {
+		key, _, _ := strings.Cut(fields.Field(i).Tag.Get("json"), ",")
+		assert.Contains(t, listed, key, "the schema refuses a server's %q", key)
+	}
+}
 func TestMCPRemoveRemovesLastServerAndDisablesMCP(t *testing.T) {
 	configPath := setupMCPConfigEnv(t)
 	writeMCPConfig(t, configPath, &config.Config{
