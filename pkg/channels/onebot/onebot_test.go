@@ -204,16 +204,18 @@ func TestHandleMessage_GroupTriggerBeforeDownload(t *testing.T) {
 	}
 }
 
-// Each media tag stays where its segment was, between the right words; a
-// download that failed leaves no tag.
+// Each media tag stays where its segment was, between the right words, and
+// the refs follow the tags; a download that failed leaves neither.
 func TestParseMessageSegments_KeepsMediaInPlace(t *testing.T) {
-	localPath := filepath.Join(t.TempDir(), "b.png")
-	if err := os.WriteFile(localPath, []byte("fake-image"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	dir := t.TempDir()
 	ch := &OneBotChannel{
-		downloadFn: func(urlStr, _ string) string {
+		downloadFn: func(urlStr, filename string) string {
 			if strings.HasSuffix(urlStr, "a.png") {
+				return ""
+			}
+			localPath := filepath.Join(dir, filename)
+			if err := os.WriteFile(localPath, []byte("fake-"+filename), 0o600); err != nil {
+				t.Error(err)
 				return ""
 			}
 			return localPath
@@ -221,19 +223,29 @@ func TestParseMessageSegments_KeepsMediaInPlace(t *testing.T) {
 	}
 
 	raw := json.RawMessage(`[
-		{"type":"text","data":{"text":" before "}},
+		{"type":"text","data":{"text":" 看这个 "}},
 		{"type":"image","data":{"url":"https://cdn.example.com/a.png","file":"a.png"}},
-		{"type":"text","data":{"text":"middle"}},
+		{"type":"text","data":{"text":"中间"}},
 		{"type":"image","data":{"url":"https://cdn.example.com/b.png","file":"b.png"}},
-		{"type":"text","data":{"text":"after"}}
+		{"type":"text","data":{"text":"after"}},
+		{"type":"video","data":{"url":"https://cdn.example.com/c.mp4","file":"c.mp4"}}
 	]`)
-	result := ch.parseMessageSegments(raw, 0, media.NewFileMediaStore(), "onebot:test:order")
+	store := media.NewFileMediaStore()
+	result := ch.parseMessageSegments(raw, 0, store, "onebot:test:order")
 
-	if want := "before middle[image]after"; result.Text != want {
+	if want := "看这个 中间[image]after[video]"; result.Text != want {
 		t.Fatalf("Text = %q, want %q", result.Text, want)
 	}
-	if len(result.Media) != 1 {
-		t.Fatalf("Media count = %d, want 1", len(result.Media))
+	var names []string
+	for _, ref := range result.Media {
+		_, meta, err := store.ResolveWithMeta(ref)
+		if err != nil {
+			t.Fatalf("ResolveWithMeta(%q): %v", ref, err)
+		}
+		names = append(names, meta.Filename)
+	}
+	if got := strings.Join(names, ","); got != "b.png,c.mp4" {
+		t.Fatalf("media = %s, want b.png,c.mp4", got)
 	}
 }
 
@@ -263,6 +275,7 @@ func TestHandleMessage_MediaStaysInPlaceAfterTheGroupTrigger(t *testing.T) {
 		UserID:      json.RawMessage(`20002`),
 		GroupID:     json.RawMessage(`30003`),
 		SelfID:      json.RawMessage(`10001`),
+		RawMessage:  "/ai before [CQ:image,file=a.png,url=https://cdn.example.com/a.png] after",
 		Message: json.RawMessage(`[
 			{"type":"text","data":{"text":"/ai before "}},
 			{"type":"image","data":{"url":"https://cdn.example.com/a.png","file":"a.png"}},
