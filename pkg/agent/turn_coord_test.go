@@ -983,9 +983,10 @@ func TestRunTurn_MaxIterations(t *testing.T) {
 }
 
 func TestRunTurn_HardAbort(t *testing.T) {
-	// Provider simulates a slow response, but we'll abort mid-turn
-	slowProvider := &slowMockProvider{delay: 10 * time.Second}
-	al, agent, cleanup := newTurnCoordTestLoop(t, slowProvider)
+	// The model call runs until something cancels it; the abort comes once
+	// it is in flight, however long the turn took to get there.
+	provider := &waitingProvider{started: make(chan struct{}, 1)}
+	al, agent, cleanup := newTurnCoordTestLoop(t, provider)
 	defer cleanup()
 
 	pipeline := NewPipeline(al)
@@ -996,25 +997,27 @@ func TestRunTurn_HardAbort(t *testing.T) {
 		context: newTurnContext(nil, nil, nil),
 	})
 
-	// Run in goroutine with abort after short delay
 	done := make(chan struct{})
-
+	var result turnResult
 	go func() {
-		al.runTurn(context.Background(), ts, pipeline)
+		result, _ = al.runTurn(context.Background(), ts, pipeline)
 		close(done)
 	}()
 
-	// Give it a moment to start
-	time.Sleep(50 * time.Millisecond)
-
-	// Request hard abort
+	select {
+	case <-provider.started:
+	case <-time.After(time.Minute):
+		t.Fatal("the turn never called the model")
+	}
 	ts.requestHardAbort()
 
-	// Wait for runTurn to complete
 	select {
 	case <-done:
-	case <-time.After(3 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("runTurn did not complete after abort")
+	}
+	if result.status != TurnEndStatusAborted {
+		t.Fatalf("turn status = %v, want aborted", result.status)
 	}
 }
 
