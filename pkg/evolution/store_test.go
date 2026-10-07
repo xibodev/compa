@@ -338,7 +338,8 @@ func TestStore_LoadLearningRecordsIgnoresTruncatedTrailingLine(t *testing.T) {
 	}
 }
 
-// A corrupt line that can't be saved to <file>.corrupt stays in the store.
+// A corrupt line that can't be saved to <file>.corrupt stays in the store,
+// through a load and through a rewrite.
 func TestStore_KeepsCorruptLineItCannotSaveAside(t *testing.T) {
 	paths := evolution.NewPaths(t.TempDir(), "")
 	if err := os.MkdirAll(paths.RootDir, 0o755); err != nil {
@@ -351,13 +352,26 @@ func TestStore_KeepsCorruptLineItCannotSaveAside(t *testing.T) {
 	if err := os.Mkdir(paths.TaskRecords+".corrupt", 0o755); err != nil {
 		t.Fatal(err)
 	}
+	store := evolution.NewStore(paths)
 
-	loaded, err := evolution.NewStore(paths).LoadTaskRecords()
+	loaded, err := store.LoadTaskRecords()
 	if err != nil || len(loaded) != 1 {
 		t.Fatalf("loaded = %+v, %v; want case-1", loaded, err)
 	}
 	data, err := os.ReadFile(paths.TaskRecords)
 	if err != nil || string(data) != lines {
 		t.Fatalf("store = %q, %v; want it unchanged", data, err)
+	}
+
+	err = store.UpdateTaskRecords(func(records []evolution.LearningRecord) bool {
+		records[0].Summary = "judged"
+		return true
+	})
+	if err != nil {
+		t.Fatalf("UpdateTaskRecords: %v", err)
+	}
+	data, err = os.ReadFile(paths.TaskRecords)
+	if err != nil || !strings.Contains(string(data), "judged") || !strings.Contains(string(data), "\"broken\"") {
+		t.Fatalf("store = %q, %v; want the update and the broken line", data, err)
 	}
 }

@@ -162,18 +162,21 @@ func (s *Store) LoadPatternRecords() ([]LearningRecord, error) {
 func (s *Store) loadRecords(path string) ([]LearningRecord, error) {
 	unlock := lockStoreFile(path)
 	defer unlock()
-	records, dropped, err := s.loadRecordsFromPath(path)
+	records, unsaved, dropped, err := s.loadRecordsFromPath(path)
 	if err != nil || !dropped {
 		return records, err
 	}
-	return records, s.saveJSONLRecordsLocked(path, records)
+	return records, s.saveJSONLRecordsLocked(path, records, unsaved)
 }
 
 // loadRecordsFromPath reads the records at path, without those past
-// retention or corrupt. dropped reports that it left lines out that a rewrite
-// of the file may drop: records past retention, and corrupt lines once they
-// are saved to <path>.corrupt.
-func (s *Store) loadRecordsFromPath(path string) (records []LearningRecord, dropped bool, err error) {
+// retention or corrupt. Corrupt lines are saved to <path>.corrupt; unsaved
+// holds those that couldn't be, for a rewrite of the file to keep. dropped
+// reports that a rewrite would leave lines out: records past retention, or
+// corrupt lines saved aside.
+func (s *Store) loadRecordsFromPath(path string) (
+	records []LearningRecord, unsaved [][]byte, dropped bool, err error,
+) {
 	var cutoff time.Time
 	if s.now != nil {
 		cutoff = s.now().Add(-recordRetention)
@@ -191,7 +194,7 @@ func (s *Store) loadRecordsFromPath(path string) (records []LearningRecord, drop
 		return nil
 	})
 	if err != nil {
-		return nil, false, err
+		return nil, nil, false, err
 	}
 	if len(corrupt) > 0 {
 		// Keep loading what is readable instead of failing every run, and
@@ -205,11 +208,12 @@ func (s *Store) loadRecordsFromPath(path string) (records []LearningRecord, drop
 				"path":  path,
 				"error": qErr.Error(),
 			})
+			unsaved = corrupt
 		} else {
 			dropped = true
 		}
 	}
-	return records, dropped, nil
+	return records, unsaved, dropped, nil
 }
 
 // recordExpired reports whether record last changed before cutoff. A record
@@ -290,14 +294,14 @@ func (s *Store) UpdateTaskRecords(update func(records []LearningRecord) bool) er
 	unlock := lockStoreFile(s.paths.TaskRecords)
 	defer unlock()
 
-	records, dropped, err := s.loadRecordsFromPath(s.paths.TaskRecords)
+	records, unsaved, dropped, err := s.loadRecordsFromPath(s.paths.TaskRecords)
 	if err != nil {
 		return err
 	}
 	if !update(records) && !dropped {
 		return nil
 	}
-	return s.saveJSONLRecordsLocked(s.paths.TaskRecords, records)
+	return s.saveJSONLRecordsLocked(s.paths.TaskRecords, records, unsaved)
 }
 
 func (s *Store) MarkTaskRecordsClustered(ids []string) error {
@@ -319,7 +323,7 @@ func (s *Store) MarkTaskRecordsClustered(ids []string) error {
 	unlock := lockStoreFile(s.paths.TaskRecords)
 	defer unlock()
 
-	records, dropped, err := s.loadRecordsFromPath(s.paths.TaskRecords)
+	records, unsaved, dropped, err := s.loadRecordsFromPath(s.paths.TaskRecords)
 	if err != nil {
 		return err
 	}
@@ -350,7 +354,7 @@ func (s *Store) MarkTaskRecordsClustered(ids []string) error {
 	if !changed && !dropped {
 		return nil
 	}
-	return s.saveJSONLRecordsLocked(s.paths.TaskRecords, records)
+	return s.saveJSONLRecordsLocked(s.paths.TaskRecords, records, unsaved)
 }
 
 func (s *Store) SavePatternRecords(records []LearningRecord) error {
@@ -365,22 +369,24 @@ func (s *Store) MergePatternRecords(records []LearningRecord) error {
 	unlock := lockStoreFile(s.paths.PatternRecords)
 	defer unlock()
 
-	current, _, err := s.loadRecordsFromPath(s.paths.PatternRecords)
+	current, unsaved, _, err := s.loadRecordsFromPath(s.paths.PatternRecords)
 	if err != nil {
 		return err
 	}
 	merged := mergeLearningRecordsByID(current, records)
-	return s.saveJSONLRecordsLocked(s.paths.PatternRecords, merged)
+	return s.saveJSONLRecordsLocked(s.paths.PatternRecords, merged, unsaved)
 }
 
 func (s *Store) saveJSONLRecords(path string, records []LearningRecord) error {
 	unlock := lockStoreFile(path)
 	defer unlock()
 
-	return s.saveJSONLRecordsLocked(path, records)
+	return s.saveJSONLRecordsLocked(path, records, nil)
 }
 
-func (s *Store) saveJSONLRecordsLocked(path string, records []LearningRecord) error {
+// saveJSONLRecordsLocked writes records to path, then the corrupt lines in
+// unsaved as they were.
+func (s *Store) saveJSONLRecordsLocked(path string, records []LearningRecord, unsaved [][]byte) error {
 	if mkdirErr := os.MkdirAll(filepath.Dir(path), 0o755); mkdirErr != nil {
 		return mkdirErr
 	}
@@ -391,6 +397,10 @@ func (s *Store) saveJSONLRecordsLocked(path string, records []LearningRecord) er
 		if err := enc.Encode(record); err != nil {
 			return err
 		}
+	}
+	for _, line := range unsaved {
+		buf.Write(line)
+		buf.WriteByte('\n')
 	}
 	return fileutil.WriteFileAtomic(path, buf.Bytes(), 0o644)
 }
