@@ -118,6 +118,13 @@ func TestGatewayStatusFollowsTheConfigTheGatewayApplied(t *testing.T) {
 			t.Fatalf("%s: gateway_restart_required = %#v, want %v", step.name, got, step.want)
 		}
 	}
+	// The reload it reported was recorded as what it runs.
+	gateway.mu.Lock()
+	applied := gateway.bootConfig
+	gateway.mu.Unlock()
+	if !applied.equal(computeConfigSignature(saved)) {
+		t.Fatal("the applied signature isn't the saved config's")
+	}
 }
 func TestGatewayRestartsOnConfigChange(t *testing.T) {
 	for _, tc := range []struct {

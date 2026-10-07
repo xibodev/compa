@@ -6,7 +6,7 @@ import (
 )
 
 // Signatures have the same digest exactly when they are Equal, secrets
-// included; a nil signature has none.
+// included; an empty one has none.
 func TestRestartSignatureDigest(t *testing.T) {
 	signature := RestartSignature{"models": "default=x", "channel:telegram": `{"token":"secret-1"}`}
 	if signature.Digest() == "" || signature.Digest() != maps.Clone(signature).Digest() {
@@ -21,8 +21,8 @@ func TestRestartSignatureDigest(t *testing.T) {
 			t.Errorf("%s: same digest", name)
 		}
 	}
-	if got := RestartSignature(nil).Digest(); got != "" {
-		t.Errorf("nil signature digest = %q, want none", got)
+	if RestartSignature(nil).Digest() != "" || (RestartSignature{}).Digest() != "" {
+		t.Error("an empty signature has a digest")
 	}
 
 	cfg := DefaultConfig()

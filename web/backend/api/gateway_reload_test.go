@@ -198,6 +198,30 @@ func TestApplyLiveChangesKeepsARefusedChangeForARestart(t *testing.T) {
 	}
 }
 
+// The gateway reloads the files as they are, which may hold a newer save
+// than the apply read: the apply records its config only if the gateway
+// reports applying it.
+func TestApplyLiveChangesRecordsOnlyTheConfigTheGatewayApplied(t *testing.T) {
+	handler, configPath := applyingDefaultModelHandler(t)
+	pidData, reloads := fakeGatewayReload(t, http.StatusOK, `{"status":"reload triggered"}`, nil)
+	booted := loadSavedConfig(t, configPath)
+	runningGateway(t, pidData, booted)
+	newer := loadSavedConfig(t, configPath)
+	newer.Tools.WriteFile.Enabled = !newer.Tools.WriteFile.Enabled
+	serveKernelReadiness(http.StatusOK, `{"status":"ready","config_digest":"`+computeConfigSignature(newer).digest()+`"}`)
+
+	putDefaultModel(handler, "owned/gpt-owned")
+	if reloads.Load() != 1 {
+		t.Fatalf("gateway reloads = %d, want 1", reloads.Load())
+	}
+	gateway.mu.Lock()
+	applied := gateway.bootConfig
+	gateway.mu.Unlock()
+	if !applied.equal(computeConfigSignature(booted)) {
+		t.Fatal("the apply recorded a config the gateway didn't apply")
+	}
+}
+
 // Nothing is reloaded without a running gateway, for a read, or for a
 // request that drives the gateway itself.
 func TestApplyLiveChangesOnlyAppliesSavedChangesToARunningGateway(t *testing.T) {

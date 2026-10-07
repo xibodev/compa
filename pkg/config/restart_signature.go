@@ -124,9 +124,9 @@ func (s RestartSignature) equalOn(other RestartSignature, covered func(key strin
 
 // Digest identifies s: signatures are Equal exactly when their digests are,
 // but the digest shows none of the settings, which the gateway's /ready
-// reports for the config it applied. It is "" for a nil signature.
+// reports for the config it applied. It is "" for an empty signature.
 func (s RestartSignature) Digest() string {
-	if s == nil {
+	if len(s) == 0 {
 		return ""
 	}
 	sum := sha256.New()

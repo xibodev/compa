@@ -160,11 +160,14 @@ func (h *Handler) applyLiveConfig() {
 		logger.WarnC("gateway", fmt.Sprintf("The saved changes could not be applied without a restart: %v", err))
 		return
 	}
+	// A reload rebuilds the agents and their tools from the saved config and
+	// restarts each channel whose config, secrets included, changed. It read
+	// the files as they are now, which may hold a newer save than cfg: cfg is
+	// recorded unless the gateway reports applying another config.
+	_, _, appliedDigest := h.gatewayReadinessFailure(pidData, cfg)
 	gateway.mu.Lock()
-	if gateway.pidData != nil && gateway.pidData.PID == pidData.PID {
-		// A reload rebuilds the agents and their tools from the saved config
-		// and restarts each channel whose config, secrets included, changed:
-		// the gateway runs the saved config now.
+	if gateway.pidData != nil && gateway.pidData.PID == pidData.PID &&
+		(appliedDigest == "" || appliedDigest == saved.digest()) {
 		recordAppliedConfigLocked(cfg, saved)
 	}
 	gateway.mu.Unlock()
