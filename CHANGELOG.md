@@ -24,6 +24,9 @@ Notable changes to Compa, newest first. Versions follow
   is sent as a new message; it stayed in the chat.
 - OneBot keeps each picture, video, file or voice message where it was among
   the words; it put them all after the text.
+- A corrupt line in the evolution records is saved to `<file>.corrupt` and
+  removed from the file, so it is reported once; the same warning was logged
+  every turn.
 
 ## 2.1.1 - 2026-10-06
 
