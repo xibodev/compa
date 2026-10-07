@@ -17,21 +17,24 @@ import (
 	"github.com/xibodev/compa/v3/pkg/bus"
 	"github.com/xibodev/compa/v3/pkg/config"
 	"github.com/xibodev/compa/v3/pkg/providers"
+	"github.com/xibodev/compa/v3/pkg/session"
 )
 
 const (
 	identityTestMemoryNote = "Synthetic long-term note."
 	identityTestDailyNote  = "Synthetic daily note."
 
-	middenAgentMD = `---
-name: Midden
-description: an assistant that turns recorded AI work into findings, articles, presentations and long-form writing, using the midden tool for session evidence
-tools: [read_file, write_file, edit_file, append_file, list_dir, load_image, exec, midden]
+	// embedderAgentMD is the AGENT.md of a host program that embeds Compa
+	// with an identity, tools and workspace of its own.
+	embedderAgentMD = `---
+name: Ledger
+description: a bookkeeping assistant for small shops, using the ledger tool for the shop's books
+tools: [read_file, write_file, edit_file, list_dir, exec, ledger]
 memory: false
 privateWorkspace: true
 requireTools: true
 ---
-This is Midden's private runtime. Outcome guidance comes from the mounted canonical skills. Tool workspaces are supplied by the host.
+This is Ledger's private runtime. The host supplies the tool workspaces.
 `
 )
 
@@ -88,7 +91,7 @@ func absWorkspace(t *testing.T, workspace string) string {
 	return path
 }
 
-// compaIdentity is Compa's own identity exactly as v1.0.0 renders it.
+// compaIdentity is Compa's own identity, as it renders without these keys.
 func compaIdentity(workspacePath string, includeToolUseRule bool) string {
 	rules := []string{
 		"**Be helpful and accurate** - Briefly explain what you're doing.",
@@ -353,12 +356,12 @@ func TestIdentity_PrivateWorkspace(t *testing.T) {
 }
 
 func TestIdentity_EmbedderDefinition(t *testing.T) {
-	workspace := identityTestWorkspace(t, middenAgentMD)
+	workspace := identityTestWorkspace(t, embedderAgentMD)
 	cb := NewContextBuilder(workspace)
 
-	want := fmt.Sprintf(`# Midden (powered by Compa %s)
+	want := fmt.Sprintf(`# Ledger (powered by Compa %s)
 
-You are Midden, an assistant that turns recorded AI work into findings, articles, presentations and long-form writing, using the midden tool for session evidence. Compa is the agent runtime that powers you.
+You are Ledger, a bookkeeping assistant for small shops, using the ledger tool for the shop's books. Compa is the agent runtime that powers you.
 
 ## Important Rules
 
@@ -378,7 +381,7 @@ You are Midden, an assistant that turns recorded AI work into findings, articles
 			t.Fatalf("system prompt contains %q:\n%s", unwanted, prompt)
 		}
 	}
-	if !strings.Contains(prompt, "This is Midden's private runtime.") {
+	if !strings.Contains(prompt, "This is Ledger's private runtime.") {
 		t.Fatalf("system prompt lost the AGENT.md body:\n%s", prompt)
 	}
 }
@@ -393,7 +396,7 @@ func TestIdentity_CachedPromptFollowsFrontmatterChanges(t *testing.T) {
 	}
 
 	agentPath := filepath.Join(workspace, agentDefinitionFile)
-	if err := os.WriteFile(agentPath, []byte(middenAgentMD), 0o644); err != nil {
+	if err := os.WriteFile(agentPath, []byte(embedderAgentMD), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	future := time.Now().Add(2 * time.Second)
@@ -402,7 +405,7 @@ func TestIdentity_CachedPromptFollowsFrontmatterChanges(t *testing.T) {
 	}
 
 	after := cb.BuildSystemPromptWithCache()
-	if !strings.HasPrefix(after, "# Midden (powered by Compa ") {
+	if !strings.HasPrefix(after, "# Ledger (powered by Compa ") {
 		t.Fatalf("cached prompt kept the old identity:\n%s", after)
 	}
 	for _, unwanted := range []string{"## Workspace", identityTestMemoryNote, "**Memory**"} {
@@ -585,6 +588,53 @@ func TestRequireTools_RecognizesTheUpstreamReasonInAnErrorCause(t *testing.T) {
 	}
 	if calls := provider.calls(); len(calls) != 1 || calls[0] == 0 {
 		t.Fatalf("provider calls (tools offered per call) = %v, want one call with tools", calls)
+	}
+}
+
+// contextThenToolsRejectingProvider rejects its first call's prompt as too
+// long, and the tools of every later call.
+type contextThenToolsRejectingProvider struct{ toolsRejectingProvider }
+
+func (p *contextThenToolsRejectingProvider) Chat(
+	ctx context.Context,
+	messages []providers.Message,
+	tools []providers.ToolDefinition,
+	model string,
+	options map[string]any,
+) (*providers.LLMResponse, error) {
+	if len(p.calls()) == 0 {
+		p.mu.Lock()
+		p.toolCounts = append(p.toolCounts, len(tools))
+		p.mu.Unlock()
+		return nil, errors.New("context_length_exceeded")
+	}
+	return p.toolsRejectingProvider.Chat(ctx, messages, tools, model, options)
+}
+
+// A turn that compacted the session to retry a too-long prompt, then failed
+// because the model rejects tools, puts the history back, as other failed
+// retries do.
+func TestRequireTools_FailedTurnKeepsTheHistoryARetryCompacted(t *testing.T) {
+	workspace := identityTestWorkspace(t, "---\nname: Ledger\nrequireTools: true\n---\nBody.")
+	provider := &contextThenToolsRejectingProvider{}
+	al := NewAgentLoop(identityTestConfig(t, workspace), bus.NewMessageBus(), provider)
+	defer al.Close()
+	al.RegisterTool(&echoTextTool{})
+	sessions := al.GetRegistry().GetDefaultAgent().Sessions
+	sessionKey := session.BuildOpaqueSessionKey("require-tools-compacted")
+	sessions.SetHistory(sessionKey, alternatingHistory(6))
+
+	if _, err := al.ProcessDirect(context.Background(), "hello", sessionKey); !errors.Is(err, ErrToolsRequired) {
+		t.Fatalf("error = %v, want ErrToolsRequired", err)
+	}
+	if calls := provider.calls(); !offeredToolsEachTime(calls, 2) {
+		t.Fatalf("provider calls (tools offered per call) = %v, want two with tools", calls)
+	}
+	if got := strings.Join(contents(sessions.GetHistory(sessionKey)), ","); !strings.HasPrefix(got, "q1,a1,q2,a2") {
+		t.Fatalf("history = %s, want it whole from q1", got)
+	}
+	if summary := sessions.GetSummary(sessionKey); summary != "" {
+		t.Fatalf("summary = %q, want none", summary)
 	}
 }
 

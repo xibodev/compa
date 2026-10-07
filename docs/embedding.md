@@ -189,10 +189,10 @@ requireTools: true
 Instructions for the agent.
 ```
 
-`ProcessDirect` returns `agent.ErrToolsRequired` unwrapped; check it with
-`errors.Is`. The system prompt is cached and rebuilt when `AGENT.md` changes;
-`requireTools`, like `tools` and `model`, is read when the loop creates the
-agent.
+Check for `agent.ErrToolsRequired` with `errors.Is` on the error
+`ProcessDirect` returns. The system prompt is cached and rebuilt when
+`AGENT.md` changes; `requireTools`, like `tools` and `model`, is read when the
+loop creates the agent.
 
 ## More
 

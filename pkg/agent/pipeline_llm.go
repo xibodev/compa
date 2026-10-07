@@ -322,15 +322,8 @@ func (p *Pipeline) CallLLM(
 					"model": exec.llmModelName,
 					"error": err.Error(),
 				})
-				al.emitEvent(
-					runtimeevents.KindAgentError,
-					ts.eventMeta("runTurn", "turn.error"),
-					ErrorPayload{
-						Stage:   "llm",
-						Message: ErrToolsRequired.Error(),
-					},
-				)
-				return ControlBreak, ErrToolsRequired
+				err = ErrToolsRequired
+				break
 			}
 			logger.WarnCF("agent", "Model does not support tools, retrying without tools in conversational mode", map[string]any{
 				"model": exec.llmModelName,
@@ -517,6 +510,9 @@ func (p *Pipeline) CallLLM(
 				"model":     exec.llmModel,
 				"error":     err.Error(),
 			})
+		if errors.Is(err, ErrToolsRequired) {
+			return ControlBreak, err
+		}
 		return ControlBreak, fmt.Errorf("LLM call failed after retries: %w", err)
 	}
 
@@ -950,7 +946,8 @@ func (s *sessionSnapshot) restore(store session.SessionStore) {
 		})
 	}
 }
-`n// errorChainText joins the messages of err and of every error it wraps.
+
+// errorChainText joins the messages of err and of every error it wraps.
 // Provider errors keep a generic top-level message and carry the upstream
 // reason (sanitized) as a cause, so wording checks must see the whole chain.
 func errorChainText(err error) string {
