@@ -23,10 +23,12 @@ import (
 
 // genericPlaceholderRegex matches generic media placeholders emitted by various
 // channels: [image], [image: photo], [image: filename.jpg] — but NOT path tags
-// like [image:/path/to/file] (path tags have no space after the colon).
+// like [image:/path/to/file] (path tags have no space after the colon). An
+// audio file also takes the [voice] channels write for a voice message, but
+// not [voice: what was said], a transcript.
 var (
 	imagePlaceholderRegex = regexp.MustCompile(`\[image(:\s+[^\]]*)?\]`)
-	audioPlaceholderRegex = regexp.MustCompile(`\[audio(:\s+[^\]]*)?\]`)
+	audioPlaceholderRegex = regexp.MustCompile(`\[audio(:\s+[^\]]*)?\]|\[voice\]`)
 	videoPlaceholderRegex = regexp.MustCompile(`\[video(:\s+[^\]]*)?\]`)
 	filePlaceholderRegex  = regexp.MustCompile(`\[file(:\s+[^\]]*)?\]`)
 )

@@ -1676,7 +1676,23 @@ func TestTelegramQuotedContent_IncludesVoiceMarkerAlongsideCaption(t *testing.T)
 		},
 	}
 
-	assert.Equal(t, "listen to this\n[voice]", telegramQuotedContent(msg))
+	assert.Equal(t, "listen to this\n[voice]", telegramQuotedContent(msg, true))
+}
+
+// Quoted media the reply doesn't carry is only named: a placeholder there
+// would take the path of the reply's own file.
+func TestTelegramQuotedContent_NamesMediaTheReplyDoesNotCarry(t *testing.T) {
+	for _, tc := range []struct {
+		msg  *telego.Message
+		want string
+	}{
+		{&telego.Message{Voice: &telego.Voice{FileID: "v"}}, "[voice message]"},
+		{&telego.Message{Audio: &telego.Audio{FileID: "a"}}, "[audio file]"},
+		{&telego.Message{Photo: []telego.PhotoSize{{FileID: "p"}}}, "[photo]"},
+		{&telego.Message{Document: &telego.Document{FileID: "d"}}, "[document]"},
+	} {
+		assert.Equal(t, tc.want, telegramQuotedContent(tc.msg, false))
+	}
 }
 
 func TestQuotedTelegramMediaRefs_ResolvesQuotedAudioInOrder(t *testing.T) {

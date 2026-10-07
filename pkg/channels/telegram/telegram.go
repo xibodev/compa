@@ -1288,7 +1288,7 @@ func (c *TelegramChannel) handleMessages(ctx context.Context, messages []*telego
 		if len(quotedMedia) > 0 {
 			mediaPaths = append(quotedMedia, mediaPaths...)
 		}
-		content = c.prependTelegramQuotedReply(content, message.ReplyToMessage)
+		content = c.prependTelegramQuotedReply(content, message.ReplyToMessage, len(quotedMedia) > 0)
 	}
 
 	// For forum topics, embed the thread ID as "chatID/threadID" so replies
@@ -1442,8 +1442,8 @@ func (c *TelegramChannel) isReplyToBot(message *telego.Message) bool {
 	return reply != nil && reply.ForumTopicCreated == nil && c.isOwnBotUser(reply.From)
 }
 
-func (c *TelegramChannel) prependTelegramQuotedReply(content string, reply *telego.Message) string {
-	quoted := strings.TrimSpace(telegramQuotedContent(reply))
+func (c *TelegramChannel) prependTelegramQuotedReply(content string, reply *telego.Message, mediaStored bool) string {
+	quoted := strings.TrimSpace(telegramQuotedContent(reply, mediaStored))
 	if quoted == "" {
 		return content
 	}
@@ -1507,7 +1507,11 @@ func telegramQuotedAuthor(message *telego.Message) string {
 	return "unknown"
 }
 
-func telegramQuotedContent(message *telego.Message) string {
+// telegramQuotedContent renders a quoted message. Its voice or audio file,
+// when mediaStored says the reply carries it, gets the placeholder the agent
+// puts the file's path in; quoted media the reply doesn't carry is only named,
+// so the path of another file can't land in it.
+func telegramQuotedContent(message *telego.Message, mediaStored bool) string {
 	if message == nil {
 		return ""
 	}
@@ -1519,18 +1523,21 @@ func telegramQuotedContent(message *telego.Message) string {
 	if caption := strings.TrimSpace(message.Caption); caption != "" {
 		parts = append(parts, caption)
 	}
-	switch {
-	case len(message.Photo) > 0:
-		parts = append(parts, "[image: photo]")
+	if len(message.Photo) > 0 {
+		parts = append(parts, "[photo]")
 	}
 	switch {
-	case message.Voice != nil:
+	case message.Voice != nil && mediaStored:
 		parts = append(parts, "[voice]")
-	case message.Audio != nil:
+	case message.Voice != nil:
+		parts = append(parts, "[voice message]")
+	case message.Audio != nil && mediaStored:
 		parts = append(parts, "[audio]")
+	case message.Audio != nil:
+		parts = append(parts, "[audio file]")
 	}
 	if message.Document != nil {
-		parts = append(parts, "[file]")
+		parts = append(parts, "[document]")
 	}
 
 	return strings.Join(parts, "\n")
