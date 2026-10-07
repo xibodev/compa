@@ -767,6 +767,10 @@ func TestSpawnSubTurn_PanicRecovery(t *testing.T) {
 	if !collector.hasEventOfKind(runtimeevents.KindAgentSubTurnEnd) {
 		t.Error("SubTurnEndEvent not emitted after panic")
 	}
+	// The nil result is delivered and reported as delivered.
+	if !collector.hasEventOfKind(runtimeevents.KindAgentSubTurnResultDelivered) {
+		t.Error("SubTurnResultDeliveredEvent not emitted after panic")
+	}
 
 	// For async call, result should still be delivered to channel (even if nil)
 	select {

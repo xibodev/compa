@@ -584,11 +584,15 @@ func deliverSubTurnResult(al *AgentLoop, parentTS *turnState, childID string, re
 	// is full), we don't leak this goroutine by blocking forever.
 	select {
 	case resultChan <- result:
-		// Successfully delivered
+		// Successfully delivered; a sub-turn that panicked delivers nil.
 		if al != nil {
+			contentLen := 0
+			if result != nil {
+				contentLen = len(result.ForLLM)
+			}
 			al.emitEvent(runtimeevents.KindAgentSubTurnResultDelivered,
 				parentTS.eventMeta("deliverSubTurnResult", "subturn.result_delivered"),
-				SubTurnResultDeliveredPayload{ContentLen: len(result.ForLLM)},
+				SubTurnResultDeliveredPayload{ContentLen: contentLen},
 			)
 		}
 	case <-parentTS.Finished():
