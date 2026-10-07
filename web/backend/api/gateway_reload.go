@@ -166,15 +166,16 @@ func (h *Handler) applyLiveConfig() {
 	// recorded unless the gateway reports applying another config.
 	_, _, appliedDigest := h.gatewayReadinessFailure(pidData, cfg)
 	gateway.mu.Lock()
-	recorded := gateway.pidData != nil && gateway.pidData.PID == pidData.PID &&
-		(appliedDigest == "" || appliedDigest == saved.digest())
+	samePID := gateway.pidData != nil && gateway.pidData.PID == pidData.PID
+	recorded := samePID && (appliedDigest == "" || appliedDigest == saved.digest())
 	if recorded {
 		recordAppliedConfigLocked(cfg, saved)
 	}
 	gateway.mu.Unlock()
-	if recorded {
+	switch {
+	case recorded:
 		logger.InfoC("gateway", "Applied the saved changes to the running gateway")
-	} else {
+	case samePID:
 		logger.InfoC("gateway", "The gateway reloaded a config other than the one saved before it")
 	}
 }
