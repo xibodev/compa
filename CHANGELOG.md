@@ -29,6 +29,9 @@ Notable changes to Compa, newest first. Versions follow
 - A voice message that isn't transcribed reaches the agent with its file's path
   where the message said `[voice]`; the path was put after the text, and
   `[voice]` stayed.
+- On Telegram, the path of a file sent in a reply stays with the reply; it
+  could take the place of the quoted message's photo, document or voice
+  message, which the agent doesn't get.
 
 ## 3.0.0 - 2026-10-06
 

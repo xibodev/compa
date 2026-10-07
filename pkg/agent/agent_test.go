@@ -6556,6 +6556,35 @@ func TestInjectPathTags_HandlesVariousChannelPlaceholders(t *testing.T) {
 	}
 }
 
+// Transcribing a message that already holds a transcript fills its next
+// voice annotation and keeps the transcript.
+func TestTranscribeAudioKeepsAnEarlierTranscript(t *testing.T) {
+	dir := t.TempDir()
+	al := NewAgentLoop(&config.Config{Agents: config.AgentsConfig{Defaults: config.AgentDefaults{
+		Workspace: dir, ModelName: "test-model", MaxTokens: 4096, MaxToolIterations: 3,
+	}}}, bus.NewMessageBus(), &simpleMockProvider{response: "ok"})
+	defer al.Close()
+	store := media.NewFileMediaStore()
+	audioPath := filepath.Join(dir, "voice.ogg")
+	if err := os.WriteFile(audioPath, []byte("fake audio"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ref, err := store.Store(audioPath, media.MediaMeta{Filename: "voice.ogg", ContentType: "audio/ogg"}, "scope")
+	if err != nil {
+		t.Fatal(err)
+	}
+	al.SetMediaStore(store)
+	al.SetTranscriber(&fixedTranscriber{text: "new words"})
+
+	msg, _ := al.transcribeAudioInMessage(context.Background(), bus.InboundMessage{
+		Content: "[voice: said earlier] [voice]",
+		Media:   []string{ref},
+	})
+
+	if want := "[voice: said earlier] [voice: new words]"; msg.Content != want {
+		t.Fatalf("content = %q, want %q", msg.Content, want)
+	}
+}
 func TestInjectPathTags_DoesNotReplacePathTag(t *testing.T) {
 	// If content already contains a path tag, we must not touch it.
 	content := "see [image:/already/placed.png] thanks"

@@ -425,7 +425,10 @@ func (al *AgentLoop) ReloadProviderAndConfig(
 	return nil
 }
 
-var audioAnnotationRe = regexp.MustCompile(`\[(voice|audio)(?::[^\]]*)?\]`)
+// audioAnnotationRe matches the annotations channels write for audio:
+// [audio], [audio: file.ogg] and [voice]. A transcript, [voice: what was
+// said], is not one: transcribing again must not replace it.
+var audioAnnotationRe = regexp.MustCompile(`\[audio(?::[^\]]*)?\]|\[voice\]`)
 
 // runAgentLoop remains the top-level shell that starts a turn and publishes
 // any post-turn work. runTurn owns the full turn lifecycle.
