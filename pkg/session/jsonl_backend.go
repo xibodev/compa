@@ -3,16 +3,16 @@ package session
 import (
 	"context"
 	"encoding/json"
-	"log"
 	"strings"
 
+	"github.com/xibodev/compa/v3/pkg/logger"
 	"github.com/xibodev/compa/v3/pkg/memory"
 	"github.com/xibodev/compa/v3/pkg/providers"
 )
 
-// JSONLBackend adapts a memory.Store into the SessionStore interface.
-// Write errors are logged rather than returned, matching the fire-and-forget
-// SessionStore contract the agent loop relies on.
+// JSONLBackend adapts a memory.Store into the SessionStore interface. Add*
+// return the store's errors; the other writes log theirs through Compa's
+// logger, as the SessionStore contract allows.
 type JSONLBackend struct {
 	store memory.Store
 }
@@ -33,6 +33,15 @@ func NewJSONLBackend(store memory.Store) *JSONLBackend {
 	return &JSONLBackend{store: store}
 }
 
+// logStoreError logs a failed store operation on a session.
+func logStoreError(operation, sessionKey string, err error) {
+	logger.ErrorCF("session", "Session store operation failed", map[string]any{
+		"operation":   operation,
+		"session_key": sessionKey,
+		"error":       err.Error(),
+	})
+}
+
 // EnsureSessionMetadata persists the structured scope of a session.
 func (b *JSONLBackend) EnsureSessionMetadata(sessionKey string, scope *SessionScope) {
 	metaStore, ok := b.store.(metaAwareStore)
@@ -48,13 +57,13 @@ func (b *JSONLBackend) EnsureSessionMetadata(sessionKey string, scope *SessionSc
 	if scope != nil {
 		data, err := json.Marshal(scope)
 		if err != nil {
-			log.Printf("session: encode session scope: %v", err)
+			logStoreError("encode session scope", sessionKey, err)
 			return
 		}
 		rawScope = data
 	}
 	if err := metaStore.UpsertSessionMeta(context.Background(), sessionKey, rawScope); err != nil {
-		log.Printf("session: upsert session metadata: %v", err)
+		logStoreError("upsert session metadata", sessionKey, err)
 	}
 }
 
@@ -66,7 +75,7 @@ func (b *JSONLBackend) GetSessionScope(sessionKey string) *SessionScope {
 	}
 	meta, err := metaStore.GetSessionMeta(context.Background(), sessionKey)
 	if err != nil {
-		log.Printf("session: get session metadata: %v", err)
+		logStoreError("get session metadata", sessionKey, err)
 		return nil
 	}
 	if len(meta.Scope) == 0 {
@@ -74,28 +83,24 @@ func (b *JSONLBackend) GetSessionScope(sessionKey string) *SessionScope {
 	}
 	var scope SessionScope
 	if err := json.Unmarshal(meta.Scope, &scope); err != nil {
-		log.Printf("session: decode session scope: %v", err)
+		logStoreError("decode session scope", sessionKey, err)
 		return nil
 	}
 	return CloneScope(&scope)
 }
 
-func (b *JSONLBackend) AddMessage(sessionKey, role, content string) {
-	if err := b.store.AddMessage(context.Background(), sessionKey, role, content); err != nil {
-		log.Printf("session: add message: %v", err)
-	}
+func (b *JSONLBackend) AddMessage(sessionKey, role, content string) error {
+	return b.store.AddMessage(context.Background(), sessionKey, role, content)
 }
 
-func (b *JSONLBackend) AddFullMessage(sessionKey string, msg providers.Message) {
-	if err := b.store.AddFullMessage(context.Background(), sessionKey, msg); err != nil {
-		log.Printf("session: add full message: %v", err)
-	}
+func (b *JSONLBackend) AddFullMessage(sessionKey string, msg providers.Message) error {
+	return b.store.AddFullMessage(context.Background(), sessionKey, msg)
 }
 
 func (b *JSONLBackend) GetHistory(key string) []providers.Message {
 	msgs, err := b.store.GetHistory(context.Background(), key)
 	if err != nil {
-		log.Printf("session: get history: %v", err)
+		logStoreError("get history", key, err)
 		return []providers.Message{}
 	}
 	return msgs
@@ -104,7 +109,7 @@ func (b *JSONLBackend) GetHistory(key string) []providers.Message {
 func (b *JSONLBackend) GetSummary(key string) string {
 	summary, err := b.store.GetSummary(context.Background(), key)
 	if err != nil {
-		log.Printf("session: get summary: %v", err)
+		logStoreError("get summary", key, err)
 		return ""
 	}
 	return summary
@@ -112,19 +117,19 @@ func (b *JSONLBackend) GetSummary(key string) string {
 
 func (b *JSONLBackend) SetSummary(key, summary string) {
 	if err := b.store.SetSummary(context.Background(), key, summary); err != nil {
-		log.Printf("session: set summary: %v", err)
+		logStoreError("set summary", key, err)
 	}
 }
 
 func (b *JSONLBackend) SetHistory(key string, history []providers.Message) {
 	if err := b.store.SetHistory(context.Background(), key, history); err != nil {
-		log.Printf("session: set history: %v", err)
+		logStoreError("set history", key, err)
 	}
 }
 
 func (b *JSONLBackend) TruncateHistory(key string, keepLast int) {
 	if err := b.store.TruncateHistory(context.Background(), key, keepLast); err != nil {
-		log.Printf("session: truncate history: %v", err)
+		logStoreError("truncate history", key, err)
 	}
 }
 
@@ -138,7 +143,7 @@ func (b *JSONLBackend) CommitSummary(key string, summarized []providers.Message,
 	}
 	committed, err := committer.CommitSummary(context.Background(), key, summarized, summary)
 	if err != nil {
-		log.Printf("session: commit summary: %v", err)
+		logStoreError("commit summary", key, err)
 		return false
 	}
 	return committed

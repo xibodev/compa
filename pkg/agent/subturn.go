@@ -637,8 +637,8 @@ func newEphemeralSession(initial []providers.Message) ephemeralSessionStoreIface
 // ephemeralSessionStoreIface is satisfied by *ephemeralSessionStore.
 // Declared so newEphemeralSession can return a typed interface.
 type ephemeralSessionStoreIface interface {
-	AddMessage(sessionKey, role, content string)
-	AddFullMessage(sessionKey string, msg providers.Message)
+	AddMessage(sessionKey, role, content string) error
+	AddFullMessage(sessionKey string, msg providers.Message) error
 	GetHistory(key string) []providers.Message
 	GetSummary(key string) string
 	SetSummary(key, summary string)
@@ -649,22 +649,24 @@ type ephemeralSessionStoreIface interface {
 	Close() error
 }
 
-func (e *ephemeralSessionStore) AddMessage(_, role, content string) {
+func (e *ephemeralSessionStore) AddMessage(_, role, content string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.history = append(e.history, providers.Message{Role: role, Content: content})
 	e.truncateLocked()
+	return nil
 }
 
-func (e *ephemeralSessionStore) AddFullMessage(_ string, msg providers.Message) {
+func (e *ephemeralSessionStore) AddFullMessage(_ string, msg providers.Message) error {
 	if messageutil.IsTransientAssistantThoughtMessage(msg) {
-		return
+		return nil
 	}
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.history = append(e.history, msg)
 	e.truncateLocked()
+	return nil
 }
 
 func (e *ephemeralSessionStore) GetHistory(_ string) []providers.Message {

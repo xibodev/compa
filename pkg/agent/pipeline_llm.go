@@ -697,7 +697,7 @@ func (p *Pipeline) CallLLM(
 	}
 	exec.messages = append(exec.messages, assistantMsg)
 	if !ts.opts.NoHistory {
-		ts.agent.Sessions.AddFullMessage(ts.sessionKey, assistantMsg)
+		ts.noteSessionWrite(turnCtx, al, ts.agent.Sessions.AddFullMessage(ts.sessionKey, assistantMsg))
 		ts.recordPersistedMessage(assistantMsg)
 		ts.ingestMessage(turnCtx, al, assistantMsg)
 	}
@@ -740,7 +740,7 @@ func (p *Pipeline) keepAnswerBeforeSteering(
 	}
 	exec.messages = append(exec.messages, answer)
 	if !ts.opts.NoHistory {
-		ts.agent.Sessions.AddFullMessage(ts.sessionKey, answer)
+		ts.noteSessionWrite(ctx, p.al, ts.agent.Sessions.AddFullMessage(ts.sessionKey, answer))
 		ts.recordPersistedMessage(answer)
 		ts.ingestMessage(ctx, p.al, answer)
 	}
