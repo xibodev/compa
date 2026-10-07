@@ -162,16 +162,22 @@ func (h *Handler) applyLiveConfig() {
 	}
 	gateway.mu.Lock()
 	if gateway.pidData != nil && gateway.pidData.PID == pidData.PID {
-		gateway.bootDefaultModel = strings.TrimSpace(cfg.Agents.Defaults.GetModelName())
 		// A reload rebuilds the agents and their tools from the saved config
 		// and restarts each channel whose config, secrets included, changed:
 		// the gateway runs the saved config now.
-		gateway.bootConfig = saved
-		// The web chat channel runs with its saved token now.
-		refreshWebChatTokenLocked(h.configPath)
+		h.recordAppliedConfigLocked(cfg, saved)
 	}
 	gateway.mu.Unlock()
 	logger.InfoC("gateway", "Applied the saved changes to the running gateway")
+}
+
+// recordAppliedConfigLocked records that the running gateway applied cfg,
+// whose signature is signature: the default model it boots turns with, its
+// config, and the web chat token it accepts. The caller holds gateway.mu.
+func (h *Handler) recordAppliedConfigLocked(cfg *config.Config, signature configSignature) {
+	gateway.bootDefaultModel = strings.TrimSpace(cfg.Agents.Defaults.GetModelName())
+	gateway.bootConfig = signature
+	refreshWebChatTokenLocked(h.configPath)
 }
 
 // reloadGateway asks the gateway pidData describes to reload its config and

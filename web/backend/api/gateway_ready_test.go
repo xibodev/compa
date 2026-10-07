@@ -82,6 +82,43 @@ func TestGatewayStatusStaysRunningWhenReadinessPasses(t *testing.T) {
 	}
 }
 
+// The gateway also reloads the saved config by itself (hot reload, /reload
+// in a chat). Once its /ready reports the saved files, a change it applied no
+// longer asks for a restart.
+func TestGatewayStatusFollowsTheConfigTheGatewayApplied(t *testing.T) {
+	resetGatewayTestState(t)
+	configPath := gatewayModelTestConfig(t, func(cfg *config.Config) { cfg.Tools.WriteFile.Enabled = true })
+	cfg, err := config.LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	runAsTrackedGateway(t, cfg)
+	booted := cfg.SourceDigest()
+
+	// A change only a reload or a restart applies.
+	cfg.Tools.WriteFile.Enabled = false
+	if err := config.SaveConfig(configPath, cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	saved, err := config.LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+
+	for _, step := range []struct {
+		name   string
+		digest string
+		want   bool
+	}{
+		{"before the gateway reloads", booted, true},
+		{"after it reloaded the saved files", saved.SourceDigest(), false},
+	} {
+		serveKernelReadiness(http.StatusOK, `{"status":"ready","config_digest":"`+step.digest+`"}`)
+		if got := gatewayStatusBody(t, NewHandler(configPath))["gateway_restart_required"]; got != step.want {
+			t.Fatalf("%s: gateway_restart_required = %#v, want %v", step.name, got, step.want)
+		}
+	}
+}
 func TestGatewayRestartsOnConfigChange(t *testing.T) {
 	for _, tc := range []struct {
 		status map[string]any

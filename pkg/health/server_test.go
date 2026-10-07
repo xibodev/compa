@@ -384,3 +384,22 @@ func TestStatusString(t *testing.T) {
 		}
 	}
 }
+
+// /ready reports the config the gateway applied, ready or not.
+func TestReadyHandler_ReportsTheAppliedConfig(t *testing.T) {
+	s := newTestServer()
+	s.SetConfigDigest("digest-1")
+	for _, ready := range []bool{false, true} {
+		s.SetReady(ready)
+		w := httptest.NewRecorder()
+		s.readyHandler(w, httptest.NewRequest(http.MethodGet, "/ready", nil))
+
+		var resp StatusResponse
+		if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+			t.Fatalf("failed to decode response: %v", err)
+		}
+		if resp.ConfigDigest != "digest-1" {
+			t.Errorf("ready %v: config_digest = %q, want digest-1", ready, resp.ConfigDigest)
+		}
+	}
+}

@@ -109,10 +109,10 @@ Saving the model selections, `tools.approval`, or a channel's **Allow From**,
 **DM Policy** or **Group Policy**, and approving a pairing request, applies to
 the running gateway at once, together with every other change saved before.
 A change to a tool, an MCP server, a channel, the workspace, `isolation`,
-`commands` or `hooks` shows **Gateway restart required**: choose **Restart
-gateway** in the status menu at the top. Other settings apply the next time
-the gateway starts or reloads; `gateway.host`, `gateway.port` and
-`gateway.hot_reload` only when it starts.
+`commands` or `hooks` shows **Gateway restart required** until the gateway
+restarts or reloads: choose **Restart gateway** in the status menu at the top.
+Other settings apply the next time the gateway starts or reloads;
+`gateway.host`, `gateway.port` and `gateway.hot_reload` only when it starts.
 
 ## Start over
 

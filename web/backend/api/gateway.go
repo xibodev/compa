@@ -176,19 +176,26 @@ const gatewayReadyProbeTimeout = 800 * time.Millisecond
 // processes messages: its /ready answers 503 naming each failed check. It
 // returns the first failed check (by name) and its message, or "" when the
 // kernel is ready, has not finished starting, or does not answer; whether it
-// runs at all is decided elsewhere.
-func (h *Handler) gatewayReadinessFailure(pidData *ppid.PidFileData, cfg *config.Config) (check, message string) {
+// runs at all is decided elsewhere. configDigest is the SourceDigest of the
+// config the kernel applied last, as its /ready reports it, or "".
+func (h *Handler) gatewayReadinessFailure(
+	pidData *ppid.PidFileData,
+	cfg *config.Config,
+) (check, message, configDigest string) {
 	resp, err := gatewayHealthGet(gatewayBaseURLForPidData(h, pidData, cfg)+"/ready", gatewayReadyProbeTimeout)
 	if err != nil {
-		return "", ""
+		return "", "", ""
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusServiceUnavailable {
-		return "", ""
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusServiceUnavailable {
+		return "", "", ""
 	}
 	var ready health.StatusResponse
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&ready); err != nil {
-		return "", ""
+		return "", "", ""
+	}
+	if resp.StatusCode == http.StatusOK {
+		return "", "", ready.ConfigDigest
 	}
 	names := make([]string, 0, len(ready.Checks))
 	for name, c := range ready.Checks {
@@ -197,7 +204,7 @@ func (h *Handler) gatewayReadinessFailure(pidData *ppid.PidFileData, cfg *config
 		}
 	}
 	if len(names) == 0 {
-		return "", ""
+		return "", "", ready.ConfigDigest
 	}
 	sort.Strings(names)
 	failed := ready.Checks[names[0]]
@@ -205,7 +212,7 @@ func (h *Handler) gatewayReadinessFailure(pidData *ppid.PidFileData, cfg *config
 	if message == "" {
 		message = names[0] + " check failed"
 	}
-	return names[0], message
+	return names[0], message, ready.ConfigDigest
 }
 
 // trackedGatewayReadinessFailure is gatewayReadinessFailure for the kernel
@@ -220,7 +227,8 @@ func (h *Handler) trackedGatewayReadinessFailure() (check, message string) {
 		return "", ""
 	}
 	cfg, _ := config.LoadConfig(h.configPath)
-	return h.gatewayReadinessFailure(pidData, cfg)
+	check, message, _ = h.gatewayReadinessFailure(pidData, cfg)
+	return check, message
 }
 
 // isLikelyGatewayProcess returns whether PID appears to be a compa-kernel gateway
@@ -1412,10 +1420,13 @@ func (h *Handler) gatewayStatusData() map[string]any {
 	}
 
 	gatewayStatus, _ := data["gateway_status"].(string)
+	appliedDigest := ""
 	if gatewayStatus == "running" && pidData != nil {
 		// A kernel whose agent loop stopped still answers /health; its
 		// /ready names the failed check.
-		if check, message := h.gatewayReadinessFailure(pidData, cfg); check != "" {
+		check, message, digest := h.gatewayReadinessFailure(pidData, cfg)
+		appliedDigest = digest
+		if check != "" {
 			gatewayStatus = "error"
 			data["gateway_status"] = gatewayStatus
 			data["gateway_error"] = message
@@ -1427,6 +1438,13 @@ func (h *Handler) gatewayStatusData() map[string]any {
 	// before it stops being pending.
 	liveApplyPending := h.pendingLiveApplies.Load() > 0
 	gateway.mu.Lock()
+	// The gateway also reloads the saved config by itself (hot reload,
+	// /reload in a chat): once it reports having applied the saved files,
+	// it runs the saved config.
+	if appliedDigest != "" && appliedDigest == cfg.SourceDigest() && gateway.pidData != nil &&
+		gateway.pidData.PID == pidData.PID && !gateway.bootConfig.equal(currentConfig) {
+		h.recordAppliedConfigLocked(cfg, currentConfig)
+	}
 	bootConfig := gateway.bootConfig
 	gateway.mu.Unlock()
 	data["gateway_restart_required"] = gatewayRestartRequiredBySignature(
