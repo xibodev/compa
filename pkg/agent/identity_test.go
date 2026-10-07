@@ -717,19 +717,19 @@ func TestRequireTools_RouteOffersToolsToTheNextCandidate(t *testing.T) {
 	first, second := &routeTestModel{name: "first"}, &routeTestModel{name: "second", acceptsTools: true}
 	al := routeTestLoop(t, "---\nname: Ledger\nrequireTools: true\n---\nBody.", first, second)
 
-	// A refusal says nothing about the first instance's health, so the
-	// second turn tries it again.
-	for turn := 1; turn <= 2; turn++ {
+	// A refusal says nothing about the first instance's health: each turn
+	// tries it again, past the three failures that would open its circuit.
+	const turns = 4
+	for turn := 1; turn <= turns; turn++ {
 		reply, err := al.ProcessDirect(context.Background(), "hello", "route-require-tools")
 		if err != nil || reply != "answer from second" {
 			t.Fatalf("turn %d: reply = %q, error = %v", turn, reply, err)
 		}
 	}
-	if calls := first.calls(); !offeredToolsEachTime(calls, 2) {
-		t.Fatalf("first candidate calls (tools offered per call) = %v, want two with tools", calls)
-	}
-	if calls := second.calls(); !offeredToolsEachTime(calls, 2) {
-		t.Fatalf("second candidate calls (tools offered per call) = %v, want two with tools", calls)
+	for _, model := range []*routeTestModel{first, second} {
+		if calls := model.calls(); !offeredToolsEachTime(calls, turns) {
+			t.Fatalf("%s candidate calls (tools offered per call) = %v, want %d with tools", model.name, calls, turns)
+		}
 	}
 }
 
@@ -777,6 +777,9 @@ func TestRequireTools_StreamingRouteOffersToolsToTheNextCandidate(t *testing.T) 
 	}
 	if first.streamCalls.Load() != 1 || second.streamCalls.Load() != 1 || first.chatCalls.Load() != 0 || second.chatCalls.Load() != 0 {
 		t.Fatalf("stream/chat calls first=%d/%d second=%d/%d", first.streamCalls.Load(), first.chatCalls.Load(), second.streamCalls.Load(), second.chatCalls.Load())
+	}
+	if first.toolCalls.Load() != 1 || second.toolCalls.Load() != 1 {
+		t.Fatalf("calls offering tools first=%d second=%d, want one each", first.toolCalls.Load(), second.toolCalls.Load())
 	}
 	if len(streamer.finalized) != 1 || streamer.finalized[0] != "streamed answer" {
 		t.Fatalf("finalized = %v", streamer.finalized)
