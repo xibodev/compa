@@ -258,6 +258,75 @@ func TestSaveConfigKeepsEnvOverriddenSettingsOutOfTheFiles(t *testing.T) {
 	}
 }
 
+// COMPA_CHANNELS_<NAME>_ENABLED turns a channel_list entry on or off, the
+// default web entry included, and is never saved; so is the web chat's
+// streaming variable.
+func TestChannelEnabledEnvOverride(t *testing.T) {
+	path := writeEnvTestConfig(t, envTestConfig, "")
+	t.Setenv("COMPA_CHANNELS_WEB_ENABLED", "true")
+	t.Setenv("COMPA_CHANNELS_TELEGRAM_ENABLED", "false")
+	t.Setenv("COMPA_CHANNELS_WEB_STREAMING_ENABLED", "false")
+
+	cfg, err := LoadConfig(path)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	web := cfg.Channels.Get("web")
+	if web == nil || !web.Enabled {
+		t.Fatalf("web channel = %+v, want it on", web)
+	}
+	if decoded, err := web.GetDecoded(); err != nil || decoded.(*WebChatSettings).Streaming.Enabled {
+		t.Fatalf("web settings = %+v, %v; want streaming off", decoded, err)
+	}
+	if cfg.Channels.Get("telegram").Enabled {
+		t.Fatal("telegram channel is on, want the environment's off")
+	}
+
+	if err := SaveConfig(path, cfg); err != nil {
+		t.Fatalf("SaveConfig() error = %v", err)
+	}
+	var saved struct {
+		Channels map[string]struct {
+			Enabled  bool `json:"enabled"`
+			Settings struct {
+				Streaming StreamingConfig `json:"streaming"`
+			} `json:"settings"`
+		} `json:"channel_list"`
+	}
+	if err := json.Unmarshal([]byte(readFile(t, path)), &saved); err != nil {
+		t.Fatal(err)
+	}
+	if !saved.Channels["telegram"].Enabled {
+		t.Fatalf("saved telegram entry = %+v, want the file's: on", saved.Channels["telegram"])
+	}
+	if entry, ok := saved.Channels["web"]; ok && (entry.Enabled || !entry.Settings.Streaming.Enabled) {
+		t.Fatalf("saved web entry = %+v, want the default's: off, streaming on", entry)
+	}
+	if !cfg.Channels.Get("web").Enabled {
+		t.Fatal("SaveConfig turned the live web channel off")
+	}
+}
+
+func TestChannelEnabledEnvOverrideRejectsABadValue(t *testing.T) {
+	path := writeEnvTestConfig(t, envTestConfig, "")
+	t.Setenv("COMPA_CHANNELS_WEB_ENABLED", "maybe")
+	if _, err := LoadConfig(path); err == nil || !strings.Contains(err.Error(), "COMPA_CHANNELS_WEB_ENABLED") {
+		t.Fatalf("LoadConfig() error = %v, want one naming COMPA_CHANNELS_WEB_ENABLED", err)
+	}
+}
+
+func TestChannelEnabledEnvName(t *testing.T) {
+	for name, want := range map[string]string{
+		"web":          "COMPA_CHANNELS_WEB_ENABLED",
+		"work-bot.2":   "COMPA_CHANNELS_WORK_BOT_2_ENABLED",
+		"Telegram_Alt": "COMPA_CHANNELS_TELEGRAM_ALT_ENABLED",
+	} {
+		if got := channelEnabledEnv(name); got != want {
+			t.Errorf("channelEnabledEnv(%q) = %q, want %q", name, got, want)
+		}
+	}
+}
+
 // A setting changed after the load is the user's, even where the
 // environment set it, and is saved.
 func TestSaveConfigWritesSettingsChangedAfterLoad(t *testing.T) {

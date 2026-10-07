@@ -796,6 +796,9 @@ func initChannelList(channels ChannelsConfig, rec channelEnvRecorder) error {
 		if !isValidChannelType(bc.Type) {
 			return fmt.Errorf("channel %q has unknown type %q", name, bc.Type)
 		}
+		if err := rec.applyEnabled(name, bc); err != nil {
+			return fmt.Errorf("channel %q: environment override: %w", name, err)
+		}
 		if err := validateChannelPolicies(name, bc); err != nil {
 			return err
 		}
@@ -810,7 +813,7 @@ func initChannelList(channels ChannelsConfig, rec channelEnvRecorder) error {
 			if err := env.Parse(target); err != nil {
 				return fmt.Errorf("channel %q: environment override: %w", name, err)
 			}
-			applyTelegramStreamingEnvOverrides(target)
+			applyStreamingEnvOverrides(target)
 			rec.record(name, fromFiles, settings)
 			if err := validateChannelStreamingConfig(name, target); err != nil {
 				return err
@@ -829,28 +832,40 @@ func initChannelList(channels ChannelsConfig, rec channelEnvRecorder) error {
 	return nil
 }
 
-// applyTelegramStreamingEnvOverrides applies the
-// COMPA_CHANNELS_TELEGRAM_STREAMING_* environment variables.
-// StreamingConfig is shared by several channels, so it carries no env tags.
-func applyTelegramStreamingEnvOverrides(target any) {
-	settings, ok := target.(*TelegramSettings)
-	if !ok || settings == nil {
+// applyStreamingEnvOverrides applies the COMPA_CHANNELS_WEB_STREAMING_* and
+// COMPA_CHANNELS_TELEGRAM_STREAMING_* environment variables to the web chat's
+// and Telegram's settings. StreamingConfig is shared by several channels, so
+// it carries no env tags.
+func applyStreamingEnvOverrides(target any) {
+	var streaming *StreamingConfig
+	var prefix string
+	switch settings := target.(type) {
+	case *WebChatSettings:
+		if settings != nil {
+			streaming, prefix = &settings.Streaming, "COMPA_CHANNELS_WEB_STREAMING_"
+		}
+	case *TelegramSettings:
+		if settings != nil {
+			streaming, prefix = &settings.Streaming, "COMPA_CHANNELS_TELEGRAM_STREAMING_"
+		}
+	}
+	if streaming == nil {
 		return
 	}
 
-	if raw, ok := os.LookupEnv("COMPA_CHANNELS_TELEGRAM_STREAMING_ENABLED"); ok {
+	if raw, ok := os.LookupEnv(prefix + "ENABLED"); ok {
 		if value, err := strconv.ParseBool(raw); err == nil {
-			settings.Streaming.Enabled = value
+			streaming.Enabled = value
 		}
 	}
-	if raw, ok := os.LookupEnv("COMPA_CHANNELS_TELEGRAM_STREAMING_THROTTLE_SECONDS"); ok {
+	if raw, ok := os.LookupEnv(prefix + "THROTTLE_SECONDS"); ok {
 		if value, err := strconv.Atoi(raw); err == nil {
-			settings.Streaming.ThrottleSeconds = value
+			streaming.ThrottleSeconds = value
 		}
 	}
-	if raw, ok := os.LookupEnv("COMPA_CHANNELS_TELEGRAM_STREAMING_MIN_GROWTH_CHARS"); ok {
+	if raw, ok := os.LookupEnv(prefix + "MIN_GROWTH_CHARS"); ok {
 		if value, err := strconv.Atoi(raw); err == nil {
-			settings.Streaming.MinGrowthChars = value
+			streaming.MinGrowthChars = value
 		}
 	}
 }
