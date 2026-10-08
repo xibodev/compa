@@ -1,7 +1,9 @@
 package auth
 
 import (
+	"bytes"
 	"context"
+	"io"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -38,12 +40,17 @@ func withConnectEnv(t *testing.T, models []string) string {
 func TestConnectProviderRecordsInstanceAndGuidesDefault(t *testing.T) {
 	configPath := withConnectEnv(t, []string{"model-a", "model-b"})
 
-	var err error
-	output := captureAuthStdout(t, func() { err = connectProvider("openai", "sk-test") })
+	login, err := connectProvider("openai", "sk-test")
 	if err != nil {
 		t.Fatalf("connectProvider() error = %v", err)
 	}
-	if !strings.Contains(output, `provider instance "openai" (2 models available)`) ||
+	want := loginResult{Status: "ok", Provider: "openai", InstanceID: "openai", ModelCount: 2}
+	if login != want {
+		t.Fatalf("connectProvider() = %+v, want %+v", login, want)
+	}
+	var out bytes.Buffer
+	printLogin(&out, login)
+	if output := out.String(); !strings.Contains(output, `provider instance "openai" (2 models available)`) ||
 		!strings.Contains(output, "compa-kernel model openai/<model-id>") {
 		t.Fatalf("output = %q", output)
 	}
@@ -57,7 +64,7 @@ func TestConnectProviderRecordsInstanceAndGuidesDefault(t *testing.T) {
 		t.Fatalf("instances = %+v", cfg.ProviderInstances)
 	}
 
-	if err := authLogoutCmd("openai"); err != nil {
+	if _, err := authLogoutCmd("openai"); err != nil {
 		t.Fatalf("authLogoutCmd() error = %v", err)
 	}
 	cfg, err = config.LoadConfig(configPath)
@@ -69,8 +76,16 @@ func TestConnectProviderRecordsInstanceAndGuidesDefault(t *testing.T) {
 	}
 }
 
+func TestPrintLoginNamesTheDefaultModel(t *testing.T) {
+	var out bytes.Buffer
+	printLogin(&out, loginResult{Provider: "openai", InstanceID: "openai", ModelCount: 1, DefaultModel: "openai/gpt-x"})
+	if got := out.String(); got != "Connected openai as provider instance \"openai\" (1 models available).\nDefault model: openai/gpt-x\n" {
+		t.Fatalf("output = %q", got)
+	}
+}
+
 func TestAuthLoginRejectsUnknownProvider(t *testing.T) {
-	if err := authLoginCmd("unknown"); err == nil || !strings.Contains(err.Error(), "unsupported provider") {
+	if _, err := authLoginCmd("unknown", io.Discard); err == nil || !strings.Contains(err.Error(), "unsupported provider") {
 		t.Fatalf("authLoginCmd() error = %v", err)
 	}
 }

@@ -155,6 +155,19 @@ func EnableConsole() {
 	setOutputLocked()
 }
 
+// SetConsoleOutput sends the console log to w instead of stdout, for a
+// command whose stdout another program parses. A disabled console stays
+// disabled.
+func SetConsoleOutput(w io.Writer) {
+	mu.Lock()
+	defer mu.Unlock()
+	consoleWriter.Out = w
+	if _, console := writers[0].(zerolog.ConsoleWriter); console {
+		writers[0] = consoleWriter
+		setOutputLocked()
+	}
+}
+
 func GetLevel() LogLevel {
 	return LogLevel(currentLevel.Load())
 }

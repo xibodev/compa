@@ -115,6 +115,33 @@ decides it.
 | `auth weixin` | Connect a WeChat personal account via QR code. |
 | `auth wecom` | Scan a WeCom QR code and set up the WeCom channel. |
 
+### JSON output
+
+For a program that runs `compa-kernel`, `--json` makes `model` (showing,
+setting or clearing the default model), `model auto-free`, `model ping`,
+`model roster`, `auth login`, `auth logout` and `auth status` print one JSON
+document on stdout instead of text. Prompts, progress and logs go to stderr.
+A command that fails prints `{"error": "..."}` on stdout and exits with
+status 1.
+
+The fields are those of the launcher's API, where it has the same data:
+
+| Command | Document |
+|---|---|
+| `model` | `selection` (the default model, `""` for none), `active_models` (the chat shortlist) and `routes` (each with `name` and `targets`). |
+| `model <selection>`, `model --clear` | `selection` (the new default model, `""` when cleared) and `previous`. |
+| `model auto-free` | The answer of `POST /api/provider-instances/auto-connect-free`: `ok`, `total`, `catalog_discovered`, `verified`, `instances`, `default_model`, and `outcomes`, each provider's `status`, `models`, `probe_model`, `latency_ms`, `error_class` and `error`. `ok` false is not a failure. |
+| `model ping [instance-id]` | `results`, one `POST /api/provider-instances/{id}/ping` answer per instance (`ok`, `instance_id`, `latency_ms`, `model_count`, `status`, `error`), and `total`. |
+| `model roster` | `providers` and `total`, as `GET /api/provider-roster`. |
+| `auth login` | `status` (`ok`), `provider`, `instance_id`, `model_count` and `default_model`. The key is read from stdin when it isn't a terminal. |
+| `auth logout` | `status` (`ok`) and `providers`, the providers logged out of. |
+| `auth status` | `providers`, each stored credential's `provider`, `auth_method`, `status` (`active`, `expired` or `needs_refresh`), `account_id` and `expires_at`, and `total`. Tokens are never printed. |
+
+```sh
+echo "$OPENAI_API_KEY" | compa-kernel auth login --provider openai --json
+compa-kernel model openai/gpt-5.4 --json
+```
+
 ### gateway
 
 `compa-kernel gateway` runs chat, tools, channels and scheduled jobs in the

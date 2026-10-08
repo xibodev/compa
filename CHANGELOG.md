@@ -36,9 +36,18 @@ Notable changes to Compa, newest first. Versions follow
   and `limit`), and `GET /web/sessions/{session_id}` returns one's transcript,
   with the JSON the launcher's `/api/sessions` answers. A session is found by
   the id the client opened `/web/ws` with, in any case.
+- `--json` on `compa-kernel model` (show, set and `--clear`),
+  `model auto-free`, `model ping`, `model roster`, `auth login`,
+  `auth logout` and `auth status` prints one JSON document on stdout, with
+  the launcher's field names, and `{"error": "..."}` with exit status 1 on
+  failure. `model auto-free --json` also reports the default model it chose
+  and each provider's models, probe model and latency. See
+  [JSON output](docs/cli.md#json-output).
 
 ### Fixed
 
+- `compa-kernel auth status` skips a `null` entry in a hand-edited
+  `auth.json`; it crashed. It lists the providers in name order.
 - `compa-kernel mcp add`, `mcp remove` and `mcp edit` save their change when
   a server has its own `call_timeout_seconds`; they refused every change.
 - On Windows computers whose processor has AMX, such as recent Intel Xeon,
