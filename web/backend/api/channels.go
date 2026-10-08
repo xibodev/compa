@@ -14,24 +14,13 @@ type channelCatalogItem struct {
 	Variant   string `json:"variant,omitempty"`
 }
 
+// channelCatalog lists the channels the channel pages offer: the supported
+// ones. The paused channels are left out (see pkg/gateway/channels_paused.go).
 var channelCatalog = []channelCatalogItem{
-	{Name: "weixin", ConfigKey: "weixin"},
-	{Name: "telegram", ConfigKey: "telegram"},
-	{Name: "discord", ConfigKey: "discord"},
 	{Name: "slack", ConfigKey: "slack"},
-	{Name: "feishu", ConfigKey: "feishu"},
-	{Name: "dingtalk", ConfigKey: "dingtalk"},
-	{Name: "line", ConfigKey: "line"},
-	{Name: "qq", ConfigKey: "qq"},
-	{Name: "onebot", ConfigKey: "onebot"},
-	{Name: "wecom", ConfigKey: "wecom"},
 	{Name: "whatsapp", ConfigKey: "whatsapp", Variant: "bridge"},
 	{Name: "whatsapp_native", ConfigKey: "whatsapp", Variant: "native"},
 	{Name: "web", ConfigKey: "web"},
-	{Name: "maixcam", ConfigKey: "maixcam"},
-	{Name: "matrix", ConfigKey: "matrix"},
-	{Name: "irc", ConfigKey: "irc"},
-	{Name: "mqtt", ConfigKey: "mqtt"},
 }
 
 type channelConfigResponse struct {

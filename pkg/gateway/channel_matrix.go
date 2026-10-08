@@ -1,4 +1,4 @@
-//go:build !mipsle && !netbsd && !(freebsd && arm) && !android
+//go:build paused_channels && !mipsle && !netbsd && !(freebsd && arm) && !android
 
 package gateway
 

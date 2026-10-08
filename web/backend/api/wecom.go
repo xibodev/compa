@@ -1,3 +1,5 @@
+//go:build paused_channels
+
 package api
 
 import (
@@ -12,6 +14,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/xibodev/compa/v3/pkg/config"
@@ -78,6 +81,14 @@ type wecomQRQueryResponse struct {
 		} `json:"bot_info"`
 	} `json:"data"`
 }
+
+// The wecom QR login flows, by ID.
+var (
+	wecomMu    sync.Mutex
+	wecomFlows = map[string]*wecomFlow{}
+)
+
+func init() { pausedChannelRoutes = append(pausedChannelRoutes, (*Handler).registerWecomRoutes) }
 
 // registerWecomRoutes binds WeCom QR login endpoints to the ServeMux.
 func (h *Handler) registerWecomRoutes(mux *http.ServeMux) {
@@ -366,17 +377,17 @@ func newWecomFlowID() string {
 }
 
 func (h *Handler) storeWecomFlow(flow *wecomFlow) {
-	h.wecomMu.Lock()
-	defer h.wecomMu.Unlock()
+	wecomMu.Lock()
+	defer wecomMu.Unlock()
 	h.gcWecomFlowsLocked(time.Now())
-	h.wecomFlows[flow.ID] = flow
+	wecomFlows[flow.ID] = flow
 }
 
 func (h *Handler) getWecomFlow(flowID string) (*wecomFlow, bool) {
-	h.wecomMu.Lock()
-	defer h.wecomMu.Unlock()
+	wecomMu.Lock()
+	defer wecomMu.Unlock()
 	h.gcWecomFlowsLocked(time.Now())
-	flow, ok := h.wecomFlows[flowID]
+	flow, ok := wecomFlows[flowID]
 	if !ok {
 		return nil, false
 	}
@@ -385,18 +396,18 @@ func (h *Handler) getWecomFlow(flowID string) (*wecomFlow, bool) {
 }
 
 func (h *Handler) updateWecomFlowStatus(flowID, status string) {
-	h.wecomMu.Lock()
-	defer h.wecomMu.Unlock()
-	if flow, ok := h.wecomFlows[flowID]; ok {
+	wecomMu.Lock()
+	defer wecomMu.Unlock()
+	if flow, ok := wecomFlows[flowID]; ok {
 		flow.Status = status
 		flow.UpdatedAt = time.Now()
 	}
 }
 
 func (h *Handler) setWecomFlowConfirmed(flowID, botID string) {
-	h.wecomMu.Lock()
-	defer h.wecomMu.Unlock()
-	if flow, ok := h.wecomFlows[flowID]; ok {
+	wecomMu.Lock()
+	defer wecomMu.Unlock()
+	if flow, ok := wecomFlows[flowID]; ok {
 		flow.Status = wecomStatusConfirmed
 		flow.BotID = botID
 		flow.UpdatedAt = time.Now()
@@ -404,9 +415,9 @@ func (h *Handler) setWecomFlowConfirmed(flowID, botID string) {
 }
 
 func (h *Handler) setWecomFlowError(flowID, errMsg string) {
-	h.wecomMu.Lock()
-	defer h.wecomMu.Unlock()
-	if flow, ok := h.wecomFlows[flowID]; ok {
+	wecomMu.Lock()
+	defer wecomMu.Unlock()
+	if flow, ok := wecomFlows[flowID]; ok {
 		flow.Status = wecomStatusError
 		flow.Error = errMsg
 		flow.UpdatedAt = time.Now()
@@ -414,7 +425,7 @@ func (h *Handler) setWecomFlowError(flowID, errMsg string) {
 }
 
 func (h *Handler) gcWecomFlowsLocked(now time.Time) {
-	for id, flow := range h.wecomFlows {
+	for id, flow := range wecomFlows {
 		if flow.Status == wecomStatusWait || flow.Status == wecomStatusScanned {
 			if !flow.ExpiresAt.IsZero() && now.After(flow.ExpiresAt) {
 				flow.Status = wecomStatusExpired
@@ -424,7 +435,7 @@ func (h *Handler) gcWecomFlowsLocked(now time.Time) {
 		if flow.Status != wecomStatusWait &&
 			flow.Status != wecomStatusScanned &&
 			now.Sub(flow.UpdatedAt) > wecomFlowGCAge {
-			delete(h.wecomFlows, id)
+			delete(wecomFlows, id)
 		}
 	}
 }

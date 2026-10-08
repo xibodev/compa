@@ -38,19 +38,19 @@ func TestHandleGetChannelConfig_ReturnsPoliciesAndMentionOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	tg := cfg.Channels.Get(config.ChannelTelegram)
+	tg := cfg.Channels.Get(config.ChannelSlack)
 	tg.DMPolicy = config.DMPolicyAllowlist
 	tg.GroupPolicy = config.GroupPolicyDisabled
 	tg.GroupTrigger.MentionOnly = false
 	// No policy saved: the policies allow_from implies are shown.
-	dc := cfg.Channels.Get(config.ChannelDiscord)
+	dc := cfg.Channels.Get(config.ChannelWhatsApp)
 	dc.DMPolicy, dc.GroupPolicy = "", ""
 	dc.AllowFrom = config.FlexibleStringSlice{"*"}
 	if err := config.SaveConfig(configPath, cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
 
-	got := getChannelConfigMap(t, configPath, "telegram")
+	got := getChannelConfigMap(t, configPath, "slack")
 	if got["dm_policy"] != "allowlist" || got["group_policy"] != "disabled" {
 		t.Fatalf("telegram policies = %#v/%#v, want allowlist/disabled", got["dm_policy"], got["group_policy"])
 	}
@@ -59,7 +59,7 @@ func TestHandleGetChannelConfig_ReturnsPoliciesAndMentionOnly(t *testing.T) {
 		t.Fatalf("telegram group_trigger = %#v, want mention_only false present", got["group_trigger"])
 	}
 
-	got = getChannelConfigMap(t, configPath, "discord")
+	got = getChannelConfigMap(t, configPath, "whatsapp")
 	if got["dm_policy"] != "open" || got["group_policy"] != "open" {
 		t.Fatalf("discord policies = %#v/%#v, want open/open from allow_from *", got["dm_policy"], got["group_policy"])
 	}
@@ -101,13 +101,13 @@ func TestHandlePatchConfig_SavesChannelPolicies(t *testing.T) {
 	configPath, cleanup := setupCredentialTestEnv(t)
 	defer cleanup()
 
-	patchConfig(t, configPath, `{"channel_list":{"telegram":{"dm_policy":"open","group_policy":"disabled","group_trigger":{"mention_only":false}}}}`, http.StatusOK)
+	patchConfig(t, configPath, `{"channel_list":{"slack":{"dm_policy":"open","group_policy":"disabled","group_trigger":{"mention_only":false}}}}`, http.StatusOK)
 
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	tg := cfg.Channels.Get(config.ChannelTelegram)
+	tg := cfg.Channels.Get(config.ChannelSlack)
 	if tg.DMPolicy != config.DMPolicyOpen || tg.GroupPolicy != config.GroupPolicyDisabled || tg.GroupTrigger.MentionOnly {
 		t.Fatalf("telegram = %q/%q mention_only=%v, want open/disabled false", tg.DMPolicy, tg.GroupPolicy, tg.GroupTrigger.MentionOnly)
 	}

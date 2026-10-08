@@ -1,3 +1,5 @@
+//go:build paused_channels
+
 // Compa - Ultra-lightweight personal AI agent
 // DingTalk channel implementation using Stream Mode
 

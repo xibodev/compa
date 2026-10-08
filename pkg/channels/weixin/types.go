@@ -1,3 +1,5 @@
+//go:build paused_channels
+
 package weixin
 
 // BaseInfo is attached to every outgoing CGI request

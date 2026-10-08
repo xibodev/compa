@@ -1,3 +1,5 @@
+//go:build paused_channels
+
 // Package deltachat implements a Compa channel for Delta Chat, an
 // email-based, end-to-end encrypted messenger.
 //

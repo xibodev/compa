@@ -1,3 +1,5 @@
+//go:build paused_channels
+
 package auth
 
 import (
@@ -11,6 +13,10 @@ import (
 	"github.com/xibodev/compa/v3/pkg/channels/weixin"
 	"github.com/xibodev/compa/v3/pkg/config"
 )
+
+func init() {
+	pausedChannelCommands = append(pausedChannelCommands, newWeixinCommand, newWeComCommand)
+}
 
 func newWeixinCommand() *cobra.Command {
 	var baseURL string

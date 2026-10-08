@@ -1,3 +1,5 @@
+//go:build paused_channels
+
 package maixcam
 
 import (

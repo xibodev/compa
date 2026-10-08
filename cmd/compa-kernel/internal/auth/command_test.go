@@ -31,15 +31,13 @@ func TestNewAuthCommand(t *testing.T) {
 		"login",
 		"logout",
 		"status",
-		"weixin",
-		"wecom",
 	}
 
 	subcommands := cmd.Commands()
-	assert.Len(t, subcommands, len(allowedCommands))
+	assert.Len(t, subcommands, len(allowedCommands)+len(pausedChannelCommands))
 
 	for _, subcmd := range subcommands {
-		found := slices.Contains(allowedCommands, subcmd.Name())
+		found := slices.Contains(allowedCommands, subcmd.Name()) || subcmd.Name() == "weixin" || subcmd.Name() == "wecom"
 		assert.True(t, found, "unexpected subcommand %q", subcmd.Name())
 
 		assert.Len(t, subcmd.Aliases, 0)
