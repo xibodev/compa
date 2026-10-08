@@ -45,7 +45,9 @@ else
 	go build -o "$work/helper" "$here/testhelper.go"
 fi
 
-# release VERSION: a fake release whose programs differ from other versions'.
+# release VERSION: a fake release whose programs and license files differ
+# from other versions'. As with the real releases, 1.0.0 has no
+# THIRD_PARTY_NOTICES.
 release() {
 	local files="$work/files/$1" dir="$work/releases/v$1"
 	mkdir -p "$files" "$dir"
@@ -53,7 +55,15 @@ release() {
 		cp "$work/helper" "$files/$program"
 		printf '%s' "$1" >>"$files/$program"
 	done
-	tar -czf "$dir/compa_$1_$platform.tar.gz" -C "$files" compa compa-kernel
+	local contents="compa compa-kernel LICENSE NOTICE"
+	printf 'MIT License %s\n' "$1" >"$files/LICENSE"
+	printf 'Compa %s\n' "$1" >"$files/NOTICE"
+	if [ "$1" != 1.0.0 ]; then
+		printf 'THIRD-PARTY SOFTWARE NOTICES %s\n' "$1" >"$files/THIRD_PARTY_NOTICES"
+		contents="$contents THIRD_PARTY_NOTICES"
+	fi
+	# shellcheck disable=SC2086 # one file per word
+	tar -czf "$dir/compa_$1_$platform.tar.gz" -C "$files" $contents
 	(cd "$dir" && sha256sum "compa_$1_$platform.tar.gz" >SHA256SUMS)
 }
 release 1.0.0
@@ -72,6 +82,7 @@ base="http://127.0.0.1:$(cat "$work/port")"
 
 bin="$work/bin"
 home="$work/home"
+licenses="$work/user/.local/share/doc/compa"
 mkdir -p "$work/user"
 
 # run_install VERSION [VAR=VALUE...]: the installer without a desktop or CI,
@@ -79,7 +90,7 @@ mkdir -p "$work/user"
 run_install() {
 	local version=$1
 	shift
-	env -u CI -u DISPLAY -u WAYLAND_DISPLAY -u SSH_CONNECTION -u SSH_TTY \
+	env -u CI -u DISPLAY -u WAYLAND_DISPLAY -u SSH_CONNECTION -u SSH_TTY -u XDG_DATA_HOME \
 		HOME="$work/user" COMPA_HOME="$home" COMPA_INSTALL_DIR="$bin" \
 		COMPA_RELEASE_BASE_URL="$base" COMPA_INSTALL_TEST=1 COMPA_VERSION="v$version" \
 		"$@" sh "$installer" </dev/null >"$work/out" 2>&1
@@ -89,14 +100,26 @@ run_install() {
 run_in_terminal() {
 	local version=$1
 	shift
-	env -u CI -u SSH_CONNECTION -u SSH_TTY DISPLAY=:99 \
+	env -u CI -u SSH_CONNECTION -u SSH_TTY -u XDG_DATA_HOME DISPLAY=:99 \
 		HOME="$work/user" COMPA_HOME="$home" COMPA_INSTALL_DIR="$bin" \
 		COMPA_RELEASE_BASE_URL="$base" COMPA_INSTALL_TEST=1 COMPA_VERSION="v$version" \
 		"$@" script -qec "sh '$installer'" /dev/null </dev/null >"$work/out" 2>&1
 }
 
+# installed VERSION: the programs and license files of that release are
+# installed, and no license file it lacks.
 installed() {
-	cmp -s "$bin/compa" "$work/files/$1/compa" && cmp -s "$bin/compa-kernel" "$work/files/$1/compa-kernel"
+	if ! cmp -s "$bin/compa" "$work/files/$1/compa" || ! cmp -s "$bin/compa-kernel" "$work/files/$1/compa-kernel"; then
+		return 1
+	fi
+	local file
+	for file in LICENSE NOTICE THIRD_PARTY_NOTICES; do
+		if [ -e "$work/files/$1/$file" ]; then
+			cmp -s "$licenses/$file" "$work/files/$1/$file" || return 1
+		elif [ -e "$licenses/$file" ]; then
+			return 1
+		fi
+	done
 }
 no_leftovers() {
 	for file in "$bin"/.compa*.install-*; do
@@ -138,9 +161,10 @@ if run_install 1.0.0 && installed 1.0.0 && output_has 'Compa was not started' &&
 else fail "installs, and does not start Compa without a desktop"; fi
 
 start_fake
-if run_install 2.0.0 COMPA_NO_START=1 && installed 2.0.0 && no_leftovers && ! running "$fake"; then
-	pass "upgrades both programs and stops the running Compa"
-else fail "upgrades both programs and stops the running Compa"; fi
+if run_install 2.0.0 COMPA_NO_START=1 && installed 2.0.0 && no_leftovers && ! running "$fake" &&
+	output_has "Kept the license files in $licenses"; then
+	pass "upgrades both programs and the license files, and stops the running Compa"
+else fail "upgrades both programs and the license files, and stops the running Compa"; fi
 
 if [ "$(id -u)" != 0 ]; then
 	start_fake
@@ -173,9 +197,14 @@ else
 	echo "skipped: starting Compa (needs util-linux script)"
 fi
 
-if run_install 2.0.0 COMPA_UNINSTALL=1 && [ ! -e "$bin/compa" ] && [ ! -e "$bin/compa-kernel" ] && [ -d "$home" ]; then
-	pass "uninstalls the programs and keeps the data"
-else fail "uninstalls the programs and keeps the data"; fi
+if run_install 1.0.0 COMPA_NO_START=1 && installed 1.0.0 && no_leftovers; then
+	pass "installs an older release, and drops the license file it lacks"
+else fail "installs an older release, and drops the license file it lacks"; fi
+
+if run_install 2.0.0 COMPA_UNINSTALL=1 && [ ! -e "$bin/compa" ] && [ ! -e "$bin/compa-kernel" ] &&
+	[ ! -e "$licenses" ] && [ -d "$home" ]; then
+	pass "uninstalls the programs and license files, and keeps the data"
+else fail "uninstalls the programs and license files, and keeps the data"; fi
 
 if [ "$failures" -ne 0 ]; then
 	echo "$failures installer test(s) failed"

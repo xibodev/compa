@@ -15,10 +15,10 @@ In PowerShell (Windows PowerShell 5.1 or PowerShell 7):
 irm https://github.com/xibodev/compa/releases/latest/download/install.ps1 | iex
 ```
 
-This installs `compa.exe` and `compa-kernel.exe` in
-`%LOCALAPPDATA%\Programs\Compa`, adds that folder to your user `PATH`, adds
-**Compa** to the Start Menu and starts Compa, which opens your browser and
-shows an icon in the notification area.
+This installs `compa.exe` and `compa-kernel.exe`, with the release's license
+files, in `%LOCALAPPDATA%\Programs\Compa`, adds that folder to your user
+`PATH`, adds **Compa** to the Start Menu and starts Compa, which opens your
+browser and shows an icon in the notification area.
 
 `irm | iex` works whatever PowerShell's execution policy is, but by default
 PowerShell won't run a downloaded `install.ps1`. Run such a copy with
@@ -30,13 +30,14 @@ PowerShell won't run a downloaded `install.ps1`. Run such a copy with
 curl -fsSL https://github.com/xibodev/compa/releases/latest/download/install.sh | sh
 ```
 
-This installs `compa` and `compa-kernel` in `~/.local/bin`. When it runs in a
-terminal on your desktop, it then starts Compa in the background, with its
-output in `~/.compa/logs/launcher.out`; without a terminal, over SSH, under CI
-or on Linux without a display, it prints how to start Compa instead. The
-installer doesn't edit your shell startup files: if `~/.local/bin` isn't on
-your `PATH`, it prints the line to add. It needs `curl` or `wget`, and
-`sha256sum` or `shasum`.
+This installs `compa` and `compa-kernel` in `~/.local/bin`, and the release's
+license files in `~/.local/share/doc/compa`. When it runs in a terminal on your
+desktop, it then starts Compa in the background, with its output in
+`~/.compa/logs/launcher.out`; without a terminal, over SSH, under CI or on
+Linux without a display, it prints how to start Compa instead. The installer
+doesn't edit your shell startup files: if `~/.local/bin` isn't on your `PATH`,
+it prints the line to add. It needs `curl` or `wget`, and `sha256sum` or
+`shasum`.
 
 ## First run
 
@@ -106,10 +107,16 @@ macOS and Linux:
 curl -fsSL https://github.com/xibodev/compa/releases/latest/download/install.sh | COMPA_UNINSTALL=1 sh
 ```
 
-This stops Compa and removes the programs, the launch-at-login entry if Compa
-set one, and on Windows the `PATH` entry and the Start Menu shortcut. Your data
-stays in `~/.compa`; delete that folder to remove it too. If you installed with
-`COMPA_INSTALL_DIR`, set it again when you uninstall.
+This stops Compa and removes the programs and their license files, the
+launch-at-login entry if Compa set one, and on Windows the `PATH` entry and the
+Start Menu shortcut. Your data stays in `~/.compa`; delete that folder to
+remove it too. If you installed with `COMPA_INSTALL_DIR`, set it again when you
+uninstall.
+
+The license files are `LICENSE`, `NOTICE` and `THIRD_PARTY_NOTICES`, which
+every release archive holds. `THIRD_PARTY_NOTICES` lists the third-party code
+in the programs, such as Go modules, npm packages and the Inter font, with its
+license texts and where to get its source.
 
 ## Installer options
 

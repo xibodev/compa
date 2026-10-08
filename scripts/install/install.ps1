@@ -2,13 +2,14 @@
 #
 #   irm https://github.com/xibodev/compa/releases/latest/download/install.ps1 | iex
 #
-# Installs compa, the launcher, and compa-kernel, the harness it runs, for the
-# current user in %LOCALAPPDATA%\Programs\Compa. It needs no administrator
-# rights; run it as yourself, not from an elevated PowerShell. It adds that
-# folder to your user PATH and a "Compa" Start Menu shortcut, then starts
-# Compa, which opens your browser to finish setting up; under CI or in a remote
-# session it prints how to start Compa instead. Your settings and data live in
-# %USERPROFILE%\.compa; this script never touches them.
+# Installs compa, the launcher, and compa-kernel, the harness it runs, with the
+# release's license files, for the current user in %LOCALAPPDATA%\Programs\Compa.
+# It needs no administrator rights; run it as yourself, not from an elevated
+# PowerShell. It adds that folder to your user PATH and a "Compa" Start Menu
+# shortcut, then starts Compa, which opens your browser to finish setting up;
+# under CI or in a remote session it prints how to start Compa instead. Your
+# settings and data live in %USERPROFILE%\.compa; this script never touches
+# them.
 #
 # Options are environment variables, or parameters: give them to a downloaded
 # copy (.\install.ps1 -NoStart) or to the downloaded script as a script block:
@@ -50,7 +51,7 @@
     $repo = 'xibodev/compa'
     $defaultPort = 18800
     $programs = @('compa-kernel.exe', 'compa.exe')
-    $installedFiles = @('compa-kernel.exe', 'compa.exe', 'LICENSE', 'NOTICE', 'compa.ico')
+    $installedFiles = @('compa-kernel.exe', 'compa.exe', 'LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES', 'compa.ico')
 
     function Test-Flag([string]$Value) {
         return @('1', 'true', 'yes', 'on') -contains "$Value".Trim().ToLowerInvariant()
@@ -242,6 +243,11 @@
         }
         # One still in use is removed by the next install.
         Remove-Leftover $Dir $replacedFiles
+        # A file another release left that this one lacks goes, such as the
+        # THIRD_PARTY_NOTICES of a newer release when installing an older one.
+        foreach ($name in $installedFiles) {
+            if ($names -notcontains $name) { Remove-Item -LiteralPath (Join-Path $Dir $name) -Force -ErrorAction SilentlyContinue }
+        }
     }
 
     function Test-SameDir([string]$Entry, [string]$Dir) {

@@ -14,6 +14,11 @@ Notable changes to Compa, newest first. Versions follow
   route's next target, or fails with `agent.ErrToolsRequired` when no target
   takes tools, instead of going on without tools. See
   [Embed the Go runtime](docs/embedding.md).
+- Each release archive holds `THIRD_PARTY_NOTICES`: the license texts of the
+  Go modules, the Go standard library, and the web UI's npm packages and font
+  in `compa` and `compa-kernel`, with where to get their source. The
+  installers keep it with `LICENSE` and `NOTICE`: beside the programs on
+  Windows, in `~/.local/share/doc/compa` on macOS and Linux.
 
 ### Fixed
 

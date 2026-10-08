@@ -134,6 +134,10 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm run build:backend
           test -f ../backend/dist/index.html
+          # The npm packages in the UI and their licenses, for each archive's
+          # THIRD_PARTY_NOTICES.
+          test -s ../backend/dist/.vite/license.json
+          test -s ../backend/dist/.vite/css-licenses.json
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -225,6 +229,11 @@ jobs:
             exit 1
           fi
 
+          # The archive's THIRD_PARTY_NOTICES: the licenses of the Go modules
+          # and Go standard library compiled into these two programs, and of
+          # the web UI's npm packages.
+          sh scripts/notices.sh "$out"
+
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: bin-${{ matrix.goos }}-${{ matrix.goarch }}
@@ -269,10 +278,16 @@ jobs:
             if [ "$os" = windows ]; then ext=".exe"; fi
             stage="stage/${os}_${arch}"
             mkdir -p "$stage"
+            # Each build wrote the notices of its own programs.
+            notices="bins/bin-$os-$arch/THIRD_PARTY_NOTICES"
+            grep -Fq "  compa, for $os/$arch, " "$notices" && grep -Fq "  compa-kernel, for $os/$arch, " "$notices" || {
+              echo "$notices does not list compa and compa-kernel for $os/$arch" >&2
+              exit 1
+            }
             # Artifacts do not keep file modes, so set them here.
             install -m 0755 "bins/bin-$os-$arch/compa$ext" "bins/bin-$os-$arch/compa-kernel$ext" "$stage/"
-            install -m 0644 LICENSE NOTICE "$stage/"
-            files="compa$ext compa-kernel$ext LICENSE NOTICE"
+            install -m 0644 LICENSE NOTICE "$notices" "$stage/"
+            files="compa$ext compa-kernel$ext LICENSE NOTICE THIRD_PARTY_NOTICES"
             if [ "$os" = windows ]; then
               install -m 0644 web/backend/icon.ico "$stage/compa.ico"
               files="$files compa.ico"
@@ -313,7 +328,7 @@ jobs:
           cd dist
           for zip in *.zip; do
             contents=$(unzip -Z1 "$zip" | LC_ALL=C sort | tr '\n' ' ')
-            test "$contents" = "LICENSE NOTICE compa-kernel.exe compa.exe compa.ico " || {
+            test "$contents" = "LICENSE NOTICE THIRD_PARTY_NOTICES compa-kernel.exe compa.exe compa.ico " || {
               echo "$zip holds $contents" >&2
               exit 1
             }
@@ -321,7 +336,7 @@ jobs:
           for tgz in *.tar.gz; do
             contents=$(tar -tzf "$tgz" | LC_ALL=C sort | tr '\n' ' ')
             modes=$(tar -tvzf "$tgz" | awk '$6 == "compa" || $6 == "compa-kernel" { print $1 }' | sort -u)
-            test "$contents" = "LICENSE NOTICE compa compa-kernel " && test "$modes" = "-rwxr-xr-x" || {
+            test "$contents" = "LICENSE NOTICE THIRD_PARTY_NOTICES compa compa-kernel " && test "$modes" = "-rwxr-xr-x" || {
               echo "$tgz holds $contents with modes $modes" >&2
               exit 1
             }

@@ -71,4 +71,6 @@ problem in [SECURITY.md](SECURITY.md), and the changes in
 ## License
 
 MIT. See [LICENSE](LICENSE), and [NOTICE](NOTICE) for upstream attribution and
-for the Compa name and artwork, which the MIT License doesn't cover.
+for the Compa name and artwork, which the MIT License doesn't cover. Each
+release archive also holds `THIRD_PARTY_NOTICES`, the licenses of the
+third-party code in the programs.

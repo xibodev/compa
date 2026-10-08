@@ -28,6 +28,9 @@ function Fail([string]$Name) {
     $script:failures++
 }
 
+# New-Release VERSION: a fake release whose programs and license files differ
+# from other versions'. As with the real releases, 1.0.0 has no
+# THIRD_PARTY_NOTICES.
 function New-Release([string]$Version, [switch]$Corrupt) {
     $files = Join-Path $work "files\$Version"
     $dir = Join-Path $work "releases\v$Version"
@@ -35,6 +38,11 @@ function New-Release([string]$Version, [switch]$Corrupt) {
     foreach ($name in 'compa.exe', 'compa-kernel.exe') {
         Copy-Item -LiteralPath $helper -Destination (Join-Path $files $name)
         [IO.File]::AppendAllText((Join-Path $files $name), $Version)
+    }
+    Set-Content -LiteralPath (Join-Path $files 'LICENSE') -Value "MIT License $Version"
+    Set-Content -LiteralPath (Join-Path $files 'NOTICE') -Value "Compa $Version"
+    if ($Version -ne '1.0.0') {
+        Set-Content -LiteralPath (Join-Path $files 'THIRD_PARTY_NOTICES') -Value "THIRD-PARTY SOFTWARE NOTICES $Version"
     }
     $zip = Join-Path $dir "compa_${Version}_windows_$arch.zip"
     Compress-Archive -Path (Join-Path $files '*') -DestinationPath $zip
@@ -91,11 +99,17 @@ function Invoke-OnDesktop([string]$Version, [hashtable]$Vars = @{}) {
     }
 }
 
+# Test-Installed VERSION: the programs and license files of that release are
+# installed, and no license file it lacks.
 function Test-Installed([string]$Version) {
-    foreach ($name in 'compa.exe', 'compa-kernel.exe') {
+    foreach ($name in 'compa.exe', 'compa-kernel.exe', 'LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES') {
         $have = Join-Path $bin $name
-        if (-not (Test-Path -LiteralPath $have)) { return $false }
         $want = Join-Path $work "files\$Version\$name"
+        if (-not (Test-Path -LiteralPath $want)) {
+            if (Test-Path -LiteralPath $have) { return $false }
+            continue
+        }
+        if (-not (Test-Path -LiteralPath $have)) { return $false }
         if ((Get-FileHash -LiteralPath $have).Hash -ne (Get-FileHash -LiteralPath $want).Hash) { return $false }
     }
     return $true
@@ -198,10 +212,14 @@ try { Get-Content -Raw '$installer' | Invoke-Expression; 'no error' } catch { 'c
         Pass 'leaves the session as it was under iex, and reports the failure'
     } else { Fail 'leaves the session as it was under iex, and reports the failure' }
 
+    if ((Invoke-Installer '1.0.0' @{ COMPA_NO_START = '1' }) -and (Test-Installed '1.0.0') -and (Test-NoLeftover)) {
+        Pass 'installs an older release, and drops the license file it lacks'
+    } else { Fail 'installs an older release, and drops the license file it lacks' }
+
     if ((Invoke-Installer '2.0.0' @{ COMPA_UNINSTALL = '1' }) -and -not (Test-Path -LiteralPath (Join-Path $bin 'compa.exe')) -and
-        (Test-Path -LiteralPath $data)) {
-        Pass 'uninstalls the programs and keeps the data'
-    } else { Fail 'uninstalls the programs and keeps the data' }
+        -not (Test-Path -LiteralPath (Join-Path $bin 'LICENSE')) -and (Test-Path -LiteralPath $data)) {
+        Pass 'uninstalls the programs and license files, and keeps the data'
+    } else { Fail 'uninstalls the programs and license files, and keeps the data' }
 } finally {
     Get-Running | Stop-Process -Force -ErrorAction SilentlyContinue
     if ($server) { Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue }
