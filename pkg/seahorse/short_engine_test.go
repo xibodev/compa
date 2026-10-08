@@ -1915,6 +1915,36 @@ func TestAssemblerLazyInitRace(t *testing.T) {
 	}
 }
 
+// The compaction engine is created on first use like the assembler, so
+// concurrent first calls must not race either.
+func TestCompactionLazyInitRace(t *testing.T) {
+	for i := 0; i < 30; i++ {
+		e := newTestEngine(t)
+		ctx := context.Background()
+		sessionKey := fmt.Sprintf("compaction-race-%d", i)
+		if _, err := e.Ingest(ctx, sessionKey, []Message{
+			{Role: "user", Content: "hello", TokenCount: 5},
+		}); err != nil {
+			t.Fatalf("Ingest: %v", err)
+		}
+
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		for j := 0; j < 20; j++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				// Under budget: nothing to summarize, only the first use.
+				e.CompactUntilUnder(ctx, sessionKey, 1000)
+			}()
+		}
+		close(start)
+		wg.Wait()
+		e.Close()
+	}
+}
+
 // --- selectShallowestCondensationCandidate with non-consecutive depths ---
 
 func TestSelectShallowestCondensationWithNonConsecutiveDepths(t *testing.T) {
@@ -1959,11 +1989,8 @@ func TestSelectShallowestCondensationWithNonConsecutiveDepths(t *testing.T) {
 		}
 	}
 
-	// Initialize compaction engine (lazy init)
-	e.initCompactionOnce()
-
-	// Call selectShallowestCondensationCandidate
-	candidates, err := e.compaction.selectShallowestCondensationCandidate(ctx, conv.ConversationID, false)
+	// Call selectShallowestCondensationCandidate on the lazily created engine
+	candidates, err := e.loadCompaction().selectShallowestCondensationCandidate(ctx, conv.ConversationID, false)
 	if err != nil {
 		t.Fatalf("selectShallowestCondensationCandidate: %v", err)
 	}
