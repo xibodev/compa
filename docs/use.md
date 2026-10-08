@@ -103,7 +103,8 @@ as `^/home/me/notes/`; in JSON, each `\` of a Windows path is written `\\\\`.
 Commands start in the workspace and are blocked when they name other paths,
 except those `tools.allow_read_paths` matches. They still run as your user
 account, so this is a guard, not a sandbox. **Config** → **Run Commands**
-controls commands: **Allow Commands**, the command blacklist and the timeout.
+controls commands: **Allow Commands**, the command blacklist and whitelist, and
+the timeout.
 
 The agent sends messages only to the chat it is answering; set
 `tools.message.targets` to `any` to let it message any chat Compa is connected

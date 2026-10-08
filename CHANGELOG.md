@@ -41,6 +41,10 @@ Notable changes to Compa, newest first. Versions follow
 - When a background sub-agent that another sub-agent started fails on an
   internal error, the sub-agent that started it hears of the failure; it heard
   nothing.
+- A command that matches **Config** → **Run Commands** → **Command Whitelist**
+  skips the built-in dangerous patterns, as the setting says; the whitelist let
+  no command through. The **Command Blacklist** still blocks it, and the
+  setting's pattern tester now says so; it called such a command allowed.
 
 ## 3.0.0 - 2026-10-06
 
