@@ -16,6 +16,7 @@ import (
 	"github.com/xibodev/compa/v3/pkg/config"
 	runtimeevents "github.com/xibodev/compa/v3/pkg/events"
 	"github.com/xibodev/compa/v3/pkg/media"
+	"github.com/xibodev/compa/v3/pkg/session/history"
 	"github.com/xibodev/compa/v3/pkg/utils"
 )
 
@@ -3446,5 +3447,27 @@ func TestSplitMarkerStreamerForwardsTurnUsage(t *testing.T) {
 	}
 	if inner.inputTokens != 1234 || inner.outputTokens != 567 {
 		t.Errorf("inner usage = (%d, %d), want (1234, 567)", inner.inputTokens, inner.outputTokens)
+	}
+}
+
+// historyMockChannel serves session history: it keeps the reader source the
+// manager gives it.
+type historyMockChannel struct {
+	mockChannel
+	source func() history.Reader
+}
+
+func (c *historyMockChannel) SetSessionHistory(source func() history.Reader) { c.source = source }
+
+func TestSetSessionHistoryReachesTheChannelsThatServeIt(t *testing.T) {
+	ch := &historyMockChannel{}
+	m := newTestManager()
+	m.channels["web"] = ch
+	m.channels["telegram"] = &mockChannel{}
+
+	m.SetSessionHistory(func() history.Reader { return history.Reader{Dir: "sessions"} })
+
+	if ch.source == nil || ch.source().Dir != "sessions" {
+		t.Fatal("the channel that serves session history did not get the reader")
 	}
 }

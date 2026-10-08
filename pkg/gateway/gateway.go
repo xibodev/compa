@@ -56,6 +56,7 @@ import (
 	"github.com/xibodev/compa/v3/pkg/netbind"
 	"github.com/xibodev/compa/v3/pkg/pid"
 	"github.com/xibodev/compa/v3/pkg/providers"
+	"github.com/xibodev/compa/v3/pkg/session/history"
 	"github.com/xibodev/compa/v3/pkg/state"
 	"github.com/xibodev/compa/v3/pkg/tools"
 )
@@ -607,6 +608,15 @@ func setupAndStartServices(
 
 	agentLoop.SetChannelManager(runningServices.ChannelManager)
 	agentLoop.SetMediaStore(runningServices.MediaStore)
+	// The web chat serves its session history from the workspace of the
+	// config in force, which a reload may change.
+	runningServices.ChannelManager.SetSessionHistory(func() history.Reader {
+		cfg := agentLoop.GetConfig()
+		return history.Reader{
+			Dir:           history.SessionsDir(cfg.Agents.Defaults.Workspace),
+			MaxArgsLength: cfg.Agents.Defaults.GetToolFeedbackMaxArgsLength(),
+		}
+	})
 
 	transcriber := asr.DetectTranscriber(cfg)
 	if transcriber != nil {

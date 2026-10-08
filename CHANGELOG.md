@@ -14,6 +14,11 @@ Notable changes to Compa, newest first. Versions follow
   route's next target, or fails with `agent.ErrToolsRequired` when no target
   takes tools, instead of going on without tools. See
   [Embed the Go runtime](docs/embedding.md).
+- The gateway serves the web chat's session history to clients with the web
+  chat token: `GET /web/sessions` lists the sessions, newest first (`offset`
+  and `limit`), and `GET /web/sessions/{session_id}` returns one's transcript,
+  with the JSON the launcher's `/api/sessions` answers. A session is found by
+  the id the client opened `/web/ws` with, in any case.
 
 ### Fixed
 
@@ -38,6 +43,8 @@ Notable changes to Compa, newest first. Versions follow
 - **Gateway restart required** clears once the gateway reloads the saved
   config by itself, with `gateway.hot_reload` on or after `/reload` in a chat;
   it stayed until the gateway restarted.
+- On Windows, the chat page finds earlier conversations when the workspace is
+  written as `~\folder`; it looked in the home folder instead.
 
 ## 3.0.0 - 2026-10-06
 
