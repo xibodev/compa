@@ -38,6 +38,9 @@ Notable changes to Compa, newest first. Versions follow
 - **Gateway restart required** clears once the gateway reloads the saved
   config by itself, with `gateway.hot_reload` on or after `/reload` in a chat;
   it stayed until the gateway restarted.
+- When a background sub-agent that another sub-agent started fails on an
+  internal error, the sub-agent that started it hears of the failure; it heard
+  nothing.
 
 ## 3.0.0 - 2026-10-06
 
