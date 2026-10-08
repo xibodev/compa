@@ -465,7 +465,13 @@ func spawnSubTurn(
 		if r := recover(); r != nil {
 			logger.RecoverPanicNoExit(r)
 			err = fmt.Errorf("subturn panicked: %v", r)
-			result = nil
+			// The parent hears of a panic as of any other failure. A nested
+			// async sub-agent reaches its parent only through the parent's
+			// pending results, which drop a nil result.
+			result = &tools.ToolResult{
+				Err:    err,
+				ForLLM: fmt.Sprintf("SubTurn failed: %v", err),
+			}
 			logger.ErrorCF("subturn", "SubTurn panicked", map[string]any{
 				"child_id":  childID,
 				"parent_id": parentTS.turnID,
