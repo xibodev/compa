@@ -15,6 +15,11 @@ Notable changes to Compa, newest first. Versions follow
   takes tools, instead of going on without tools. See
   [Embed the Go runtime](docs/embedding.md).
 
+### Changed
+
+- For Go programs that embed Compa: `session.SessionStore`'s `AddMessage` and
+  `AddFullMessage` return an error.
+
 ### Fixed
 
 - `compa-kernel mcp add`, `mcp remove` and `mcp edit` save their change when
@@ -52,6 +57,9 @@ Notable changes to Compa, newest first. Versions follow
   without tools, `agent.llm.retry` reports the reason `tools_unsupported`, and
   the retried request no longer tells the model to always use tools; only the
   log said so.
+- When a message can't be saved to the conversation, for example on a full
+  disk, the chat says so, the turn emits `agent.error` with stage
+  `session_save`, and gateway.log has the error; only stderr said so.
 
 ## 3.0.0 - 2026-10-06
 

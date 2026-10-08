@@ -1,6 +1,8 @@
 package session_test
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"testing"
 
@@ -23,6 +25,30 @@ func newBackend(t *testing.T) *session.JSONLBackend {
 	}
 	t.Cleanup(func() { store.Close() })
 	return session.NewJSONLBackend(store)
+}
+
+// failingAppendStore is a memory.Store whose appends fail.
+type failingAppendStore struct {
+	memory.Store
+	err error
+}
+
+func (s failingAppendStore) AddMessage(context.Context, string, string, string) error { return s.err }
+
+func (s failingAppendStore) AddFullMessage(context.Context, string, providers.Message) error {
+	return s.err
+}
+
+// The backend returns a failed append's error, so the turn can report it.
+func TestJSONLBackend_AddReturnsTheStoreError(t *testing.T) {
+	want := errors.New("no space left on device")
+	b := session.NewJSONLBackend(failingAppendStore{err: want})
+	if err := b.AddMessage("s1", "user", "hello"); !errors.Is(err, want) {
+		t.Errorf("AddMessage() error = %v, want %v", err, want)
+	}
+	if err := b.AddFullMessage("s1", providers.Message{Role: "assistant", Content: "hi"}); !errors.Is(err, want) {
+		t.Errorf("AddFullMessage() error = %v, want %v", err, want)
+	}
 }
 
 func TestJSONLBackend_AddAndGetHistory(t *testing.T) {

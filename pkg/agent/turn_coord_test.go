@@ -503,6 +503,66 @@ func TestRunTurn_FinalizeSaveErrorEmitsErrorTurnEnd(t *testing.T) {
 	}
 }
 
+type appendFailingSessionStore struct {
+	session.SessionStore
+	err error
+}
+
+func (s *appendFailingSessionStore) AddMessage(string, string, string) error { return s.err }
+
+func (s *appendFailingSessionStore) AddFullMessage(string, providers.Message) error { return s.err }
+
+// A turn whose messages can't be appended to its session still answers, and
+// reports the failure once: agent.error with stage session_save, and a notice
+// in the chat.
+func TestRunTurn_SessionAppendErrorIsReportedOnce(t *testing.T) {
+	store, err := memory.NewJSONLStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewJSONLStore() error = %v", err)
+	}
+	msgBus := bus.NewMessageBus()
+	al := NewAgentLoop(identityTestConfig(t, t.TempDir()), msgBus, &simpleConvProvider{})
+	defer al.Close()
+	appendErr := errors.New("no space left on device")
+	al.registry.GetDefaultAgent().Sessions = &appendFailingSessionStore{
+		SessionStore: session.NewJSONLBackend(store),
+		err:          appendErr,
+	}
+	runtimeCh, closeRuntimeEvents := subscribeRuntimeEventsForTest(t, al, 16, runtimeevents.KindAgentError)
+	defer closeRuntimeEvents()
+
+	// The user message and the reply both fail to append.
+	reply, err := al.ProcessDirectWithChannel(context.Background(), "hello", "session-append-fail", "test", "chat1")
+	if err != nil || reply == "" {
+		t.Fatalf("reply = %q, error = %v; want the reply", reply, err)
+	}
+
+	var reported []string
+	for _, evt := range collectRuntimeEventStream(runtimeCh) {
+		if payload, ok := evt.Payload.(ErrorPayload); ok && payload.Stage == "session_save" {
+			reported = append(reported, payload.Message)
+		}
+	}
+	if len(reported) != 1 || reported[0] != appendErr.Error() {
+		t.Fatalf("session_save errors = %q, want one: %q", reported, appendErr)
+	}
+
+	var notices []string
+	for waiting := true; waiting; {
+		select {
+		case out := <-msgBus.OutboundChan():
+			if strings.Contains(out.Content, "Couldn't save this conversation") {
+				notices = append(notices, out.Content)
+			}
+		case <-time.After(200 * time.Millisecond):
+			waiting = false
+		}
+	}
+	if len(notices) != 1 || !strings.Contains(notices[0], appendErr.Error()) {
+		t.Fatalf("notices = %q, want one naming the error", notices)
+	}
+}
+
 func TestPipeline_CallLLM_WithToolCall(t *testing.T) {
 	provider := &toolCallRespProvider{
 		toolName: "web_search",
