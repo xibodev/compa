@@ -105,6 +105,11 @@ type Message struct {
 	PromptLayer  string `json:"-"`
 	PromptSlot   string `json:"-"`
 	PromptSource string `json:"-"`
+
+	// MessageID is the channel's ID of the inbound message a user message
+	// came from, such as the id of a web chat message.send frame. It is
+	// internal too: it reaches neither a provider nor the session.
+	MessageID string `json:"-"`
 }
 
 type ToolDefinition struct {

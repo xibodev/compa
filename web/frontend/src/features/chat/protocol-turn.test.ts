@@ -14,6 +14,8 @@ const SESSION = "s-1"
 describe("web chat frames", () => {
   beforeEach(() => {
     vi.spyOn(console, "error").mockImplementation(() => {})
+    // No turn is open: a test that starts one ends it here at the latest.
+    handleWebChatMessage({ type: "turn.end" }, SESSION)
     updateChatStore({
       messages: [],
       isTyping: false,
@@ -46,6 +48,36 @@ describe("web chat frames", () => {
 
     expect(getChatState().isTurnActive).toBe(false)
     expect(getChatState().messages.map((m) => m.content)).toEqual(["Hello"])
+  })
+
+  it("keeps a turn running when typing stops mid-turn, until turn.end", () => {
+    handleWebChatMessage({ type: "typing.start" }, SESSION)
+    handleWebChatMessage(
+      { type: "turn.start", payload: { request_id: "msg-1" } },
+      SESSION,
+    )
+    // A message sent mid-turn stops the typing of the one before it.
+    handleWebChatMessage({ type: "typing.stop" }, SESSION)
+    expect(getChatState().isTyping).toBe(false)
+    expect(getChatState().isTurnActive).toBe(true)
+
+    handleWebChatMessage(
+      {
+        type: "message.create",
+        payload: { message_id: "a1", content: "Done" },
+      },
+      SESSION,
+    )
+    expect(getChatState().isTurnActive).toBe(true)
+
+    handleWebChatMessage(
+      {
+        type: "turn.end",
+        payload: { request_id: "msg-1", status: "completed" },
+      },
+      SESSION,
+    )
+    expect(getChatState().isTurnActive).toBe(false)
   })
 
   it("gives a refused message back to the composer", () => {

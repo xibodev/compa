@@ -350,6 +350,9 @@ type turnState struct {
 	// sessionWriteReported is set once the turn has reported a message it
 	// couldn't append to its session.
 	sessionWriteReported atomic.Bool
+	// notices tell the chat's channel when this turn starts and ends, when
+	// the channel observes turns.
+	notices *turnNotices
 
 	// SubTurn support
 	depth                int                    // SubTurn depth (0 for root turn)

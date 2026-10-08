@@ -112,6 +112,7 @@ func (al *AgentLoop) claimOrSteer(
 		Content:            msg.Content,
 		Media:              append([]string(nil), msg.Media...),
 		RequestedSelection: strings.TrimSpace(msg.Context.Raw[bus.MetadataKeyModelSelection]),
+		MessageID:          msg.Context.MessageID,
 	}); err != nil {
 		al.reportSteeringFailure(ctx, msg, sessionKey, err)
 	}

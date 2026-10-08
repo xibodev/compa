@@ -24,6 +24,13 @@ Notable changes to Compa, newest first. Versions follow
 
 - For Go programs that embed Compa: `session.SessionStore`'s `AddMessage` and
   `AddFullMessage` return an error.
+- The web chat tells its clients when a turn starts and ends. A `turn.start`
+  frame comes before the reply, and a `turn.end` frame after all of it, with
+  `status` (`completed`, `error` or `aborted`) and, on an error, `error`. Both
+  name the `message.send` frames the turn answers in `request_id` and
+  `request_ids`, including messages sent while it ran. The chat page uses
+  them, so it no longer takes a turn for finished when typing stops early, as
+  when you send a message mid-turn.
 
 ### Fixed
 

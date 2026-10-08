@@ -31,14 +31,17 @@ func (al *AgentLoop) runTurnWithSteering(ctx context.Context, initialMsg bus.Inb
 	// Build continuation target
 	target, targetErr := al.buildContinuationTarget(initialMsg)
 
-	// Process the initial message
-	response, err := al.processMessage(ctx, initialMsg)
+	// Process the initial message. A channel that observes turns hears when
+	// the turn starts, and that it ended once its reply is out.
+	notices := al.newTurnNotices(initialMsg.Channel, initialMsg.ChatID, &initialMsg.Context)
+	response, err := al.processMessage(withTurnNotices(ctx, notices), initialMsg)
 	if err != nil {
 		errTarget := target
 		if errTarget == nil {
 			errTarget = al.continuationTargetFor(initialMsg, initialMsg.SessionKey, "")
 		}
 		if !al.maybePublishErrorTo(ctx, errTarget, err) {
+			notices.end(ctx)
 			return // context canceled
 		}
 		response = ""
@@ -50,6 +53,7 @@ func (al *AgentLoop) runTurnWithSteering(ctx context.Context, initialMsg bus.Inb
 				"channel": initialMsg.Channel,
 				"error":   targetErr.Error(),
 			})
+		notices.end(ctx)
 		return
 	}
 
@@ -59,6 +63,7 @@ func (al *AgentLoop) runTurnWithSteering(ctx context.Context, initialMsg bus.Inb
 	if response != "" {
 		al.publishTargetResponse(ctx, target, response)
 	}
+	notices.end(ctx)
 	if err := al.drainQueuedSteeringContinuations(ctx, target); err != nil {
 		logger.WarnCF("agent", "Failed to continue queued steering",
 			map[string]any{
@@ -92,14 +97,18 @@ func (al *AgentLoop) drainQueuedSteeringContinuations(
 				"queue_depth": al.pendingSteeringCountForScope(target.SessionKey),
 			})
 
-		continued, err := al.continueTarget(ctx, target)
+		notices := al.newTurnNotices(target.Channel, target.ChatID, target.Inbound)
+		continued, err := al.continueTarget(withTurnNotices(ctx, notices), target)
 		if err != nil {
+			notices.end(ctx)
 			return err
 		}
 		if continued == "" {
+			notices.end(ctx)
 			break
 		}
 		al.publishTargetResponse(ctx, target, continued)
+		notices.end(ctx)
 	}
 
 	return nil

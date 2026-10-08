@@ -19,6 +19,11 @@ export interface WebChatMessage {
   payload?: Record<string, unknown>
 }
 
+/**
+ * The session whose turn started (turn.start) and hasn't ended (turn.end).
+ */
+let openTurnSession = ""
+
 function parseAttachments(
   payload: Record<string, unknown>,
 ): ChatAttachment[] | undefined {
@@ -237,6 +242,23 @@ export function handleWebChatMessage(
       break
 
     case "typing.stop":
+      // Inside a turn, typing can stop before the reply is done, as when a
+      // message arrives mid-turn: turn.end ends the turn. Without turn
+      // frames, as for a command, typing.stop does.
+      updateChatStore(
+        openTurnSession === expectedSessionId
+          ? { isTyping: false }
+          : { isTyping: false, isTurnActive: false },
+      )
+      break
+
+    case "turn.start":
+      openTurnSession = expectedSessionId
+      updateChatStore({ isTurnActive: true })
+      break
+
+    case "turn.end":
+      openTurnSession = ""
       updateChatStore({ isTyping: false, isTurnActive: false })
       break
 

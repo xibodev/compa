@@ -35,6 +35,13 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 		_ = ts.requestHardAbort()
 	}
 
+	// A channel that observes turns hears that this one started before any
+	// frame of its reply.
+	if notices := turnNoticesFrom(ctx); notices.claim(ts) {
+		ts.notices = notices
+		notices.start(turnCtx)
+	}
+
 	turnStatus := TurnEndStatusCompleted
 	defer func() {
 		attemptedSkills := ts.attemptedSkillsSnapshot()
@@ -51,6 +58,7 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 		if turnStatus == TurnEndStatusError && turnErr != nil {
 			failure = turnErr.Error()
 		}
+		ts.notices.finish(turnStatus, failure)
 		al.emitEvent(
 			runtimeevents.KindAgentTurnEnd,
 			ts.eventMeta("runTurn", "turn.end"),
@@ -162,6 +170,7 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 			for i, pm := range pendingMessages {
 				messages = append(messages, resolvedPending[i])
 				totalContentLen += len(pm.Content)
+				ts.notices.answer(pm.MessageID)
 				if !ts.opts.NoHistory {
 					ts.noteSessionWrite(turnCtx, al, ts.agent.Sessions.AddFullMessage(ts.sessionKey, pm))
 					ts.recordPersistedMessage(pm)

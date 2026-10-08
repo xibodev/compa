@@ -1562,6 +1562,10 @@ func (m *Manager) runWorker(ctx context.Context, name string, w *channelWorker) 
 			if !ok {
 				return
 			}
+			if msg.Turn != nil {
+				m.deliverTurnNotice(ctx, name, w.ch, msg)
+				continue
+			}
 			maxLen := 0
 			if mlp, ok := w.ch.(MessageLengthProvider); ok {
 				maxLen = mlp.MaxMessageLength()
@@ -1600,6 +1604,36 @@ func (m *Manager) runWorker(ctx context.Context, name string, w *channelWorker) 
 		case <-ctx.Done():
 			return
 		}
+	}
+}
+
+// deliverTurnNotice tells a channel that observes turns that a turn of the
+// message's chat started or ended; other channels never see the notice. It
+// runs on the channel's worker, so a notice keeps its place among the chat's
+// outbound messages. It never sends content.
+func (m *Manager) deliverTurnNotice(ctx context.Context, name string, ch Channel, msg bus.OutboundMessage) {
+	notice := msg.Turn
+	if notice.Delivered != nil {
+		defer close(notice.Delivered)
+	}
+	observer, ok := ch.(TurnObserver)
+	if !ok {
+		return
+	}
+	chatID := outboundMessageChatID(msg)
+	var err error
+	if notice.Ended {
+		err = observer.TurnEnded(ctx, chatID, *notice)
+	} else {
+		err = observer.TurnStarted(ctx, chatID, *notice)
+	}
+	if err != nil {
+		logger.WarnCF("channels", "Failed to tell the channel about a turn", map[string]any{
+			"channel": name,
+			"chat_id": chatID,
+			"ended":   notice.Ended,
+			"error":   err.Error(),
+		})
 	}
 }
 
@@ -1769,7 +1803,12 @@ func (m *Manager) dispatchOutbound(ctx context.Context) {
 		func(msg bus.OutboundMessage) string { return outboundMessageChannel(msg) },
 		func(ctx context.Context, w *channelWorker, msg bus.OutboundMessage) bool {
 			name := outboundMessageChannel(msg)
-			switch w.pending.push(msg, w.stop) {
+			result := w.pending.push(msg, w.stop)
+			if msg.Turn != nil {
+				// A turn notice isn't a message: it gets no outbound events.
+				return true
+			}
+			switch result {
 			case pushStopped:
 				logger.WarnCF("channels", "Channel worker stopped, dropping outbound message",
 					map[string]any{"channel": name})
