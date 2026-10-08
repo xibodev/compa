@@ -112,8 +112,13 @@ decides it.
 | `auth login -p <openai\|anthropic>` | Store an API key for a provider. |
 | `auth logout [-p <provider>]` | Remove stored credentials (OpenAI and Anthropic without `-p`). |
 | `auth status` | Show current auth status. |
-| `auth weixin` | Connect a WeChat personal account via QR code. |
-| `auth wecom` | Scan a WeCom QR code and set up the WeCom channel. |
+| `auth whatsapp` | Link a WhatsApp account by QR code and turn on the WhatsApp channel; then restart the gateway. See [WhatsApp](use.md#whatsapp). |
+| `auth weixin` | Connect a WeChat personal account via QR code. Only in builds made with the `paused_channels` tag. |
+| `auth wecom` | Scan a WeCom QR code and set up the WeCom channel. Only in builds made with the `paused_channels` tag. |
+
+`auth whatsapp` prints the QR code in the terminal. In WhatsApp on your phone,
+choose **Settings** → **Linked devices** → **Link a device** and scan it within
+5 minutes.
 
 ### JSON output
 
@@ -238,7 +243,7 @@ keeps its task and pattern records for 30 days.
 | `COMPA_SUBPROCESS_ALLOW` | Program names, separated by commas, that modules may run, out of those each module declares. Unset, every declared program is allowed. |
 | `COMPA_DNS_SERVER` | On Linux without `/etc/resolv.conf`, the DNS servers `compa-kernel` asks, separated by `;` (default `8.8.8.8:53;1.1.1.1:53`). |
 | `COMPA_CHANNELS_<NAME>_ENABLED` | Turns the `channel_list` entry `<NAME>` on (`true`) or off (`false`) instead of its `enabled`, such as `COMPA_CHANNELS_WEB_ENABLED=true` for the web chat. `<NAME>` is the entry's name in capitals, with `_` for each character other than a letter or digit. |
-| `COMPA_CHANNELS_WEB_STREAMING_ENABLED`, `COMPA_CHANNELS_TELEGRAM_STREAMING_ENABLED` | Turn streamed replies on or off in the web chat or on Telegram. The same prefix with `_STREAMING_THROTTLE_SECONDS` and `_STREAMING_MIN_GROWTH_CHARS` sets the channel's `throttle_seconds` and `min_growth_chars`. |
+| `COMPA_CHANNELS_WEB_STREAMING_ENABLED` | Turns streamed replies on or off in the web chat. The same prefix with `_STREAMING_THROTTLE_SECONDS` and `_STREAMING_MIN_GROWTH_CHARS` sets its `throttle_seconds` and `min_growth_chars`. `COMPA_CHANNELS_TELEGRAM_STREAMING_*` does the same for Telegram, a [paused channel](use.md#paused-channels). |
 
 Many `config.json` settings can be set with a variable named after their place
 in the file, such as `COMPA_AGENTS_DEFAULTS_WORKSPACE` for

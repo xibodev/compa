@@ -162,6 +162,12 @@ another folder to keep them apart. On macOS, the menu-bar icon needs `compa`
 built with cgo, which is the default when Xcode's command-line tools are
 installed. [CONTRIBUTING.md](../CONTRIBUTING.md) covers tests and checks.
 
+These builds have the web chat, WhatsApp, Slack and the Slack and Teams
+webhooks. The [paused channels](use.md#paused-channels) are only in builds made
+with `-tags goolm,stdjson,paused_channels`; they aren't maintained and may not
+compile. Every build links GPL-3.0 code for WhatsApp; see
+[NOTICE](../NOTICE).
+
 ## Ports
 
 | Port | Used by | Change it with |

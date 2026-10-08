@@ -1047,7 +1047,7 @@ func TestConfigExample_LoadsAndUsesAutoWebProvider(t *testing.T) {
 	}
 	// It shows the defaults.
 	if !cfg.Commands.OwnerOnly || !cfg.Logging.RedactSecrets ||
-		cfg.Tools.Message.Targets != MessageTargetsCurrentChat ||
+		cfg.Tools.Message.Targets != MessageTargetsAny ||
 		!reflect.DeepEqual(cfg.Tools.Approval, approval.DefaultPolicy()) {
 		t.Fatalf("config.example.json does not show the defaults: commands=%+v logging=%+v message=%q approval=%+v",
 			cfg.Commands, cfg.Logging, cfg.Tools.Message.Targets, cfg.Tools.Approval)

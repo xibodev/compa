@@ -14,9 +14,12 @@ on it; report security problems as [SECURITY.md](SECURITY.md) describes.
 
 ## Build
 
-Every Go command takes the build tags `goolm,stdjson`. The `whatsapp_native`
-tag adds the WhatsApp channel that links your own account; it links GPL-3.0
-code (see [NOTICE](NOTICE)), so releases leave it out.
+Every Go command takes the build tags `goolm,stdjson`. Add `paused_channels`
+(`-tags goolm,stdjson,paused_channels`, or
+`make product GO_BUILD_TAGS=goolm,stdjson,paused_channels`) to include the
+[paused channels](docs/use.md#paused-channels), such as Telegram and Discord.
+They aren't maintained and may not compile. Every build includes the WhatsApp
+channel, which links GPL-3.0 code; see [NOTICE](NOTICE).
 
 Build the web UI first, as [Run from source](docs/install.md#run-from-source)
 shows: `compa` embeds `web/backend/dist` when it links, and a stale or missing

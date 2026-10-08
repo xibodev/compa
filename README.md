@@ -42,8 +42,9 @@ installs, options, updating and uninstalling: [docs/install.md](docs/install.md)
   providers; and more through an optional extension app. A route tries a list
   of models in order until one answers.
 - Voice: dictation and spoken replies, push-to-talk or hands-free.
-- Chat apps: talk to Compa from Telegram, Discord, Slack, WhatsApp, Matrix and
-  more.
+- Chat apps: talk to Compa from WhatsApp, as a linked device of your account,
+  or from a Slack bot. It answers only you, in direct messages. Slack and
+  Teams webhooks can receive its notifications.
 - Skills (instructions for particular tasks, with a skill hub to find more) and
   installable modules that add capabilities.
 - Compa keeps its settings, chats and keys in `~/.compa` on your computer;
@@ -72,5 +73,8 @@ problem in [SECURITY.md](SECURITY.md), and the changes in
 
 ## License
 
-MIT. See [LICENSE](LICENSE), and [NOTICE](NOTICE) for upstream attribution and
-for the Compa name and artwork, which the MIT License doesn't cover.
+MIT. See [LICENSE](LICENSE), and [NOTICE](NOTICE) for upstream attribution,
+for the Compa name and artwork, which the MIT License doesn't cover, and for
+go.mau.fi/libsignal: the WhatsApp channel links this GPL-3.0 library, so
+anyone who distributes the built programs must do so under the terms of the
+GPL-3.0.

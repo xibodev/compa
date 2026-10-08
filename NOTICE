@@ -35,8 +35,7 @@ brand/LICENSES.md states the terms that apply to them.
 Third-party software
 --------------------
 
-Builds made with the whatsapp_native build tag, such as those of
-`make build-whatsapp-native`, also link go.mau.fi/libsignal, which is licensed
-under the GNU General Public License version 3. Anyone who distributes such a
-build must do so under the terms of the GPL-3.0. Compa's release builds leave
-this tag out.
+The WhatsApp channel (pkg/channels/whatsapp) links go.mau.fi/libsignal, which
+is licensed under the GNU General Public License version 3. Every build of
+compa and compa-kernel includes it, release builds too. Anyone who distributes
+these programs must do so under the terms of the GPL-3.0.

@@ -7,6 +7,14 @@ Notable changes to Compa, newest first. Versions follow
 
 ### Added
 
+- `compa-kernel auth whatsapp`, and **Link WhatsApp** on the WhatsApp page,
+  link a WhatsApp account by QR code and turn the channel on. See
+  [WhatsApp](docs/use.md#whatsapp).
+- On WhatsApp, photos, voice notes, audio, video and documents reach the
+  agent, up to 50 MB per file.
+- Results of scheduled jobs, heartbeat messages and approval requests also go
+  to every enabled Slack and Teams webhook, to its `default` target. See
+  [Webhooks and notifications](docs/use.md#webhooks-and-notifications).
 - A program that embeds Compa can give the agent its own identity and leave
   out the memory and workspace parts of the prompt, with the `AGENT.md` keys
   `name`, `description`, `memory` and `privateWorkspace`. With
@@ -22,6 +30,33 @@ Notable changes to Compa, newest first. Versions follow
 
 ### Changed
 
+- **Breaking:** default builds have only the web chat, WhatsApp, Slack and the
+  Slack and Teams webhooks. Telegram, Discord, Delta Chat, DingTalk, Feishu,
+  IRC, LINE, MaixCam, Matrix, MQTT, OneBot, QQ, VK, WeCom and WeChat are
+  paused: only builds made with the `paused_channels` build tag have them, as
+  well as `compa-kernel auth weixin` and `auth wecom`. They aren't maintained
+  and may not compile. A config that turns one on still loads, and the gateway
+  logs `Factory not registered` for it. See
+  [Paused channels](docs/use.md#paused-channels).
+- **Breaking:** a channel answers only its owner: the accounts in **Allow
+  From**, in direct messages. It ignores group chats, rooms and threads, and
+  `*` and group IDs admit no one. While **Allow From** is empty, a direct
+  message makes a pairing request (at most 3 per channel, kept 1 hour);
+  approving one makes that account the only entry in **Allow From**. After
+  that, approving another request is refused. `dm_policy`, `group_policy` and
+  `group_trigger` are removed; a config that has them still loads, and they
+  are dropped. See [Who Compa answers](docs/use.md#who-compa-answers).
+- **Breaking:** WhatsApp is the native channel, a linked device of your
+  account. The bridge (`bridge_url`, `use_native`) and the **Chats** setting
+  are gone, and so are the `whatsapp_native` build tag and
+  `make build-whatsapp-native`. An entry of type `whatsapp_native` is read as
+  `whatsapp`. Every build now links go.mau.fi/libsignal, which is GPL-3.0; see
+  [NOTICE](NOTICE).
+- **Breaking:** the `message` tool sends to any chat on any connected channel
+  by default. `tools.message.targets: "current_chat"` keeps it to the chat the
+  turn came from.
+- **Breaking:** Slack needs the app-level token (`xapp-`) as well as the bot
+  token; with only the bot token, the channel isn't set up.
 - For Go programs that embed Compa: `session.SessionStore`'s `AddMessage` and
   `AddFullMessage` return an error.
 - The web chat tells its clients when a turn starts and ends. A `turn.start`

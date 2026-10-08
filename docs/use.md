@@ -108,9 +108,13 @@ account, so this is a guard, not a sandbox. **Config** → **Run Commands**
 controls commands: **Allow Commands**, the command blacklist and whitelist, and
 the timeout.
 
-The agent sends messages only to the chat it is answering; set
-`tools.message.targets` to `any` to let it message any chat Compa is connected
-to.
+With the `message` tool, the agent can send to any chat on any connected
+channel, not only the chat it is answering. For example, it can message a
+WhatsApp contact by number; on WhatsApp the message comes from your account.
+To keep it to the chat the turn came from, set **Send To** on the `message`
+tool's card on the **Tools** page to **Current chat**, or
+`tools.message.targets` to `current_chat`. To have it check with you first, add
+an `ask` rule for the `message` tool (see [Approvals](#approvals)).
 
 ### MCP servers
 
@@ -202,12 +206,15 @@ show in full (over 3000 characters) is refused without asking. Answer
 within 10 minutes is refused. Only you can answer, whatever
 `commands.owner_only` says.
 
-When the request comes from your own message, Compa asks in that chat. When it
-comes from someone else's message or from a scheduled job, Compa asks in your
-chat: the conversation you last wrote to Compa from, in the browser or a chat
-app. Until you have written to Compa there, such requests are refused, as is
-any request with no chat to ask in. The terminal shows requests only in
-interactive `compa-kernel agent`.
+When the request comes from your message, Compa asks in that chat. When it
+comes from a scheduled job or the heartbeat, Compa asks in your chat: the
+conversation you last wrote to Compa from, in the web chat, WhatsApp or Slack.
+Until you have written to Compa there, such requests are refused, as is any
+request with no chat to ask in. A copy of each request also goes to the
+enabled Slack and Teams webhooks (see
+[Webhooks and notifications](#webhooks-and-notifications)), but you answer in
+your chat, not in a webhook. The terminal shows requests only in interactive
+`compa-kernel agent`.
 
 **Config** → **Approvals** shows one row per rule (**Tool**, **Source**,
 **From**, **Hints**, **Action**), **Add rule** and **Default**. Saving the
@@ -261,66 +268,139 @@ transcriptions** replies to them with the transcript.
 
 ## Channels
 
-Channels let you talk to Compa from chat apps: Telegram, Discord, Slack,
-WhatsApp, Matrix, LINE, IRC, Feishu, DingTalk, WeCom, WeChat, QQ and others.
-Chat in the browser works without any of them.
+Channels let you talk to Compa from outside the browser. These are in every
+build:
 
-Open **Channels**, pick an app, fill in its fields (usually a bot token from
-that app), turn on **Enable channel** and save. If Compa says the gateway needs
-a restart (**Gateway restart required**), choose **Restart gateway** in the
-status menu at the top. WeChat and WeCom connect by scanning a QR code.
+- **Web chat**: the **Chat** page of the dashboard. It needs no setup.
+- **WhatsApp**: Compa is a linked device of your WhatsApp account.
+- **Slack**: a Slack app's bot that you message directly.
+- **Slack webhook** and **Teams webhook**: they only send, to a Slack or
+  Microsoft Teams channel.
 
-**Allow From** lists the user and group IDs that may use a channel; `*` lets
-anyone in. Allowing a group by its ID also admits its forum topics and threads
-(Telegram topics, Slack threads). Two settings on each channel's page decide
-who else gets an answer:
+Other chat apps are paused; see [Paused channels](#paused-channels).
 
-- **DM Policy** (`dm_policy`), for direct messages. With **Pairing**, the
-  default, Compa doesn't answer someone outside **Allow From**: they show up
-  under **Pairing Requests** on the channel's page, where **Approve** adds
-  them to **Allow From** and **Deny** drops the request; a later message makes
-  a new one. A request is kept for 7 days, at most 20 per channel.
-  **Allowlist** answers only **Allow From**, **Open** answers anyone, and
-  **Disabled** answers no direct messages.
-- **Group Policy** (`group_policy`), for groups and rooms. **Allowlist**, the
-  default, answers only the senders and groups in **Allow From**; **Open**
-  answers everyone in the group; **Disabled** ignores groups. In a group Compa
-  answers only when it's mentioned, unless you turn off **Group Mention Only**
-  on the channel's page (**Mention Only** on Discord), or, for a channel
-  without that switch, set `group_trigger.mention_only` to `false`.
+Open **Channels**, pick Slack, WhatsApp or the web chat, fill in its fields,
+turn on **Enable channel** and save. If Compa says the gateway needs a restart
+(**Gateway restart required**), choose **Restart gateway** in the status menu
+at the top. The webhooks are set up in `config.json`; see
+[Webhooks and notifications](#webhooks-and-notifications).
 
-Slash commands such as `/reload` work only for you while `commands.owner_only`
-is on, the default: in a chat app that means a sender listed by ID in **Allow
-From**, and in the browser and the terminal it's always you. `/help` lists the
-commands. Everyone listed by ID counts as you, so approving a pairing request
-lets that person run commands and answer approval requests, which Compa may
-then post in their chat.
+### Who Compa answers
 
-A channel without `dm_policy` or `group_policy` in `config.json` takes them
-from **Allow From**: with `*` both are **Open**; otherwise groups are
-**Allowlist**, and direct messages **Allowlist** when it lists IDs and
-**Pairing** when it's empty.
+Compa serves one person, you. A channel answers only the accounts its **Allow
+From** (`allow_from`) lists, and only in direct messages. It ignores group
+chats, rooms and threads before doing any work. `*` and group IDs in **Allow
+From** admit no one; for `*`, Compa logs a warning.
 
-Saving **Allow From**, **DM Policy** or **Group Policy**, or approving a
-pairing request, applies at once, together with your other saved changes.
+To add your account, leave **Allow From** empty and send the bot a direct
+message. Compa doesn't answer it. The sender shows under **Pairing Requests**
+on the channel's page instead. Each channel keeps at most 3 requests, for 1
+hour, in `~/.compa/pairing.json`. **Approve** binds that account: it becomes
+the only entry in **Allow From**, the channel's other requests are dropped, and
+the change applies without a restart. **Deny** drops a request.
 
-Anyone a channel answers can use Compa and its tools. **Allow Remote
-Commands** (**Config** → **Run Commands**), on by default, lets them run
-commands on your computer; turned off, chat apps and the browser chat can't
-run commands, only the terminal. To be asked first instead, add an `ask` rule
-for `exec` from `chat` (see [Approvals](#approvals)).
+Once **Allow From** lists an account, Compa ignores everyone else and records
+no requests, and approving a request is refused. To use another account of
+your own, add it to **Allow From** yourself. Saving **Allow From** applies at
+once, together with your other saved changes.
 
-The WhatsApp channel talks to a bridge program you run, and trusts it to say
-who sent each message. Compa connects to it without a password, so on a
-computer other people also sign in to, keep the bridge running: while it's
-stopped, another account could take its port and write in anyone's name.
+There are no DM, group or mention settings. A config that still has
+`dm_policy`, `group_policy` or `group_trigger` loads; Compa ignores those keys
+and doesn't write them back.
 
-WhatsApp native, in builds made with the `whatsapp_native` tag, links your own
-WhatsApp account. Its **Chats** setting chooses what Compa reads: **Self**, the
-default, only your "message yourself" chat; **Allowed**, that chat and the
-chats the policies above let in; **All**, every chat, which the policies above
-decide as on any channel, pairing requests included. Compa replies as you.
-Your own messages in other chats are never taken as instructions.
+The web chat is reached only through the password-protected dashboard, so
+Compa takes everything it receives as from you.
+
+Slash commands such as `/reload` work in every chat Compa answers, since every
+sender it answers is you. `/help` lists the commands.
+
+Whoever can write from an account in **Allow From** can use Compa and its
+tools. **Allow Remote Commands** (**Config** → **Run Commands**), on by
+default, lets the chats run commands on your computer; turned off, chat apps
+and the browser chat can't run commands, only the terminal. To be asked first
+instead, add an `ask` rule for `exec` from `chat` (see [Approvals](#approvals)).
+
+### WhatsApp
+
+Compa joins your WhatsApp account as a linked device. Link it in one of two
+ways:
+
+- In a terminal, run `compa-kernel auth whatsapp`. It prints a QR code. In
+  WhatsApp on your phone, choose **Settings** → **Linked devices** → **Link a
+  device** and scan it. The command turns the channel on; then restart the
+  gateway.
+- In the dashboard, open **Channels** → **WhatsApp** and press **Link
+  WhatsApp**. Scan the QR code it shows the same way. Compa then turns the
+  channel on and restarts the gateway if it's running.
+
+Compa answers your own "message yourself" chat. If you link Compa to a
+separate number, it also answers direct messages from the numbers in **Allow
+From**, written like `15550003333`, without `+`. WhatsApp makes no pairing
+requests: your contacts' messages are your own conversations. Your own
+messages in other chats are never taken as instructions, and groups are
+ignored.
+
+Photos, voice notes, audio, video and documents reach the agent, up to 50 MB
+per file. A file that can't be downloaded is noted as unavailable. Replies are
+text.
+
+The session is kept in `whatsapp/` in the workspace, or in the folder
+`settings.session_store_path` names. Without a linked account the channel
+stays idle and logs a warning; the gateway keeps running. A `channel_list`
+entry of type `whatsapp_native` is read as `whatsapp`.
+
+### Slack
+
+Compa connects to Slack in Socket Mode, so it needs no public address. It
+needs two tokens from your Slack app, and the channel counts as set up only
+with both:
+
+- **Bot Token** (`bot_token`), which starts with `xoxb-`. Slack gives it when
+  you install the app to your workspace.
+- **App Token** (`app_token`), which starts with `xapp-`: an app-level token
+  with the `connections:write` scope, for Socket Mode.
+
+Message the bot directly; Compa ignores channels and their threads. While **Allow
+From** is empty, approve yourself under **Pairing Requests**, as above.
+
+### Webhooks and notifications
+
+The Slack webhook (`slack_webhook`) posts to Slack incoming webhooks; the
+Teams webhook (`teams_webhook`) posts to Microsoft Teams workflow webhooks.
+They only send. Add one under `channel_list` in `config.json` (**Config** →
+**Raw Config**). Each needs a target named `default` with an `https`
+`webhook_url`; other targets are optional:
+
+```json
+"slack_webhook": {
+  "enabled": true,
+  "type": "slack_webhook",
+  "settings": {
+    "webhooks": {
+      "default": { "webhook_url": "https://hooks.slack.com/services/..." }
+    }
+  }
+}
+```
+
+Results of scheduled jobs, heartbeat messages and approval requests go to your
+chat. A copy of each also goes to every enabled Slack or Teams webhook, to its
+`default` target. Approvals are answered in your chat (the web chat, WhatsApp
+or Slack), not in a webhook.
+
+### Paused channels
+
+Telegram, Discord, Delta Chat, DingTalk, Feishu (Lark), IRC, LINE, MaixCam,
+Matrix, MQTT, OneBot, QQ, VK, WeCom and WeChat are paused. Only builds made
+with the `paused_channels` build tag include them:
+`go build -tags goolm,stdjson,paused_channels`, or
+`make product GO_BUILD_TAGS=goolm,stdjson,paused_channels`. They aren't
+maintained and may not compile. `compa-kernel auth weixin` and `auth wecom`
+exist only in those builds.
+
+A config that turns on a paused channel still loads. In a default build, the
+gateway logs `Factory not registered` for that channel and starts the others.
+The **Channels** page lists only Slack, WhatsApp and the web chat.
 
 ## Skills and modules
 
