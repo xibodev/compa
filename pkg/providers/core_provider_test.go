@@ -195,7 +195,22 @@ func TestAnthropicInstanceStreamsOverMessages(t *testing.T) {
 }
 
 func TestGoogleAIStudioInstanceChats(t *testing.T) {
-	server, requests := recordingEndpoint(t, `{"candidates":[{"content":{"role":"model","parts":[{"text":"hi from gemini"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":2,"totalTokenCount":3}}`)
+	const answer = `{"candidates":[{"content":{"role":"model","parts":[{"text":"hi from gemini"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":2,"totalTokenCount":3}}`
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		if r.Header.Get("X-Goog-Api-Key") != "g-key" {
+			t.Errorf("key %q", r.Header.Get("X-Goog-Api-Key"))
+		}
+		if strings.HasSuffix(r.URL.Path, ":streamGenerateContent") {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, "data: "+answer+"\n\n")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, answer)
+	}))
+	defer server.Close()
 	provider, err := CreateProviderFromInstance(coreInstance("gemini", "ai_studio", config.ProviderAdapterNative, server.URL+"/v1beta"), "gemini-2.5-flash", "g-key")
 	if err != nil {
 		t.Fatal(err)
@@ -204,14 +219,13 @@ func TestGoogleAIStudioInstanceChats(t *testing.T) {
 	if err != nil || resp.Content != "hi from gemini" {
 		t.Fatalf("Chat() = %#v, %v", resp, err)
 	}
-	// Google does not stream yet: a stream is the one answer, replayed.
 	streamed, err := provider.(StreamingProvider).ChatStream(t.Context(), []Message{{Role: "user", Content: "hi"}}, nil, "gemini-2.5-flash", nil, func(string) {})
 	if err != nil || streamed.Content != "hi from gemini" {
 		t.Fatalf("ChatStream() = %#v, %v", streamed, err)
 	}
-	got := requests()[0]
-	if !strings.HasSuffix(got.path, "/models/gemini-2.5-flash:generateContent") || got.header.Get("X-Goog-Api-Key") != "g-key" {
-		t.Fatalf("path %q key %q", got.path, got.header.Get("X-Goog-Api-Key"))
+	if len(paths) != 2 || !strings.HasSuffix(paths[0], "/models/gemini-2.5-flash:generateContent") ||
+		!strings.HasSuffix(paths[1], "/models/gemini-2.5-flash:streamGenerateContent") {
+		t.Fatalf("paths = %q", paths)
 	}
 }
 

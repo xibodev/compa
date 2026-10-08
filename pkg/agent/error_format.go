@@ -47,6 +47,14 @@ func providerFailureMessage(err error) string {
 		} else {
 			message = "The provider could not be reached. Check the instance's endpoint, proxy and network, then try again."
 		}
+	case core.ProviderErrorBilling:
+		message = "The provider requires payment: check the account's billing or credits."
+	case core.ProviderErrorContextOverflow:
+		message = "The conversation is longer than this model's context window. Start a new session or use a model with a larger window."
+	case core.ProviderErrorToolsUnsupported:
+		message = "This model does not support tool calling. Choose a model that does."
+	case core.ProviderErrorMediaUnsupported:
+		message = "This model cannot read images or other media. Choose a model that can, or send text only."
 	case core.ProviderErrorUpstream:
 		message = upstreamFailureMessage(failure)
 	case core.ProviderErrorInvalidRequest:

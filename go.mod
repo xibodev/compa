@@ -36,8 +36,8 @@ require (
 	github.com/spf13/pflag v1.0.10
 	github.com/stretchr/testify v1.12.0
 	github.com/tencent-connect/botgo v0.2.1
-	github.com/xibodev/llm-provider-auth v1.0.0
-	github.com/xibodev/llmgw-core v1.3.0
+	github.com/xibodev/llm-provider-auth v1.0.1
+	github.com/xibodev/llmgw-core v1.9.1
 	go.mau.fi/util v0.10.1
 	go.mau.fi/whatsmeow v0.0.0-20261007111105-c386243a72ba
 	golang.org/x/oauth2 v0.36.0
@@ -82,7 +82,7 @@ require (
 	github.com/vektah/gqlparser/v2 v2.5.27 // indirect
 	github.com/vmihailenco/msgpack/v5 v5.4.1 // indirect
 	github.com/vmihailenco/tagparser/v2 v2.0.0 // indirect
-	github.com/xibodev/llm-translate v0.3.0 // indirect
+	github.com/xibodev/llm-translate v0.4.0 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	go.mau.fi/libsignal v0.2.2 // indirect
 	golang.org/x/exp v0.0.0-20260908205506-85c1c2202aba // indirect
