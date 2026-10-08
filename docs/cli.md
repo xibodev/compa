@@ -210,7 +210,10 @@ keeps its task and pattern records for 30 days.
 | `COMPA_LOG_FILE` | `compa-kernel agent` writes its log to this file instead of the terminal. |
 | `COMPA_SUBPROCESS_ALLOW` | Program names, separated by commas, that modules may run, out of those each module declares. Unset, every declared program is allowed. |
 | `COMPA_DNS_SERVER` | On Linux without `/etc/resolv.conf`, the DNS servers `compa-kernel` asks, separated by `;` (default `8.8.8.8:53;1.1.1.1:53`). |
+| `COMPA_CHANNELS_<NAME>_ENABLED` | Turns the `channel_list` entry `<NAME>` on (`true`) or off (`false`) instead of its `enabled`, such as `COMPA_CHANNELS_WEB_ENABLED=true` for the web chat. `<NAME>` is the entry's name in capitals, with `_` for each character other than a letter or digit. |
+| `COMPA_CHANNELS_WEB_STREAMING_ENABLED`, `COMPA_CHANNELS_TELEGRAM_STREAMING_ENABLED` | Turn streamed replies on or off in the web chat or on Telegram. The same prefix with `_STREAMING_THROTTLE_SECONDS` and `_STREAMING_MIN_GROWTH_CHARS` sets the channel's `throttle_seconds` and `min_growth_chars`. |
 
 Many `config.json` settings can be set with a variable named after their place
 in the file, such as `COMPA_AGENTS_DEFAULTS_WORKSPACE` for
-`agents.defaults.workspace`; the variable wins over the file.
+`agents.defaults.workspace`. The variable wins over the file, and saving the
+config keeps the file's value unless you change the setting.

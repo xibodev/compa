@@ -14,6 +14,11 @@ Notable changes to Compa, newest first. Versions follow
   route's next target, or fails with `agent.ErrToolsRequired` when no target
   takes tools, instead of going on without tools. See
   [Embed the Go runtime](docs/embedding.md).
+- `COMPA_CHANNELS_<NAME>_ENABLED` turns a `channel_list` entry on or off, such
+  as `COMPA_CHANNELS_WEB_ENABLED=true` for the web chat, and
+  `COMPA_CHANNELS_WEB_STREAMING_ENABLED` turns its streaming on or off, as
+  Telegram's does. Saving the config doesn't write them to `config.json`. See
+  [Environment variables](docs/cli.md#environment-variables).
 
 ### Changed
 
