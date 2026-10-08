@@ -339,7 +339,7 @@ func (al *AgentLoop) postApprovalRequest(ctx context.Context, target approvalCha
 	}
 	pubCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	return al.bus.PublishOutbound(pubCtx, bus.OutboundMessage{Context: outCtx, Content: text})
+	return al.bus.PublishOutbound(pubCtx, bus.OutboundMessage{Context: outCtx, Content: text, Notify: true})
 }
 
 // parseApprovalReply parses "/approve <id>" and "/deny <id>"; ok is false

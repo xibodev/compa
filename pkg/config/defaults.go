@@ -224,7 +224,7 @@ func DefaultConfig() *Config {
 					Enabled: true,
 				},
 				MediaEnabled: false,
-				Targets:      MessageTargetsCurrentChat,
+				Targets:      MessageTargetsAny,
 			},
 			ReadFile: ReadFileToolConfig{
 				Enabled:         true,

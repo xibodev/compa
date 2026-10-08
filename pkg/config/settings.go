@@ -56,12 +56,13 @@ func (c LoggingConfig) EffectiveMaxFiles() int {
 	return DefaultLogMaxFiles
 }
 
-// EffectiveTargets returns the message tool's target policy.
+// EffectiveTargets returns the message tool's target policy: any chat,
+// unless the config restricts it to the current one.
 func (c MessageToolsConfig) EffectiveTargets() string {
-	if strings.TrimSpace(c.Targets) == MessageTargetsAny {
-		return MessageTargetsAny
+	if strings.TrimSpace(c.Targets) == MessageTargetsCurrentChat {
+		return MessageTargetsCurrentChat
 	}
-	return MessageTargetsCurrentChat
+	return MessageTargetsAny
 }
 
 // ValidateSettings checks the enumerated settings outside the channels.

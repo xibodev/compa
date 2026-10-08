@@ -92,6 +92,10 @@ type OutboundMessage struct {
 	// a channel that observes turns that one of its chat's turns started or
 	// ended. Other channels never get it.
 	Turn *TurnNotice `json:"turn,omitempty"`
+	// Notify marks a notification (a cron job's result, a heartbeat message,
+	// an approval request): every enabled Slack or Teams webhook gets a copy.
+	// Without a channel, only the webhooks get it.
+	Notify bool `json:"notify,omitempty"`
 }
 
 // TurnNotice tells a channel that a turn of one of its chats started or

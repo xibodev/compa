@@ -22,7 +22,7 @@ func writeConfigFile(t *testing.T, content string) string {
 
 func TestDefaultConfigSettings(t *testing.T) {
 	cfg := DefaultConfig()
-	if got := cfg.Tools.Message.EffectiveTargets(); got != MessageTargetsCurrentChat {
+	if got := cfg.Tools.Message.EffectiveTargets(); got != MessageTargetsAny {
 		t.Errorf("message targets = %q", got)
 	}
 	if !cfg.Tools.InstallSkill.Enabled {
@@ -65,6 +65,10 @@ func TestLoadConfigKeepsExplicitValues(t *testing.T) {
 	}
 	if cfg.Tools.Message.Targets != MessageTargetsAny || cfg.Commands.OwnerOnly {
 		t.Errorf("explicit settings changed: targets=%q owner_only=%v", cfg.Tools.Message.Targets, cfg.Commands.OwnerOnly)
+	}
+	if (MessageToolsConfig{}).EffectiveTargets() != MessageTargetsAny ||
+		(MessageToolsConfig{Targets: MessageTargetsCurrentChat}).EffectiveTargets() != MessageTargetsCurrentChat {
+		t.Error("message targets: any by default, current_chat when set")
 	}
 	// A setting the file lacks gets its default.
 	if !reflect.DeepEqual(cfg.Tools.Approval, approval.DefaultPolicy()) {

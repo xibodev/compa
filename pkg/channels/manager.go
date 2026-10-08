@@ -1774,6 +1774,7 @@ func dispatchLoop[M any](
 	ch <-chan M,
 	getChannel func(M) string,
 	enqueue func(context.Context, *channelWorker, M) bool,
+	notifyOnly func(M) bool,
 	startMsg, stopMsg, unknownMsg, noWorkerMsg string,
 ) {
 	logger.InfoC("channels", startMsg)
@@ -1790,6 +1791,9 @@ func dispatchLoop[M any](
 				return
 			}
 
+			if notifyOnly != nil && notifyOnly(msg) {
+				continue
+			}
 			channel := getChannel(msg)
 
 			// Silently skip internal channels
@@ -1843,11 +1847,43 @@ func (m *Manager) dispatchOutbound(ctx context.Context) {
 			}
 			return true
 		},
+		m.notifyWebhooks,
 		"Outbound dispatcher started",
 		"Outbound dispatcher stopped",
 		"Unknown channel for outbound message",
 		"Channel has no active worker, skipping message",
 	)
+}
+
+// notifyWebhooks queues a copy of a notification for every running Slack or
+// Teams webhook, to its default target. It reports whether the message was
+// for the webhooks only.
+func (m *Manager) notifyWebhooks(msg bus.OutboundMessage) bool {
+	if !msg.Notify {
+		return false
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for name, w := range m.workers {
+		if m.config == nil {
+			break
+		}
+		bc := m.config.Channels[name]
+		if w == nil || bc == nil || name == outboundMessageChannel(msg) ||
+			(bc.Type != config.ChannelSlackWebHook && bc.Type != config.ChannelTeamsWebHook) {
+			continue
+		}
+		copied := bus.OutboundMessage{
+			Channel: name,
+			ChatID:  "default",
+			Context: bus.NewOutboundContext(name, "default", ""),
+			Content: msg.Content,
+		}
+		if w.pending.push(copied, w.stop) != pushQueued {
+			logger.WarnCF("channels", "Could not queue a notification for a webhook", map[string]any{"channel": name})
+		}
+	}
+	return outboundMessageChannel(msg) == ""
 }
 
 func (m *Manager) dispatchOutboundMedia(ctx context.Context) {
@@ -1870,6 +1906,7 @@ func (m *Manager) dispatchOutboundMedia(ctx context.Context) {
 			}
 			return true
 		},
+		nil,
 		"Outbound media dispatcher started",
 		"Outbound media dispatcher stopped",
 		"Unknown channel for outbound media message",
