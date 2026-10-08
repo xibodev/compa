@@ -48,6 +48,10 @@ Notable changes to Compa, newest first. Versions follow
 - The agent can read the skills in `~/.compa/skills` and in the built-in
   skills folder, as its prompt tells it to; with **Restrict to Workspace** on,
   the default, `read_file` refused them as outside the workspace.
+- When the model rejects tool calls, the chat is told that the reply comes
+  without tools, `agent.llm.retry` reports the reason `tools_unsupported`, and
+  the retried request no longer tells the model to always use tools; only the
+  log said so.
 
 ## 3.0.0 - 2026-10-06
 

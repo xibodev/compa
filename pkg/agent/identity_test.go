@@ -16,6 +16,7 @@ import (
 
 	"github.com/xibodev/compa/v3/pkg/bus"
 	"github.com/xibodev/compa/v3/pkg/config"
+	runtimeevents "github.com/xibodev/compa/v3/pkg/events"
 	"github.com/xibodev/compa/v3/pkg/providers"
 	"github.com/xibodev/compa/v3/pkg/session"
 )
@@ -448,19 +449,25 @@ func TestFrontmatterBool(t *testing.T) {
 // toolsRejectingProvider rejects every call that offers tools, as a model
 // without tool calling does, and answers calls without tools.
 type toolsRejectingProvider struct {
-	mu         sync.Mutex
-	toolCounts []int
+	mu            sync.Mutex
+	toolCounts    []int
+	systemPrompts []string
 }
 
 func (p *toolsRejectingProvider) Chat(
 	_ context.Context,
-	_ []providers.Message,
+	messages []providers.Message,
 	tools []providers.ToolDefinition,
 	_ string,
 	_ map[string]any,
 ) (*providers.LLMResponse, error) {
 	p.mu.Lock()
 	p.toolCounts = append(p.toolCounts, len(tools))
+	var system string
+	if len(messages) > 0 && messages[0].Role == "system" {
+		system = messages[0].Content
+	}
+	p.systemPrompts = append(p.systemPrompts, system)
 	p.mu.Unlock()
 	if len(tools) > 0 {
 		return nil, errors.New("this model does not support tools")
@@ -474,6 +481,13 @@ func (p *toolsRejectingProvider) calls() []int {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return append([]int(nil), p.toolCounts...)
+}
+
+// prompts returns the system prompt of each call, empty for a call without.
+func (p *toolsRejectingProvider) prompts() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]string(nil), p.systemPrompts...)
 }
 
 func identityTestConfig(t *testing.T, workspace string) *config.Config {
@@ -548,6 +562,47 @@ func TestRequireTools_OffKeepsTheRetryWithoutTools(t *testing.T) {
 				t.Fatalf("provider calls (tools offered per call) = %v, want one with tools, then one without", calls)
 			}
 		})
+	}
+}
+
+// The retry without tools is visible: an agent.llm.retry event, a notice in
+// the chat, and a system prompt that no longer tells the model to use tools.
+func TestToolsUnsupported_RetryWithoutToolsIsVisible(t *testing.T) {
+	workspace := identityTestWorkspace(t, "")
+	provider := &toolsRejectingProvider{}
+	msgBus := bus.NewMessageBus()
+	al := NewAgentLoop(identityTestConfig(t, workspace), msgBus, provider)
+	defer al.Close()
+	al.RegisterTool(&echoTextTool{})
+	events, closeEvents := subscribeRuntimeEventsForTest(t, al, 16, runtimeevents.KindAgentLLMRetry)
+	defer closeEvents()
+
+	reply, err := al.ProcessDirectWithChannel(context.Background(), "hello", "tools-unsupported", "test", "chat1")
+	if err != nil || reply != "answer without tools" {
+		t.Fatalf("reply = %q, error = %v", reply, err)
+	}
+
+	rule := toolUseSystemPromptRule()
+	if prompts := provider.prompts(); len(prompts) != 2 || !strings.Contains(prompts[0], rule) ||
+		prompts[1] == "" || strings.Contains(prompts[1], rule) {
+		t.Fatalf("system prompts = %q, want the tool-use rule in the first only", prompts)
+	}
+
+	retry, ok := findRuntimeEvent(collectRuntimeEventStream(events), runtimeevents.KindAgentLLMRetry)
+	if !ok {
+		t.Fatal("no agent.llm.retry event")
+	}
+	if payload, _ := retry.Payload.(LLMRetryPayload); payload.Reason != "tools_unsupported" {
+		t.Fatalf("retry payload = %+v, want reason tools_unsupported", retry.Payload)
+	}
+
+	select {
+	case out := <-msgBus.OutboundChan():
+		if !strings.Contains(out.Content, "doesn't support tool calls. Retrying without tools") {
+			t.Fatalf("first outbound message = %q, want the notice", out.Content)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("no notice in the chat")
 	}
 }
 
