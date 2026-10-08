@@ -504,13 +504,11 @@ func (c StreamingConfig) WithDefaults(throttleSeconds, minGrowthChars int) Strea
 	return c
 }
 
+// WhatsAppSettings are the WhatsApp channel's settings. SessionStorePath is
+// where the linked account's session is kept; empty means whatsapp/ in the
+// workspace.
 type WhatsAppSettings struct {
-	BridgeURL        string `json:"bridge_url"         yaml:"-" env:"COMPA_CHANNELS_WHATSAPP_BRIDGE_URL"`
-	UseNative        bool   `json:"use_native"         yaml:"-" env:"COMPA_CHANNELS_WHATSAPP_USE_NATIVE"`
-	SessionStorePath string `json:"session_store_path" yaml:"-" env:"COMPA_CHANNELS_WHATSAPP_SESSION_STORE_PATH"`
-	// Chats selects which chats the native client takes as input: "self",
-	// "allowed" or "all" (see the WhatsAppChats* constants).
-	Chats string `json:"chats,omitempty" yaml:"-" env:"COMPA_CHANNELS_WHATSAPP_CHATS"`
+	SessionStorePath string `json:"session_store_path,omitempty" yaml:"-" env:"COMPA_CHANNELS_WHATSAPP_SESSION_STORE_PATH"`
 }
 
 type TelegramSettings struct {

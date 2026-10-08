@@ -58,23 +58,6 @@ func TestHandleGetChannelConfig_ShowsNoRetiredAccessSettings(t *testing.T) {
 	}
 }
 
-func TestHandleGetChannelConfig_ReturnsNativeWhatsAppChats(t *testing.T) {
-	configPath, cleanup := setupCredentialTestEnv(t)
-	defer cleanup()
-
-	if got := getChannelConfigMap(t, configPath, "whatsapp_native")["chats"]; got != "self" {
-		t.Fatalf("chats = %#v, want the default self", got)
-	}
-	if _, ok := getChannelConfigMap(t, configPath, "whatsapp")["chats"]; ok {
-		t.Fatal("the bridge variant shows chats, which only the native client reads")
-	}
-
-	patchConfig(t, configPath, `{"channel_list":{"whatsapp":{"type":"whatsapp","settings":{"use_native":true,"chats":"all"}}}}`, http.StatusOK)
-	if got := getChannelConfigMap(t, configPath, "whatsapp_native")["chats"]; got != "all" {
-		t.Fatalf("chats = %#v, want the saved all", got)
-	}
-}
-
 func patchConfig(t *testing.T, configPath, body string, wantStatus int) *httptest.ResponseRecorder {
 	t.Helper()
 	h := NewHandler(configPath)
@@ -119,7 +102,6 @@ func TestHandlePatchConfig_DropsRetiredAccessSettings(t *testing.T) {
 
 func TestHandlePatchConfig_RejectsUnknownPolicyValues(t *testing.T) {
 	for name, body := range map[string]string{
-		"chats":    `{"channel_list":{"whatsapp":{"settings":{"use_native":true,"chats":"friends"}}}}`,
 		"approval": `{"tools":{"approval":{"rules":[{"tool":"exec","action":"maybe"}]}}}`,
 	} {
 		t.Run(name, func(t *testing.T) {

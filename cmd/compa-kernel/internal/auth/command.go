@@ -19,6 +19,7 @@ func NewAuthCommand() *cobra.Command {
 		newLoginCommand(),
 		newLogoutCommand(),
 		newStatusCommand(),
+		newWhatsAppCommand(),
 	)
 	for _, newCommand := range pausedChannelCommands {
 		cmd.AddCommand(newCommand())

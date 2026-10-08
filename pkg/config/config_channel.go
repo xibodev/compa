@@ -792,6 +792,10 @@ func initChannelList(channels ChannelsConfig, rec channelEnvRecorder) error {
 		if bc.Type == "" {
 			bc.Type = name
 		}
+		// Native WhatsApp is the WhatsApp channel now.
+		if bc.Type == ChannelWhatsAppNative {
+			bc.Type = ChannelWhatsApp
+		}
 		if !isValidChannelType(bc.Type) {
 			return fmt.Errorf("channel %q has unknown type %q", name, bc.Type)
 		}
@@ -814,9 +818,7 @@ func initChannelList(channels ChannelsConfig, rec channelEnvRecorder) error {
 			if err := validateChannelStreamingConfig(name, target); err != nil {
 				return err
 			}
-			if err := validateChannelSettingsValues(name, target); err != nil {
-				return err
-			}
+
 		}
 	}
 

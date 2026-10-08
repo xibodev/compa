@@ -103,15 +103,6 @@ export function getSecretInputPlaceholder(
     : fallback
 }
 
-export const WHATSAPP_CHATS = ["self", "allowed", "all"] as const
-
-export type WhatsAppChats = (typeof WHATSAPP_CHATS)[number]
-
-function pickOption<T extends string>(options: readonly T[], value: unknown) {
-  const trimmed = typeof value === "string" ? value.trim() : ""
-  return options.find((option) => option === trimmed)
-}
-
 function allowEntries(config: ChannelConfig): string[] {
   const entries = Array.isArray(config.allow_from) ? config.allow_from : []
   return entries
@@ -127,9 +118,4 @@ function allowEntries(config: ChannelConfig): string[] {
  */
 export function hasOwnerAccount(config: ChannelConfig): boolean {
   return allowEntries(config).some((entry) => entry !== "*")
-}
-
-/** Native WhatsApp's settings.chats; only the self chat when unset. */
-export function effectiveWhatsAppChats(config: ChannelConfig): WhatsAppChats {
-  return pickOption(WHATSAPP_CHATS, config.chats) ?? "self"
 }

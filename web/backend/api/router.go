@@ -37,6 +37,8 @@ type Handler struct {
 	// Serializes model-related config writes. Other config endpoints still
 	// coordinate their own load-modify-save cycles.
 	configMu sync.Mutex
+	// whatsappLink is the WhatsApp page's QR linking.
+	whatsappLink whatsappLinkState
 	// liveApplies tracks the background applies of saved changes that
 	// ApplyLiveChanges and a pairing approval schedule, so tests can wait
 	// for them.
@@ -138,6 +140,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 
 	// Runtime build/version metadata
 	h.registerVersionRoutes(mux)
+
+	// WhatsApp QR linking
+	h.registerWhatsAppRoutes(mux)
 
 	// The QR logins of paused channels, in builds that include them
 	for _, register := range pausedChannelRoutes {

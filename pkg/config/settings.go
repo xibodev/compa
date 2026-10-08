@@ -5,19 +5,6 @@ import (
 	"strings"
 )
 
-// Values of channel_list.<whatsapp native>.settings.chats.
-const (
-	// WhatsAppChatsSelf takes input only from the owner's own "message
-	// yourself" chat.
-	WhatsAppChatsSelf = "self"
-	// WhatsAppChatsAllowed adds the direct chats with the accounts allow_from
-	// lists, and records others for pairing while it lists none.
-	WhatsAppChatsAllowed = "allowed"
-	// WhatsAppChatsAll takes every chat as input and replies in it on the
-	// owner's behalf.
-	WhatsAppChatsAll = "all"
-)
-
 // Values of tools.message.targets.
 const (
 	// MessageTargetsCurrentChat lets the message tool send only to the chat
@@ -75,34 +62,6 @@ func (c MessageToolsConfig) EffectiveTargets() string {
 		return MessageTargetsAny
 	}
 	return MessageTargetsCurrentChat
-}
-
-// EffectiveChats returns which chats the native WhatsApp client takes as
-// input.
-func (s WhatsAppSettings) EffectiveChats() string {
-	switch strings.TrimSpace(s.Chats) {
-	case WhatsAppChatsAllowed:
-		return WhatsAppChatsAllowed
-	case WhatsAppChatsAll:
-		return WhatsAppChatsAll
-	default:
-		return WhatsAppChatsSelf
-	}
-}
-
-// validateChannelSettingsValues checks enumerated values inside typed channel
-// settings.
-func validateChannelSettingsValues(name string, target any) error {
-	if settings, ok := target.(*WhatsAppSettings); ok {
-		if c := strings.TrimSpace(settings.Chats); c != "" {
-			switch c {
-			case WhatsAppChatsSelf, WhatsAppChatsAllowed, WhatsAppChatsAll:
-			default:
-				return fmt.Errorf("channel %q settings.chats %q must be one of self, allowed, all", name, c)
-			}
-		}
-	}
-	return nil
 }
 
 // ValidateSettings checks the enumerated settings outside the channels.

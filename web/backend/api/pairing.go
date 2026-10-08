@@ -46,9 +46,9 @@ func (h *Handler) registerPairingRoutes(mux *http.ServeMux) {
 }
 
 // pairingChannelKey resolves the {name} of a pairing route to the
-// channel_list key the channel records its requests under. A catalog name
-// maps to its config key, as on the channel config page (whatsapp_native is
-// channel_list.whatsapp); another name must be a channel_list key itself.
+// channel_list key the channel records its requests under: a catalog name
+// maps to its config key, as on the channel config page; another name must
+// be a channel_list key itself.
 func (h *Handler) pairingChannelKey(name string) (string, bool) {
 	if item, ok := findChannelCatalogItem(name); ok {
 		return item.ConfigKey, true

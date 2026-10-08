@@ -114,7 +114,6 @@ func TestRetiredAccessSettingsLoadAndAreDropped(t *testing.T) {
 
 func TestLoadConfigRejectsUnknownPolicyValues(t *testing.T) {
 	cases := map[string]string{
-		"chats":          `{"channel_list":{"whatsapp_native":{"type":"whatsapp_native","settings":{"chats":"friends"}}}}`,
 		"targets":        `{"tools":{"message":{"targets":"everyone"}}}`,
 		"tools.approval": `{"tools":{"approval":{"rules":[{"tool":"exec","action":"maybe"}]}}}`,
 	}
@@ -179,5 +178,29 @@ func TestSaveConfigWritesExplicitSettings(t *testing.T) {
 	}
 	if again.Channels["telegram"] == nil || !again.Commands.OwnerOnly {
 		t.Error("a saved config must load with the same behavior")
+	}
+}
+
+// A WhatsApp entry an earlier version wrote, bridge or native, loads as the
+// WhatsApp channel.
+func TestOldWhatsAppEntriesLoad(t *testing.T) {
+	cfg, err := LoadConfig(writeConfigFile(t, `{"channel_list":{`+
+		`"whatsapp":{"type":"whatsapp","enabled":true,"settings":{"bridge_url":"ws://localhost:3001","use_native":true,"chats":"all"}},`+
+		`"phone":{"type":"whatsapp_native","settings":{"session_store_path":"/tmp/wa"}}}}`))
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if got := cfg.Channels["phone"].Type; got != ChannelWhatsApp {
+		t.Fatalf("whatsapp_native entry type = %q, want %q", got, ChannelWhatsApp)
+	}
+	decoded, err := cfg.Channels["phone"].GetDecoded()
+	if err != nil {
+		t.Fatalf("GetDecoded: %v", err)
+	}
+	if s, ok := decoded.(*WhatsAppSettings); !ok || s.SessionStorePath != "/tmp/wa" {
+		t.Fatalf("settings = %+v", decoded)
+	}
+	if !cfg.Channels["whatsapp"].Enabled {
+		t.Fatal("the bridge entry lost its enabled state")
 	}
 }

@@ -72,13 +72,6 @@ jobs:
       - name: Test
         run: go test -tags goolm,stdjson -p 1 ./...
 
-      # Releases leave out whatsapp_native, which links GPL-3.0 code; this
-      # keeps it compiling.
-      - name: Build, vet and test with whatsapp_native
-        run: |
-          go build -tags goolm,stdjson,whatsapp_native ./...
-          go vet -tags goolm,stdjson,whatsapp_native ./pkg/channels/whatsapp_native/...
-          go test -tags goolm,stdjson,whatsapp_native -p 1 ./pkg/channels/whatsapp_native/...
 
   # Releases ship Windows and macOS programs too, built from files only those
   # platforms compile, such as the Windows-only code and the macOS tray.

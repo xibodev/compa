@@ -619,7 +619,6 @@
       "onebot": "OneBot",
       "wecom": "WeCom",
       "whatsapp": "WhatsApp",
-      "whatsapp_native": "WhatsApp (nativní)",
       "web": "Webový chat",
       "maixcam": "MaixCam",
       "matrix": "Matrix",
@@ -657,6 +656,18 @@
       "refresh": "Obnovit QR",
       "errorGeneric": "Nastala chyba. Zkuste to znovu."
     },
+    "whatsapp": {
+      "linkTitle": "Propojený účet",
+      "linkDesc": "Compa se připojí k vašemu účtu WhatsApp jako propojené zařízení a odpovídá ve vašem chatu „Zpráva sobě“.",
+      "notLinked": "Zatím není propojen žádný účet WhatsApp.",
+      "link": "Propojit WhatsApp",
+      "linked": "Propojeno: +{{phone}}",
+      "qrAlt": "QR kód WhatsApp",
+      "scanHint": "Ve WhatsAppu v telefonu: Nastavení > Propojená zařízení > Propojit zařízení, potom naskenujte tento kód.",
+      "retry": "Zkusit znovu",
+      "errorGeneric": "Propojení se nezdařilo. Zkuste to prosím znovu.",
+      "allowFromDesc": "Další čísla WhatsApp, která mohou psát aplikaci Compa, kromě vašeho vlastního chatu „Zpráva sobě“, ve tvaru 15550003333. Nechte prázdné, chcete-li používat jen svůj vlastní chat."
+    },
     "field": {
       "token": "Bot token",
       "tokenPlaceholder": "Zadejte bot token",
@@ -679,17 +690,11 @@
       "isLark": "Lark (mezinárodní)",
       "allowFrom": "Povolit od",
       "allowFromPlaceholder": "např. 123456 nebo @username",
-      "chats": "Chaty",
       "allowOrigins": "Povolené originy",
       "allowOriginsPlaceholder": "např. https://example.com, http://localhost:5173",
       "removeListItem": "Odebrat {{value}}",
       "secretPlaceholder": "Zadejte secret",
       "secretHintSet": "Hodnota je již nastavena. Ponechte prázdné pro zachování beze změny."
-    },
-    "chats": {
-      "self": "Jen já",
-      "allowed": "Povolené",
-      "all": "Všechny"
     },
     "pairing": {
       "title": "Žádosti o spárování",
@@ -726,9 +731,6 @@
         "allowOrigins": "Povolené origin domény. Přidávejte po jednom nebo vložte více hodnot najednou.",
         "wsUrl": "URL WebSocket služby.",
         "reconnectInterval": "Interval pro opětovné připojení po výpadku (sekundy).",
-        "bridgeUrl": "URL bridge služby.",
-        "sessionStorePath": "Lokální cesta pro uložení relací.",
-        "useNative": "Zda použít nativní klientský režim.",
         "host": "Adresa hostitele služby.",
         "port": "Port služby.",
         "homeserver": "URL Matrix homeserveru.",

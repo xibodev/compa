@@ -608,7 +608,6 @@
       "onebot": "OneBot",
       "wecom": "উইকম",
       "whatsapp": "WhatsApp",
-      "whatsapp_native": "WhatsApp Native",
       "web": "ওয়েব চ্যাট",
       "maixcam": "MaixCam",
       "matrix": "Matrix",
@@ -646,6 +645,18 @@
       "refresh": "QR রিফ্রেশ করুন",
       "errorGeneric": "একটি ত্রুটি ঘটেছে। অনুগ্রহ করে আবার চেষ্টা করুন।"
     },
+    "whatsapp": {
+      "linkTitle": "লিঙ্ক করা অ্যাকাউন্ট",
+      "linkDesc": "Compa একটি লিঙ্ক করা ডিভাইস হিসেবে আপনার WhatsApp অ্যাকাউন্টে যুক্ত হয় এবং আপনার \"নিজেকে মেসেজ করুন\" চ্যাটে উত্তর দেয়।",
+      "notLinked": "এখনও কোনো WhatsApp অ্যাকাউন্ট লিঙ্ক করা হয়নি।",
+      "link": "WhatsApp লিঙ্ক করুন",
+      "linked": "লিঙ্ক করা হয়েছে: +{{phone}}",
+      "qrAlt": "WhatsApp QR কোড",
+      "scanHint": "আপনার ফোনের WhatsApp-এ: সেটিংস > লিঙ্ক করা ডিভাইস > ডিভাইস লিঙ্ক করুন, তারপর এই কোডটি স্ক্যান করুন।",
+      "retry": "আবার চেষ্টা করুন",
+      "errorGeneric": "লিঙ্ক করা যায়নি। আবার চেষ্টা করুন।",
+      "allowFromDesc": "আপনার নিজের \"নিজেকে মেসেজ করুন\" চ্যাট ছাড়াও অন্য যেসব WhatsApp নম্বর Compa-কে মেসেজ করতে পারে, 15550003333 আকারে। শুধু আপনার নিজের চ্যাট ব্যবহার করতে খালি রাখুন।"
+    },
     "field": {
       "token": "বট টোকেন",
       "tokenPlaceholder": "বট টোকেন লিখুন",
@@ -668,17 +679,11 @@
       "isLark": "Lark (আন্তর্জাতিক)",
       "allowFrom": "যাদের থেকে অনুমতি",
       "allowFromPlaceholder": "যেমন 123456 বা @username",
-      "chats": "চ্যাট",
       "allowOrigins": "অনুমোদিত অরিজিন",
       "allowOriginsPlaceholder": "যেমন https://example.com, http://localhost:5173",
       "removeListItem": "{{value}} সরান",
       "secretPlaceholder": "সিক্রেট লিখুন",
       "secretHintSet": "একটি মান ইতিমধ্যে সেট করা হয়েছে। অপরিবর্তিত রাখতে খালি রাখুন।"
-    },
-    "chats": {
-      "self": "শুধু নিজে",
-      "allowed": "অনুমোদিত",
-      "all": "সব"
     },
     "pairing": {
       "title": "পেয়ারিং অনুরোধ",
@@ -715,9 +720,6 @@
         "allowOrigins": "অনুমোদিত অরিজিন ডোমেইন। একে একে আইটেম যোগ করুন, অথবা একাধিক মান একবারে পেস্ট করুন।",
         "wsUrl": "WebSocket সার্ভিস URL।",
         "reconnectInterval": "বিচ্ছিন্ন হওয়ার পরে পুনঃসংযোগের ব্যবধান (সেকেন্ড)।",
-        "bridgeUrl": "ব্রিজ সার্ভিস URL।",
-        "sessionStorePath": "সেশন স্টোরেজের জন্য লোকাল পাথ।",
-        "useNative": "নেটিভ ক্লায়েন্ট মোড ব্যবহার করবেন কিনা।",
         "host": "সার্ভিস হোস্ট ঠিকানা।",
         "port": "সার্ভিস পোর্ট।",
         "homeserver": "Matrix হোমসার্ভার URL।",

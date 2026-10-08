@@ -1,7 +1,6 @@
 import { useTranslation } from "react-i18next"
 
 import type { ChannelConfig } from "@/api/channels"
-import { ChannelAccessFields } from "@/components/channels/channel-access-fields"
 import {
   type ArrayFieldFlusher,
   ChannelArrayListField,
@@ -29,8 +28,6 @@ interface GenericFormProps {
   supportsStreaming?: boolean
   /** A chat channel answers only the accounts its Allow From lists. */
   accessPolicy?: boolean
-  /** Native WhatsApp also chooses which chats are input. */
-  whatsAppChats?: boolean
   fieldErrors?: Record<string, string>
   registerArrayFieldFlusher?: (
     fieldPath: string,
@@ -40,7 +37,7 @@ interface GenericFormProps {
 }
 
 // Fields to skip in the generic form (handled by enabled toggle or internal).
-const SKIP_FIELDS = new Set(["enabled", "reasoning_channel_id", "chats"])
+const SKIP_FIELDS = new Set(["enabled", "reasoning_channel_id"])
 
 // Fields that are objects/nested — show as JSON or skip.
 const OBJECT_FIELDS = new Set([
@@ -88,7 +85,6 @@ export function GenericForm({
   requiredKeys = [],
   supportsStreaming = false,
   accessPolicy = false,
-  whatsAppChats = false,
   fieldErrors = {},
   registerArrayFieldFlusher,
   arrayFieldResetVersion,
@@ -120,9 +116,6 @@ export function GenericForm({
     const descriptions: Record<string, string> = {
       ws_url: t("channels.form.desc.wsUrl"),
       reconnect_interval: t("channels.form.desc.reconnectInterval"),
-      bridge_url: t("channels.form.desc.bridgeUrl"),
-      session_store_path: t("channels.form.desc.sessionStorePath"),
-      use_native: t("channels.form.desc.useNative"),
       host: t("channels.form.desc.host"),
       port: t("channels.form.desc.port"),
       homeserver: t("channels.form.desc.homeserver"),
@@ -268,7 +261,6 @@ export function GenericForm({
   const hasAdvancedContent =
     advancedFields.length > 0 ||
     showAllowFrom ||
-    whatsAppChats ||
     (config.allow_origins !== undefined &&
       !hiddenFieldSet.has("allow_origins")) ||
     (config.allow_token_query !== undefined &&
@@ -304,10 +296,6 @@ export function GenericForm({
                 registerFlusher={registerArrayFieldFlusher}
                 resetVersion={arrayFieldResetVersion}
               />
-            )}
-
-            {whatsAppChats && (
-              <ChannelAccessFields config={config} onChange={onChange} />
             )}
 
             {config.allow_origins !== undefined &&

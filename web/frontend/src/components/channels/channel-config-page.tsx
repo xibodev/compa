@@ -38,6 +38,7 @@ import { SlackForm } from "@/components/channels/channel-forms/slack-form"
 import { TelegramForm } from "@/components/channels/channel-forms/telegram-form"
 import { WecomForm } from "@/components/channels/channel-forms/wecom-form"
 import { WeixinForm } from "@/components/channels/channel-forms/weixin-form"
+import { WhatsAppForm } from "@/components/channels/channel-forms/whatsapp-form"
 import { ChannelPairingRequests } from "@/components/channels/channel-pairing-requests"
 import { ConfigChangeNotice } from "@/components/config-change-notice"
 import { PageHeader } from "@/components/page-header"
@@ -105,12 +106,6 @@ function normalizeConfig(
   rawConfig: ChannelConfig,
 ): ChannelConfig {
   const config = { ...rawConfig }
-  if (channel.name === "whatsapp_native") {
-    config.use_native = true
-  }
-  if (channel.name === "whatsapp") {
-    config.use_native = false
-  }
   if (channel.name === "line") {
     // The gateway serves the LINE webhook; these never had an effect.
     delete config.webhook_host
@@ -157,13 +152,6 @@ function buildSavePayload(
     }
   }
 
-  if (channel.name === "whatsapp_native") {
-    settings.use_native = true
-  }
-  if (channel.name === "whatsapp") {
-    settings.use_native = false
-  }
-
   if (Object.keys(settings).length > 0) {
     payload.settings = settings
   }
@@ -203,9 +191,8 @@ function isConfigured(
     case "wecom":
       return hasValue("bot_id")
     case "whatsapp":
-      return hasValue("bridge_url")
-    case "whatsapp_native":
-      return asBool(config.use_native)
+      // Linking the account is separate from the config.
+      return true
     case "web":
       return hasValue("token")
     case "maixcam":
@@ -245,8 +232,6 @@ function getRequiredFieldKeys(channelName: string): string[] {
       return ["ws_url"]
     case "wecom":
       return []
-    case "whatsapp":
-      return ["bridge_url"]
     case "web":
       return ["token"]
     case "maixcam":
@@ -397,20 +382,14 @@ export function ChannelConfigPage({ channelName }: ChannelConfigPageProps) {
   const hidesPageLevelEnableToggle = channel?.name === "wecom"
   // Pairing binds the owner's account once: while the saved allow_from lists
   // no account, the gateway records who sends the bot a direct message, and
-  // approving one adds that account. The web chat needs no pairing.
+  // approving one adds that account. The web chat needs no pairing, and
+  // WhatsApp answers the linked account's own chat, so it makes no requests.
   const showsPairingRequests =
-    channel !== null && channel.name !== "web" && !hasOwnerAccount(baseConfig)
+    channel !== null &&
+    channel.name !== "web" &&
+    channel.name !== "whatsapp" &&
+    !hasOwnerAccount(baseConfig)
 
-  const hiddenKeys = useMemo(() => {
-    if (!channel) return []
-    if (channel.name === "whatsapp") {
-      return ["use_native"]
-    }
-    if (channel.name === "whatsapp_native") {
-      return ["use_native", "bridge_url"]
-    }
-    return []
-  }, [channel])
   const requiredKeys = useMemo(
     () => getRequiredFieldKeys(channelName),
     [channelName],
@@ -516,19 +495,8 @@ export function ChannelConfigPage({ channelName }: ChannelConfigPageProps) {
     }
   }
 
-  const handleWeixinBindSuccess = useCallback(async () => {
-    try {
-      setEnabled(true)
-      await Promise.all([loadData(true), refreshGatewayState({ force: true })])
-    } catch (e) {
-      const message =
-        e instanceof Error ? e.message : t("channels.page.saveError")
-      setServerError(message)
-      await loadData(true)
-    }
-  }, [loadData, t])
-
-  const handleWecomBindSuccess = useCallback(async () => {
+  // A QR binding saved the account and enabled the channel server-side.
+  const handleBindSuccess = useCallback(async () => {
     try {
       setEnabled(true)
       await Promise.all([loadData(true), refreshGatewayState({ force: true })])
@@ -637,7 +605,17 @@ export function ChannelConfigPage({ channelName }: ChannelConfigPageProps) {
             config={editConfig}
             onChange={handleChange}
             isEdit={isEdit}
-            onBindSuccess={() => void handleWeixinBindSuccess()}
+            onBindSuccess={() => void handleBindSuccess()}
+            registerArrayFieldFlusher={registerArrayFieldFlusher}
+            arrayFieldResetVersion={arrayFieldResetVersion}
+          />
+        )
+      case "whatsapp":
+        return (
+          <WhatsAppForm
+            config={editConfig}
+            onChange={handleChange}
+            onLinked={() => void handleBindSuccess()}
             registerArrayFieldFlusher={registerArrayFieldFlusher}
             arrayFieldResetVersion={arrayFieldResetVersion}
           />
@@ -648,7 +626,7 @@ export function ChannelConfigPage({ channelName }: ChannelConfigPageProps) {
             <WecomForm
               config={editConfig}
               isEdit={isEdit}
-              onBindSuccess={() => void handleWecomBindSuccess()}
+              onBindSuccess={() => void handleBindSuccess()}
               onEnabledChange={(nextEnabled) =>
                 void handleWecomEnabledChange(nextEnabled)
               }
@@ -657,7 +635,7 @@ export function ChannelConfigPage({ channelName }: ChannelConfigPageProps) {
               config={editConfig}
               onChange={handleChange}
               configuredSecrets={configuredSecrets}
-              hiddenKeys={[...hiddenKeys, "bot_id"]}
+              hiddenKeys={["bot_id"]}
               requiredKeys={requiredKeys}
               supportsStreaming
               accessPolicy
@@ -673,11 +651,9 @@ export function ChannelConfigPage({ channelName }: ChannelConfigPageProps) {
             config={editConfig}
             onChange={handleChange}
             configuredSecrets={configuredSecrets}
-            hiddenKeys={hiddenKeys}
             requiredKeys={requiredKeys}
             supportsStreaming={channel?.name === "web"}
             accessPolicy={channel.name !== "web"}
-            whatsAppChats={channel.name === "whatsapp_native"}
             fieldErrors={fieldErrors}
             registerArrayFieldFlusher={registerArrayFieldFlusher}
             arrayFieldResetVersion={arrayFieldResetVersion}

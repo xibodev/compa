@@ -608,7 +608,6 @@
       "onebot": "OneBot",
       "wecom": "WeCom",
       "whatsapp": "WhatsApp",
-      "whatsapp_native": "WhatsApp Native",
       "web": "Web chat",
       "maixcam": "MaixCam",
       "matrix": "Matrix",
@@ -646,6 +645,18 @@
       "refresh": "Refresh QR",
       "errorGeneric": "An error occurred. Please try again."
     },
+    "whatsapp": {
+      "linkTitle": "Linked account",
+      "linkDesc": "Compa joins your WhatsApp account as a linked device and answers your \"message yourself\" chat.",
+      "notLinked": "No WhatsApp account linked yet.",
+      "link": "Link WhatsApp",
+      "linked": "Linked: +{{phone}}",
+      "qrAlt": "WhatsApp QR code",
+      "scanHint": "In WhatsApp on your phone: Settings > Linked devices > Link a device, then scan this code.",
+      "retry": "Try again",
+      "errorGeneric": "Linking failed. Please try again.",
+      "allowFromDesc": "Other WhatsApp numbers that may message Compa, besides your own \"message yourself\" chat, as 15550003333. Leave empty to use only your own chat."
+    },
     "field": {
       "token": "Bot Token",
       "tokenPlaceholder": "Enter bot token",
@@ -668,17 +679,11 @@
       "isLark": "Lark (International)",
       "allowFrom": "Allow From",
       "allowFromPlaceholder": "e.g. 123456 or @username",
-      "chats": "Chats",
       "allowOrigins": "Allow Origins",
       "allowOriginsPlaceholder": "e.g. https://example.com, http://localhost:5173",
       "removeListItem": "Remove {{value}}",
       "secretPlaceholder": "Enter secret",
       "secretHintSet": "A value is already set. Leave blank to keep it unchanged."
-    },
-    "chats": {
-      "self": "Self",
-      "allowed": "Allowed",
-      "all": "All"
     },
     "pairing": {
       "title": "Pairing Requests",
@@ -715,9 +720,6 @@
         "allowOrigins": "Allowed origin domains. Add items one by one, or paste multiple values at once.",
         "wsUrl": "WebSocket service URL.",
         "reconnectInterval": "Reconnect interval after disconnection (seconds).",
-        "bridgeUrl": "Bridge service URL.",
-        "sessionStorePath": "Local path for session storage.",
-        "useNative": "Whether to use native client mode.",
         "host": "Service host address.",
         "port": "Service port.",
         "homeserver": "Matrix homeserver URL.",

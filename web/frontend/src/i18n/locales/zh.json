@@ -608,7 +608,6 @@
       "onebot": "OneBot",
       "wecom": "企业微信",
       "whatsapp": "WhatsApp",
-      "whatsapp_native": "WhatsApp（原生）",
       "web": "网页聊天",
       "maixcam": "MaixCam",
       "matrix": "Matrix",
@@ -646,6 +645,18 @@
       "refresh": "刷新二维码",
       "errorGeneric": "发生错误，请重试。"
     },
+    "whatsapp": {
+      "linkTitle": "已关联账号",
+      "linkDesc": "Compa 作为关联设备加入您的 WhatsApp 账号，并在您的“给自己发消息”聊天中回复。",
+      "notLinked": "尚未关联 WhatsApp 账号。",
+      "link": "关联 WhatsApp",
+      "linked": "已关联：+{{phone}}",
+      "qrAlt": "WhatsApp 二维码",
+      "scanHint": "在您手机上的 WhatsApp 中：设置 > 已关联设备 > 关联设备，然后扫描此二维码。",
+      "retry": "重试",
+      "errorGeneric": "关联失败，请重试。",
+      "allowFromDesc": "除您自己的“给自己发消息”聊天外，还可以给 Compa 发消息的其他 WhatsApp 号码，格式如 15550003333。留空则只使用您自己的聊天。"
+    },
     "field": {
       "token": "Bot Token",
       "tokenPlaceholder": "输入 Bot Token",
@@ -668,17 +679,11 @@
       "isLark": "Lark（国际版）",
       "allowFrom": "允许来源",
       "allowFromPlaceholder": "例如 123456 或 @username",
-      "chats": "聊天范围",
       "allowOrigins": "允许来源域名",
       "allowOriginsPlaceholder": "例如 https://example.com, http://localhost:5173",
       "removeListItem": "删除 {{value}}",
       "secretPlaceholder": "输入密钥",
       "secretHintSet": "配置已保存，留空表示不修改"
-    },
-    "chats": {
-      "self": "仅自己",
-      "allowed": "允许的",
-      "all": "全部"
     },
     "pairing": {
       "title": "配对请求",
@@ -715,9 +720,6 @@
         "allowOrigins": "允许访问的来源域名。可逐项添加，也支持一次粘贴多个值。",
         "wsUrl": "WebSocket 服务地址",
         "reconnectInterval": "断线后的重连间隔（秒）",
-        "bridgeUrl": "桥接服务地址",
-        "sessionStorePath": "本地会话存储目录路径",
-        "useNative": "是否使用原生客户端模式连接",
         "host": "服务监听主机地址",
         "port": "服务监听端口",
         "homeserver": "Matrix homeserver 地址",

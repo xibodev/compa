@@ -285,11 +285,7 @@ func DefaultConfig() *Config {
 
 func defaultChannels() ChannelsConfig {
 	defs := map[string]any{
-		"whatsapp": map[string]any{
-			"settings": map[string]any{
-				"bridge_url": "ws://localhost:3001",
-			},
-		},
+		"whatsapp": map[string]any{},
 		"telegram": map[string]any{
 			"typing":      map[string]any{"enabled": true},
 			"placeholder": map[string]any{"enabled": true, "text": []string{"Thinking... 💭"}},

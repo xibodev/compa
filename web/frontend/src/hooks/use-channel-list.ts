@@ -39,7 +39,6 @@ const CHANNEL_IMPORTANCE_TAIL = [
   "maixcam",
   "irc",
   "whatsapp",
-  "whatsapp_native",
 ]
 
 function getChannelImportanceOrder(language: string): string[] {
@@ -76,7 +75,6 @@ const CHANNEL_ICON_MAP: Record<
   weixin: IconBrandWechat,
   wecom: IconBrandWechat,
   whatsapp: IconBrandWhatsapp,
-  whatsapp_native: IconBrandWhatsapp,
   matrix: IconBrandMatrix,
   maixcam: IconCamera,
   onebot: IconRobot,
@@ -99,23 +97,7 @@ function isChannelEnabled(
   channel: SupportedChannel,
   channelsConfig: Record<string, unknown>,
 ): boolean {
-  const channelConfig = asRecord(channelsConfig[channel.config_key])
-  if (channelConfig.enabled !== true) {
-    return false
-  }
-
-  // whatsapp / whatsapp_native share one config block and are split by
-  // use_native, which the config keeps with the channel's settings.
-  const useNative =
-    asRecord(channelConfig.settings).use_native ?? channelConfig.use_native
-  if (channel.name === "whatsapp_native") {
-    return useNative === true
-  }
-  if (channel.name === "whatsapp") {
-    return useNative !== true
-  }
-
-  return true
+  return asRecord(channelsConfig[channel.config_key]).enabled === true
 }
 
 function buildChannelEnabledMap(

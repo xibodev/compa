@@ -10,10 +10,7 @@ import { afterEach, describe, expect, it, vi } from "vitest"
 
 import "@/i18n"
 
-import {
-  effectiveWhatsAppChats,
-  hasOwnerAccount,
-} from "./channel-config-fields"
+import { hasOwnerAccount } from "./channel-config-fields"
 import { ChannelConfigPage } from "./channel-config-page"
 import { GenericForm } from "./channel-forms/generic-form"
 import { ChannelPairingRequests } from "./channel-pairing-requests"
@@ -62,23 +59,6 @@ describe("channel access", () => {
       <GenericForm config={{ enabled: true, token: "" }} onChange={() => {}} />,
     )
     expect(screen.queryByText("Allow From")).not.toBeInTheDocument()
-  })
-
-  it("lets native WhatsApp choose its chats", () => {
-    expect(effectiveWhatsAppChats({})).toBe("self")
-    expect(effectiveWhatsAppChats({ chats: "all" })).toBe("all")
-
-    render(
-      <GenericForm
-        config={{ enabled: true, chats: "allowed" }}
-        onChange={() => {}}
-        accessPolicy
-        whatsAppChats
-      />,
-    )
-    expect(screen.getByRole("combobox", { name: "Chats" })).toHaveTextContent(
-      "Allowed",
-    )
   })
 
   it("takes an allow_from entry other than * as the owner's account", () => {
@@ -147,16 +127,11 @@ describe("ChannelPairingRequests", () => {
     const decisions = stubPairing([ANA])
     const onApproved = vi.fn()
     render(
-      <ChannelPairingRequests
-        channelName="whatsapp_native"
-        onApproved={onApproved}
-      />,
+      <ChannelPairingRequests channelName="discord" onApproved={onApproved} />,
     )
     fireEvent.click(await screen.findByRole("button", { name: "Deny" }))
     await waitFor(() =>
-      expect(decisions[0]?.path).toBe(
-        "/api/channels/whatsapp_native/pairing/deny",
-      ),
+      expect(decisions[0]?.path).toBe("/api/channels/discord/pairing/deny"),
     )
     expect(onApproved).not.toHaveBeenCalled()
   })

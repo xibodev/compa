@@ -436,7 +436,6 @@ func validateConfig(cfg *config.Config) []string {
 		if bc == nil {
 			continue
 		}
-		errs = append(errs, validateChannelSettingValues(name, bc)...)
 		streaming, ok := channelStreamingConfig(bc)
 		if !ok {
 			continue
@@ -520,23 +519,6 @@ func validateRegexPatterns(field string, patterns []string) []string {
 	for index, pattern := range patterns {
 		if _, err := regexp.Compile(pattern); err != nil {
 			errs = append(errs, fmt.Sprintf("%s[%d] is not a valid regular expression: %v", field, index, err))
-		}
-	}
-	return errs
-}
-
-// validateChannelSettingValues rejects the (native WhatsApp) settings.chats
-// values loading the config would reject, so a typo is refused when saved
-// rather than breaking the next start.
-func validateChannelSettingValues(name string, bc *config.Channel) []string {
-	var errs []string
-	if decoded, err := bc.GetDecoded(); err == nil {
-		if wa, ok := decoded.(*config.WhatsAppSettings); ok {
-			switch c := strings.TrimSpace(wa.Chats); c {
-			case "", config.WhatsAppChatsSelf, config.WhatsAppChatsAllowed, config.WhatsAppChatsAll:
-			default:
-				errs = append(errs, fmt.Sprintf("channel %q settings.chats %q must be one of self, allowed, all", name, c))
-			}
 		}
 	}
 	return errs

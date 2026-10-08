@@ -29,7 +29,6 @@ import (
 	_ "github.com/xibodev/compa/v3/pkg/channels/teams_webhook"
 	_ "github.com/xibodev/compa/v3/pkg/channels/web"
 	_ "github.com/xibodev/compa/v3/pkg/channels/whatsapp"
-	_ "github.com/xibodev/compa/v3/pkg/channels/whatsapp_native"
 	"github.com/xibodev/compa/v3/pkg/config"
 	"github.com/xibodev/compa/v3/pkg/cron"
 	"github.com/xibodev/compa/v3/pkg/devices"

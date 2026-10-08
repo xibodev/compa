@@ -1166,10 +1166,8 @@ func (m *Manager) getChannelConfigAndEnabled(channelName string) (*config.Channe
 	//nolint:revive
 	switch settings := decoded.(type) {
 	case *config.WhatsAppSettings:
-		if channelType == config.ChannelWhatsApp {
-			return bc, settings.BridgeURL != ""
-		}
-		return bc, channelType == config.ChannelWhatsAppNative && settings.UseNative
+		// Ready when enabled; Start reports a WhatsApp not linked yet.
+		return bc, true
 	case *config.MatrixSettings:
 		return bc, settings.Homeserver != "" && settings.UserID != "" && settings.AccessToken.String() != ""
 	case *config.WeComSettings:

@@ -160,4 +160,24 @@ export async function pollWecomFlow(
   )
 }
 
+// WhatsApp: Compa linked as a device of the owner's account.
+
+export interface WhatsAppLinkResponse {
+  status: "unlinked" | "waiting" | "linked" | "failed"
+  /** While waiting: the current QR code, as a PNG data URI. */
+  qr_data_uri?: string
+  phone?: string
+  error?: string
+}
+
+export async function getWhatsAppLink(): Promise<WhatsAppLinkResponse> {
+  return request<WhatsAppLinkResponse>("/api/whatsapp/link")
+}
+
+export async function startWhatsAppLink(): Promise<WhatsAppLinkResponse> {
+  return request<WhatsAppLinkResponse>("/api/whatsapp/link", {
+    method: "POST",
+  })
+}
+
 export type { ChannelsCatalogResponse, ConfigActionResponse }

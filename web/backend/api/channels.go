@@ -18,8 +18,7 @@ type channelCatalogItem struct {
 // ones. The paused channels are left out (see pkg/gateway/channels_paused.go).
 var channelCatalog = []channelCatalogItem{
 	{Name: "slack", ConfigKey: "slack"},
-	{Name: "whatsapp", ConfigKey: "whatsapp", Variant: "bridge"},
-	{Name: "whatsapp_native", ConfigKey: "whatsapp", Variant: "native"},
+	{Name: "whatsapp", ConfigKey: "whatsapp"},
 	{Name: "web", ConfigKey: "web"},
 }
 
@@ -77,23 +76,22 @@ func findChannelCatalogItem(name string) (channelCatalogItem, bool) {
 }
 
 var channelSecretFieldMap = map[string][]string{
-	"weixin":          {"token"},
-	"telegram":        {"token"},
-	"discord":         {"token"},
-	"slack":           {"bot_token", "app_token"},
-	"feishu":          {"app_secret", "encrypt_key", "verification_token"},
-	"dingtalk":        {"client_secret"},
-	"line":            {"channel_secret", "channel_access_token"},
-	"qq":              {"app_secret"},
-	"onebot":          {"access_token"},
-	"wecom":           {"secret"},
-	"web":             {"token"},
-	"matrix":          {"access_token"},
-	"irc":             {"password", "nickserv_password", "sasl_password"},
-	"whatsapp":        {},
-	"whatsapp_native": {},
-	"maixcam":         {"token"},
-	"mqtt":            {"username", "password"},
+	"weixin":   {"token"},
+	"telegram": {"token"},
+	"discord":  {"token"},
+	"slack":    {"bot_token", "app_token"},
+	"feishu":   {"app_secret", "encrypt_key", "verification_token"},
+	"dingtalk": {"client_secret"},
+	"line":     {"channel_secret", "channel_access_token"},
+	"qq":       {"app_secret"},
+	"onebot":   {"access_token"},
+	"wecom":    {"secret"},
+	"web":      {"token"},
+	"matrix":   {"access_token"},
+	"irc":      {"password", "nickserv_password", "sasl_password"},
+	"whatsapp": {},
+	"maixcam":  {"token"},
+	"mqtt":     {"username", "password"},
 }
 
 func buildChannelConfigResponse(cfg *config.Config, item channelCatalogItem) channelConfigResponse {
@@ -130,15 +128,6 @@ func buildChannelConfigResponse(cfg *config.Config, item channelCatalogItem) cha
 		delete(settings, key)
 	}
 	addChannelCommonConfig(settings, bc)
-	if item.Name == "whatsapp_native" {
-		// The chats the native client takes as input; unset means the
-		// default, which the page shows like any other value.
-		if decoded, err := bc.GetDecoded(); err == nil {
-			if wa, ok := decoded.(*config.WhatsAppSettings); ok {
-				settings["chats"] = wa.EffectiveChats()
-			}
-		}
-	}
 	resp.Config = settings
 
 	return resp
