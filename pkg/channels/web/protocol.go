@@ -19,8 +19,12 @@ const (
 	TypeMediaCreate   = "media.create"
 	TypeTypingStart   = "typing.start"
 	TypeTypingStop    = "typing.stop"
-	TypeError         = "error"
-	TypePong          = "pong"
+	// TypeTurnStart and TypeTurnEnd frame each turn that answers the
+	// session's messages; turn.end comes after every frame of the reply.
+	TypeTurnStart = "turn.start"
+	TypeTurnEnd   = "turn.end"
+	TypeError     = "error"
+	TypePong      = "pong"
 
 	PayloadKeyContent        = "content"
 	PayloadKeyKind           = "kind"
@@ -31,6 +35,14 @@ const (
 	PayloadKeyServedTarget   = "served_target"
 	PayloadKeyServedIdentity = "served_identity"
 	PayloadKeyUsage          = "usage"
+	// PayloadKeyRequestID is the id of the message.send frame a frame
+	// answers; PayloadKeyRequestIDs lists every one a turn answers, in order.
+	PayloadKeyRequestID  = "request_id"
+	PayloadKeyRequestIDs = "request_ids"
+	// PayloadKeyStatus is how a turn ended: completed, error or aborted;
+	// PayloadKeyError says why a turn that ended with error failed.
+	PayloadKeyStatus = "status"
+	PayloadKeyError  = "error"
 
 	MessageKindThought   = "thought"
 	MessageKindToolCalls = "tool_calls"

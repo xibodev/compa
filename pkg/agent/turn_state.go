@@ -345,6 +345,9 @@ type turnState struct {
 	restorePointHistory []providers.Message
 	restorePointSummary string
 	persistedMessages   []providers.Message
+	// notices tell the chat's channel when this turn starts and ends, when
+	// the channel observes turns.
+	notices *turnNotices
 
 	// SubTurn support
 	depth                int                    // SubTurn depth (0 for root turn)

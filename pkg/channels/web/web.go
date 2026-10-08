@@ -486,6 +486,37 @@ func (c *WebChannel) StartTyping(ctx context.Context, chatID string) (func(), er
 	}, nil
 }
 
+// TurnStarted implements channels.TurnObserver: the chat's sockets get a
+// turn.start frame naming the message.send frames the turn answers.
+func (c *WebChannel) TurnStarted(_ context.Context, chatID string, turn bus.TurnNotice) error {
+	c.sendTurnFrame(chatID, TypeTurnStart, turn)
+	return nil
+}
+
+// TurnEnded implements channels.TurnObserver: the chat's sockets get a
+// turn.end frame after every frame of the turn's reply.
+func (c *WebChannel) TurnEnded(_ context.Context, chatID string, turn bus.TurnNotice) error {
+	c.sendTurnFrame(chatID, TypeTurnEnd, turn)
+	return nil
+}
+
+// sendTurnFrame sends a turn.start or turn.end frame to the chat's sockets.
+// A session with no open socket has nobody to tell.
+func (c *WebChannel) sendTurnFrame(chatID, frameType string, turn bus.TurnNotice) {
+	payload := map[string]any{}
+	if len(turn.MessageIDs) > 0 {
+		payload[PayloadKeyRequestID] = turn.MessageIDs[0]
+		payload[PayloadKeyRequestIDs] = append([]string(nil), turn.MessageIDs...)
+	}
+	if frameType == TypeTurnEnd {
+		payload[PayloadKeyStatus] = turn.Status
+		if turn.Error != "" {
+			payload[PayloadKeyError] = turn.Error
+		}
+	}
+	_ = c.broadcastToSession(chatID, newMessage(frameType, payload))
+}
+
 // SendPlaceholder implements channels.PlaceholderCapable.
 // It sends a placeholder message via the web chat protocol that will later be
 // edited to the actual response via EditMessage (channels.MessageEditor).

@@ -1043,3 +1043,59 @@ func newTestWebSocket(t *testing.T) (*websocket.Conn, <-chan WebMessage, func())
 	defer resp.Body.Close()
 	return clientConn, received, cleanup
 }
+
+// turn.start and turn.end frame a turn for the session's sockets: they name
+// the message.send frames the turn answers, and turn.end says how it ended.
+func TestTurnFramesNameTheirRequests(t *testing.T) {
+	ch := newTestWebChannel(t)
+	if err := ch.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer ch.Stop(context.Background())
+
+	clientConn, received, cleanup := newTestWebSocket(t)
+	defer cleanup()
+	ch.addConnForTest(&webConn{id: "conn-1", conn: clientConn, sessionID: "sess-1"})
+
+	var _ channels.TurnObserver = ch
+	if err := ch.TurnStarted(context.Background(), "web:sess-1",
+		bus.TurnNotice{MessageIDs: []string{"msg-1"}}); err != nil {
+		t.Fatalf("TurnStarted() error = %v", err)
+	}
+	if err := ch.TurnEnded(context.Background(), "web:sess-1", bus.TurnNotice{
+		Ended: true, MessageIDs: []string{"msg-1", "msg-2"}, Status: "error", Error: "model unavailable",
+	}); err != nil {
+		t.Fatalf("TurnEnded() error = %v", err)
+	}
+
+	next := func() WebMessage {
+		t.Helper()
+		select {
+		case msg := <-received:
+			return msg
+		case <-time.After(time.Second):
+			t.Fatal("no frame arrived")
+			return WebMessage{}
+		}
+	}
+	start := next()
+	if start.Type != TypeTurnStart || start.SessionID != "sess-1" ||
+		start.Payload[PayloadKeyRequestID] != "msg-1" ||
+		fmt.Sprint(start.Payload[PayloadKeyRequestIDs]) != "[msg-1]" ||
+		start.Payload[PayloadKeyStatus] != nil {
+		t.Fatalf("start frame = %+v", start)
+	}
+	end := next()
+	if end.Type != TypeTurnEnd || end.SessionID != "sess-1" ||
+		end.Payload[PayloadKeyRequestID] != "msg-1" ||
+		fmt.Sprint(end.Payload[PayloadKeyRequestIDs]) != "[msg-1 msg-2]" ||
+		end.Payload[PayloadKeyStatus] != "error" || end.Payload[PayloadKeyError] != "model unavailable" {
+		t.Fatalf("end frame = %+v", end)
+	}
+
+	// A session with no open socket has nobody to tell.
+	if err := ch.TurnEnded(context.Background(), "web:no-socket",
+		bus.TurnNotice{Ended: true, Status: "completed"}); err != nil {
+		t.Fatalf("TurnEnded() without a socket error = %v", err)
+	}
+}
