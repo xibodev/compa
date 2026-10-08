@@ -3,6 +3,7 @@ package onebot
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -324,7 +325,8 @@ func TestParseMessageSegments_StringFormat(t *testing.T) {
 	}
 }
 
-// A reply and a mention of the bot in the string format.
+// A reply and mentions in the string format: the bot's is a mention, anyone
+// else's stays in the text.
 func TestParseSegments_StringFormatReplyAndMention(t *testing.T) {
 	raw, err := json.Marshal("[CQ:reply,id=123][CQ:at,qq=10001] hello [CQ:at,qq=20002]")
 	if err != nil {
@@ -332,9 +334,59 @@ func TestParseSegments_StringFormatReplyAndMention(t *testing.T) {
 	}
 	result := parseSegments(raw, 10001)
 
-	if !result.IsBotMentioned || result.ReplyTo != "123" || result.Text != "hello" {
-		t.Fatalf("mentioned = %v, reply to %q, text %q; want true, 123, hello",
+	if !result.IsBotMentioned || result.ReplyTo != "123" || result.Text != "hello @20002" {
+		t.Fatalf("mentioned = %v, reply to %q, text %q; want true, 123, hello @20002",
 			result.IsBotMentioned, result.ReplyTo, result.Text)
+	}
+}
+
+// A mention's QQ number may be a JSON number; a named mention shows the name.
+func TestParseSegments_MentionsByNumberAndName(t *testing.T) {
+	raw := json.RawMessage(`[{"type":"at","data":{"qq":1234567890}},{"type":"text","data":{"text":" ask "}},` +
+		`{"type":"at","data":{"qq":2234567890}},{"type":"text","data":{"text":" and "}},` +
+		`{"type":"at","data":{"qq":"3001","name":"Bob"}}]`)
+	result := parseSegments(raw, 1234567890)
+
+	if !result.IsBotMentioned || result.Text != "ask @2234567890 and @Bob" {
+		t.Fatalf("mentioned = %v, text %q; want true, %q", result.IsBotMentioned, result.Text, "ask @2234567890 and @Bob")
+	}
+}
+
+// A text-only message reaches the agent as its parsed text, not as
+// raw_message with OneBot's escapes and CQ codes.
+func TestHandleMessage_TextOnlyMessageIsParsed(t *testing.T) {
+	messageBus := bus.NewMessageBus()
+	ch, err := NewOneBotChannel(&config.Channel{
+		Type: config.ChannelOneBot, Enabled: true, AllowFrom: config.FlexibleStringSlice{"111"},
+	}, &config.OneBotSettings{}, messageBus)
+	if err != nil {
+		t.Fatalf("NewOneBotChannel: %v", err)
+	}
+	ch.ctx = context.Background()
+	ch.SetAccessPolicy(config.DMPolicyPairing, config.GroupPolicyAllowlist)
+
+	for i, message := range []string{
+		`[{"type":"text","data":{"text":"a & b [x] "}},{"type":"face","data":{"id":"14"}},` +
+			`{"type":"text","data":{"text":" "}},{"type":"at","data":{"qq":"20002"}}]`,
+		`"a &amp; b &#91;x&#93; [CQ:face,id=14] [CQ:at,qq=20002]"`,
+	} {
+		ch.handleRawEvent(&oneBotRawEvent{
+			PostType:    "message",
+			MessageType: "private",
+			MessageID:   json.RawMessage(fmt.Sprintf(`"t%d"`, i)),
+			UserID:      json.RawMessage(`111`),
+			SelfID:      json.RawMessage(`10001`),
+			Message:     json.RawMessage(message),
+			RawMessage:  "a &amp; b &#91;x&#93; [CQ:face,id=14] [CQ:at,qq=20002]",
+		})
+		select {
+		case inbound := <-messageBus.InboundChan():
+			if want := "a & b [x] [face:14] @20002"; inbound.Content != want {
+				t.Fatalf("message %d published %q, want %q", i, inbound.Content, want)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("message %d was not published", i)
+		}
 	}
 }
 

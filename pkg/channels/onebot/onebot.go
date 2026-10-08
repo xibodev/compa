@@ -800,6 +800,22 @@ func cqSegments(s string) []map[string]any {
 	return segments
 }
 
+// segmentID reads a QQ number or "all" from a segment's data: a string, or a
+// JSON number, which decodes as a float64 that %v would print in exponent
+// form.
+func segmentID(v any) string {
+	switch id := v.(type) {
+	case string:
+		return id
+	case float64:
+		return strconv.FormatFloat(id, 'f', -1, 64)
+	case nil:
+		return ""
+	default:
+		return fmt.Sprintf("%v", id)
+	}
+}
+
 // parseSegments reads a message's text, mention, reply and the media it lists,
 // without downloading anything.
 func parseSegments(raw json.RawMessage, selfID int64) parseMessageResult {
@@ -834,9 +850,22 @@ func parseSegments(raw json.RawMessage, selfID int64) parseMessageResult {
 			}
 
 		case "at":
-			// "@all" addresses everyone in the group, not the bot.
-			if data != nil && selfID > 0 && fmt.Sprintf("%v", data["qq"]) == selfIDStr {
+			// The bot's own mention is not text; anyone else's, "@all"
+			// included, is, as the chat shows it.
+			if data == nil {
+				break
+			}
+			qq := segmentID(data["qq"])
+			if selfID > 0 && qq == selfIDStr {
 				mentioned = true
+				break
+			}
+			name, _ := data["name"].(string)
+			if name == "" {
+				name = qq
+			}
+			if name != "" {
+				text.WriteString("@" + name)
 			}
 
 		case "image", "video", "file":
@@ -1096,26 +1125,19 @@ func (c *OneBotChannel) handleMessage(raw *oneBotRawEvent) {
 	// Media is downloaded only after the group trigger and the allowlist
 	// admitted the message.
 	parsed := parseSegments(raw.Message, selfID)
-	hasMedia := len(parsed.pending) > 0
-	isBotMentioned := parsed.IsBotMentioned
-
-	content := raw.RawMessage
-	if content == "" {
-		content = parsed.Text
-	} else if selfID > 0 {
-		cqAt := fmt.Sprintf("[CQ:at,qq=%d]", selfID)
-		if strings.Contains(content, cqAt) {
-			isBotMentioned = true
-			content = strings.ReplaceAll(content, cqAt, "")
-			content = strings.TrimSpace(content)
+	// raw_message, the same message in the string format, stands in for a
+	// message field that is missing or unreadable. Otherwise the message field
+	// is read: raw_message holds OneBot's escapes and CQ codes, which the
+	// agent should not get as text.
+	if parsed.Text == "" && len(parsed.pending) == 0 && raw.RawMessage != "" {
+		if encoded, err := json.Marshal(raw.RawMessage); err == nil {
+			parsed = parseSegments(encoded, selfID)
 		}
 	}
-
-	// The parsed text replaces raw CQ codes of media and replies; for media
-	// the tags are added once it is downloaded.
-	if content != parsed.Text && (hasMedia || (parsed.ReplyTo != "" && parsed.Text != "")) {
-		content = parsed.Text
-	}
+	hasMedia := len(parsed.pending) > 0
+	isBotMentioned := parsed.IsBotMentioned
+	// For media the tags are added once it is downloaded.
+	content := parsed.Text
 
 	var sender oneBotSender
 	if len(raw.Sender) > 0 {
