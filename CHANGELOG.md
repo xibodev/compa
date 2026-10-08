@@ -43,6 +43,10 @@ Notable changes to Compa, newest first. Versions follow
   failure. `model auto-free --json` also reports the default model it chose
   and each provider's models, probe model and latency. See
   [JSON output](docs/cli.md#json-output).
+- [Gateway interface](docs/gateway.md) describes how programs that run the
+  gateway talk to it: the pid file, the health and control routes, and the web
+  chat's socket, files and history. `/health` and the pid file give the
+  interface's version as `protocol`, now 1.
 
 ### Fixed
 
