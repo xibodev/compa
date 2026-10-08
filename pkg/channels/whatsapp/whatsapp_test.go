@@ -217,3 +217,18 @@ func TestMessageParts(t *testing.T) {
 		}
 	}
 }
+
+// Without a linked account the channel starts idle, so the gateway keeps
+// running.
+func TestStartWithoutALinkedAccountIsIdle(t *testing.T) {
+	ch, _, _ := newTestChannel(t, nil)
+	if err := ch.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if ch.IsRunning() {
+		t.Fatal("an unlinked channel runs")
+	}
+	if err := ch.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+}

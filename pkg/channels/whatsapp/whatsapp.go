@@ -93,8 +93,11 @@ func (c *WhatsAppChannel) Start(ctx context.Context) error {
 		return err
 	}
 	if device.ID == nil {
+		// Not an error: the gateway keeps running, and connects WhatsApp once
+		// it is linked and the gateway restarts.
 		_ = container.Close()
-		return ErrNotLinked
+		logger.WarnC("whatsapp", ErrNotLinked.Error())
+		return nil
 	}
 
 	client := whatsmeow.NewClient(device, waLogger)

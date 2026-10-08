@@ -22,8 +22,8 @@ const (
 	whatsappDBName = "store.db"
 )
 
-// ErrNotLinked is why the channel does not start: no WhatsApp account is
-// linked yet.
+// ErrNotLinked is what the channel logs when it starts with no WhatsApp
+// account linked: it stays idle until one is.
 var ErrNotLinked = errors.New("WhatsApp is not linked: link it with `compa-kernel auth whatsapp` or on the WhatsApp page")
 
 // StorePath is where the linked account's session is kept: the channel's

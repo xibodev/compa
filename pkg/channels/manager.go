@@ -1150,13 +1150,6 @@ func (m *Manager) getChannelConfigAndEnabled(channelName string) (*config.Channe
 		return bc, false
 	}
 
-	// Use Type to determine the config struct for validation.
-	// The map key (channelName) is the config key, which may differ from the type.
-	channelType := bc.Type
-	if channelType == "" {
-		channelType = channelName
-	}
-
 	// Settings have already been decoded by InitChannelList, so we just need to
 	// type-assert and check the relevant fields.
 	decoded, err := bc.GetDecoded()
@@ -1177,7 +1170,8 @@ func (m *Manager) getChannelConfigAndEnabled(channelName string) (*config.Channe
 	case *config.DingTalkSettings:
 		return bc, settings.ClientID != ""
 	case *config.SlackSettings:
-		return bc, settings.BotToken.String() != ""
+		// Socket Mode needs the app-level token as well as the bot token.
+		return bc, settings.BotToken.String() != "" && settings.AppToken.String() != ""
 	case *config.WeixinSettings:
 		return bc, settings.Token.String() != ""
 	case *config.WebChatSettings:

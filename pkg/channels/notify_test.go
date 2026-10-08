@@ -80,3 +80,24 @@ func join(items []string) string {
 	}
 	return out
 }
+
+// Slack runs in Socket Mode, which needs the app-level token: a channel with
+// only its bot token is not ready.
+func TestSlackNeedsBothTokens(t *testing.T) {
+	for name, tc := range map[string]struct {
+		settings string
+		ready    bool
+	}{
+		"bot token only": {`{"bot_token":"xoxb-1"}`, false},
+		"both tokens":    {`{"bot_token":"xoxb-1","app_token":"xapp-1"}`, true},
+	} {
+		bc := &config.Channel{Type: config.ChannelSlack, Enabled: true, Settings: config.RawNode(tc.settings)}
+		m := &Manager{config: &config.Config{Channels: config.ChannelsConfig{"slack": bc}}}
+		if err := config.InitChannelList(m.config.Channels); err != nil {
+			t.Fatalf("%s: InitChannelList() error = %v", name, err)
+		}
+		if _, ready := m.getChannelConfigAndEnabled("slack"); ready != tc.ready {
+			t.Errorf("%s: ready = %v, want %v", name, ready, tc.ready)
+		}
+	}
+}

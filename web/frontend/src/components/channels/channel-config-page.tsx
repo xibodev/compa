@@ -175,7 +175,7 @@ function isConfigured(
     case "discord":
       return hasValue("token")
     case "slack":
-      return hasValue("bot_token")
+      return hasValue("bot_token") && hasValue("app_token")
     case "feishu":
       return hasValue("app_id") && hasValue("app_secret")
     case "dingtalk":
@@ -219,7 +219,7 @@ function getRequiredFieldKeys(channelName: string): string[] {
     case "discord":
       return ["token"]
     case "slack":
-      return ["bot_token"]
+      return ["bot_token", "app_token"]
     case "feishu":
       return ["app_id", "app_secret"]
     case "dingtalk":
