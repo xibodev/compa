@@ -340,8 +340,7 @@ func (e *Engine) Assemble(ctx context.Context, sessionKey string, input Assemble
 		return nil, fmt.Errorf("get conversation: %w", err)
 	}
 
-	e.initAssemblerOnce()
-	return e.assembler.Assemble(ctx, conv.ConversationID, input)
+	return e.loadAssembler().Assemble(ctx, conv.ConversationID, input)
 }
 
 // Compact compresses conversation history for a session.
@@ -355,8 +354,7 @@ func (e *Engine) Compact(ctx context.Context, sessionKey string, input CompactIn
 		return nil, fmt.Errorf("get conversation: %w", err)
 	}
 
-	e.initCompactionOnce()
-	return e.compaction.Compact(ctx, conv.ConversationID, input)
+	return e.loadCompaction().Compact(ctx, conv.ConversationID, input)
 }
 
 // CompactUntilUnder aggressively compacts until context is under budget.
@@ -371,37 +369,37 @@ func (e *Engine) CompactUntilUnder(ctx context.Context, sessionKey string, budge
 		return nil, fmt.Errorf("get conversation: %w", err)
 	}
 
-	e.initCompactionOnce()
-	return e.compaction.CompactUntilUnder(ctx, conv.ConversationID, budget)
+	return e.loadCompaction().CompactUntilUnder(ctx, conv.ConversationID, budget)
 }
 
-// initCompactionOnce lazily initializes the compaction engine.
-func (e *Engine) initCompactionOnce() {
+// loadCompaction returns the compaction engine, creating it on first use.
+// Turns call it concurrently, so it reads the field under compactionMu every
+// time: a check outside the lock would race with the write inside it.
+func (e *Engine) loadCompaction() *CompactionEngine {
+	e.compactionMu.Lock()
+	defer e.compactionMu.Unlock()
 	if e.compaction == nil {
-		e.compactionMu.Lock()
-		defer e.compactionMu.Unlock()
-		if e.compaction == nil {
-			shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
-			e.compaction = &CompactionEngine{
-				store:          e.store,
-				config:         e.config,
-				complete:       e.complete,
-				shutdownCtx:    shutdownCtx,
-				shutdownCancel: shutdownCancel,
-			}
+		shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
+		e.compaction = &CompactionEngine{
+			store:          e.store,
+			config:         e.config,
+			complete:       e.complete,
+			shutdownCtx:    shutdownCtx,
+			shutdownCancel: shutdownCancel,
 		}
 	}
+	return e.compaction
 }
 
-// initAssemblerOnce lazily initializes the assembler.
-func (e *Engine) initAssemblerOnce() {
+// loadAssembler returns the assembler, creating it on first use, under
+// assemblerMu for the same reason as loadCompaction.
+func (e *Engine) loadAssembler() *Assembler {
+	e.assemblerMu.Lock()
+	defer e.assemblerMu.Unlock()
 	if e.assembler == nil {
-		e.assemblerMu.Lock()
-		defer e.assemblerMu.Unlock()
-		if e.assembler == nil {
-			e.assembler = &Assembler{store: e.store, config: e.config}
-		}
+		e.assembler = &Assembler{store: e.store, config: e.config}
 	}
+	return e.assembler
 }
 
 // ClearSession removes all stored data for a session (messages, summaries, context).
