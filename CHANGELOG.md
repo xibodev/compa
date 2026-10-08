@@ -14,9 +14,18 @@ Notable changes to Compa, newest first. Versions follow
   route's next target, or fails with `agent.ErrToolsRequired` when no target
   takes tools, instead of going on without tools. See
   [Embed the Go runtime](docs/embedding.md).
+- `--json` on `compa-kernel model` (show, set and `--clear`),
+  `model auto-free`, `model ping`, `model roster`, `auth login`,
+  `auth logout` and `auth status` prints one JSON document on stdout, with
+  the launcher's field names, and `{"error": "..."}` with exit status 1 on
+  failure. `model auto-free --json` also reports the default model it chose
+  and each provider's models, probe model and latency. See
+  [JSON output](docs/cli.md#json-output).
 
 ### Fixed
 
+- `compa-kernel auth status` skips a `null` entry in a hand-edited
+  `auth.json`; it crashed. It lists the providers in name order.
 - `compa-kernel mcp add`, `mcp remove` and `mcp edit` save their change when
   a server has its own `call_timeout_seconds`; they refused every change.
 - On Windows computers whose processor has AMX, such as recent Intel Xeon,

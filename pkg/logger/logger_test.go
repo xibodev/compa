@@ -431,3 +431,43 @@ func TestGetPackageNameFromFile(t *testing.T) {
 		})
 	}
 }
+
+// SetConsoleOutput moves the console log, and keeps a disabled console off
+// until it is enabled again.
+func TestSetConsoleOutput(t *testing.T) {
+	initialLevel := GetLevel()
+	mu.Lock()
+	previousWriter, previousOut := writers[0], consoleWriter.Out
+	mu.Unlock()
+	t.Cleanup(func() {
+		SetLevel(initialLevel)
+		mu.Lock()
+		defer mu.Unlock()
+		consoleWriter.Out = previousOut
+		writers[0] = previousWriter
+		setOutputLocked()
+	})
+	SetLevel(INFO)
+	EnableConsole()
+
+	var moved bytes.Buffer
+	SetConsoleOutput(&moved)
+	Info("goes to the new output")
+	if !bytes.Contains(moved.Bytes(), []byte("goes to the new output")) {
+		t.Fatalf("console output = %q", moved.String())
+	}
+
+	DisableConsole()
+	var later bytes.Buffer
+	SetConsoleOutput(&later)
+	Info("while disabled")
+	if later.Len() != 0 || bytes.Contains(moved.Bytes(), []byte("while disabled")) {
+		t.Fatalf("a disabled console logged: %q, %q", later.String(), moved.String())
+	}
+
+	EnableConsole()
+	Info("after enabling")
+	if !bytes.Contains(later.Bytes(), []byte("after enabling")) {
+		t.Fatalf("console output after enabling = %q", later.String())
+	}
+}

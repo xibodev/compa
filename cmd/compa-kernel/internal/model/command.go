@@ -2,11 +2,14 @@ package model
 
 import (
 	"fmt"
+	"io"
+	"os"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/xibodev/compa/v3/cmd/compa-kernel/internal"
+	"github.com/xibodev/compa/v3/cmd/compa-kernel/internal/jsonout"
 	"github.com/xibodev/compa/v3/pkg/config"
 	"github.com/xibodev/compa/v3/pkg/modelservice"
 )
@@ -38,25 +41,62 @@ Examples:
 			if err != nil {
 				return fmt.Errorf("failed to load config: %w", err)
 			}
+			asJSON := jsonout.Requested(cmd)
 			switch {
 			case clearDefault && len(args) > 0:
 				return fmt.Errorf("use either a model or --clear, not both")
-			case clearDefault:
-				return setDefaultModel(configPath, cfg, "")
-			case len(args) == 0:
+			case len(args) == 0 && !clearDefault:
+				if asJSON {
+					return jsonout.Write(cmd.OutOrStdout(), currentModelState(cfg))
+				}
 				showCurrentModel(cfg)
 				return nil
 			}
-			return setDefaultModel(configPath, cfg, args[0])
+			selection := ""
+			if !clearDefault {
+				selection = args[0]
+			}
+			if !asJSON {
+				return setDefaultModel(configPath, cfg, selection)
+			}
+			change, err := saveDefaultModel(configPath, cfg, selection)
+			if err != nil {
+				return err
+			}
+			return jsonout.Write(cmd.OutOrStdout(), change)
 		},
 	}
 	cmd.Flags().BoolVar(&clearDefault, "clear", false, "Clear the default model")
+	cmd.PersistentFlags().Bool(jsonout.Flag, false, jsonout.Usage)
 
 	cmd.AddCommand(newAutoFreeCommand())
 	cmd.AddCommand(newPingCommand())
 	cmd.AddCommand(newRosterCommand())
 
 	return cmd
+}
+
+// modelState is the default model and the choices for it, with the field
+// names of the launcher's /api/default-model, /api/active-models and
+// /api/model-routes.
+type modelState struct {
+	Selection    string                     `json:"selection"`
+	ActiveModels []string                   `json:"active_models"`
+	Routes       []*config.ModelRouteConfig `json:"routes"`
+}
+
+func currentModelState(cfg *config.Config) modelState {
+	state := modelState{
+		Selection:    cfg.Agents.Defaults.GetModelName(),
+		ActiveModels: append([]string{}, cfg.ActiveModels...),
+		Routes:       []*config.ModelRouteConfig{},
+	}
+	for _, route := range cfg.ModelRoutes {
+		if route != nil {
+			state.Routes = append(state.Routes, route)
+		}
+	}
+	return state
 }
 
 func showCurrentModel(cfg *config.Config) {
@@ -70,58 +110,72 @@ func showCurrentModel(cfg *config.Config) {
 }
 
 func listAvailableModels(cfg *config.Config) {
-	selection := cfg.Agents.Defaults.GetModelName()
+	state := currentModelState(cfg)
 	marker := func(value string) string {
-		if value == selection {
+		if value == state.Selection {
 			return "> "
 		}
 		return "  "
 	}
 
-	if len(cfg.ActiveModels) > 0 {
+	if len(state.ActiveModels) > 0 {
 		fmt.Println("\nChat shortlist:")
-		for _, target := range cfg.ActiveModels {
+		for _, target := range state.ActiveModels {
 			fmt.Printf("%s%s\n", marker(target), target)
 		}
 	}
-	var routes []*config.ModelRouteConfig
-	for _, route := range cfg.ModelRoutes {
-		if route != nil {
-			routes = append(routes, route)
-		}
-	}
-	if len(routes) > 0 {
+	if len(state.Routes) > 0 {
 		fmt.Println("\nModel routes:")
-		for _, route := range routes {
+		for _, route := range state.Routes {
 			fmt.Printf("%s%s -> %s\n", marker(route.Name), route.Name, strings.Join(route.Targets, ", "))
 		}
 	}
-	if len(cfg.ActiveModels) == 0 && len(routes) == 0 {
+	if len(state.ActiveModels) == 0 && len(state.Routes) == 0 {
 		fmt.Println("\nNo models on the chat shortlist and no model routes.")
 		fmt.Println("Connect a provider (compa-kernel auth login, or the Models page) and pick models.")
 	}
 }
 
-func setDefaultModel(configPath string, cfg *config.Config, selection string) error {
+// defaultModelChange is what setting or clearing the default model did:
+// selection is the new default model, "" when cleared.
+type defaultModelChange struct {
+	Selection string `json:"selection"`
+	Previous  string `json:"previous"`
+}
+
+// saveDefaultModel makes selection the default model, or clears it when
+// selection is empty, and saves the config.
+func saveDefaultModel(configPath string, cfg *config.Config, selection string) (defaultModelChange, error) {
 	selection = strings.TrimSpace(selection)
 	if selection != "" {
 		if err := checkSelection(cfg, selection); err != nil {
-			return fmt.Errorf("cannot use %q as the default model: %w", selection, err)
+			return defaultModelChange{}, fmt.Errorf("cannot use %q as the default model: %w", selection, err)
 		}
 	}
 
 	previous := cfg.Agents.Defaults.GetModelName()
 	cfg.Agents.Defaults.ModelName = selection
 	if err := config.SaveConfig(configPath, cfg); err != nil {
-		return fmt.Errorf("failed to save config: %w", err)
+		return defaultModelChange{}, fmt.Errorf("failed to save config: %w", err)
 	}
+	return defaultModelChange{Selection: selection, Previous: previous}, nil
+}
 
-	if selection == "" {
-		fmt.Printf("✓ Default model cleared (was %s)\n", formatModelName(previous))
-		return nil
+func setDefaultModel(configPath string, cfg *config.Config, selection string) error {
+	change, err := saveDefaultModel(configPath, cfg, selection)
+	if err != nil {
+		return err
 	}
-	fmt.Printf("✓ Default model changed from %s to %s\n", formatModelName(previous), selection)
+	printDefaultModelChange(os.Stdout, change)
 	return nil
+}
+
+func printDefaultModelChange(w io.Writer, change defaultModelChange) {
+	if change.Selection == "" {
+		fmt.Fprintf(w, "✓ Default model cleared (was %s)\n", formatModelName(change.Previous))
+		return
+	}
+	fmt.Fprintf(w, "✓ Default model changed from %s to %s\n", formatModelName(change.Previous), change.Selection)
 }
 
 func formatModelName(name string) string {
