@@ -45,6 +45,9 @@ Notable changes to Compa, newest first. Versions follow
   skips the built-in dangerous patterns, as the setting says; the whitelist let
   no command through. The **Command Blacklist** still blocks it, and the
   setting's pattern tester now says so; it called such a command allowed.
+- The agent can read the skills in `~/.compa/skills` and in the built-in
+  skills folder, as its prompt tells it to; with **Restrict to Workspace** on,
+  the default, `read_file` refused them as outside the workspace.
 
 ## 3.0.0 - 2026-10-06
 

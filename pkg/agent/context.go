@@ -111,16 +111,21 @@ func getGlobalConfigDir() string {
 	return config.GetHome()
 }
 
+// globalSkillsDir is the folder of the skills every workspace's agent sees,
+// $COMPA_HOME/skills.
+func globalSkillsDir() string {
+	return filepath.Join(getGlobalConfigDir(), "skills")
+}
+
 func NewContextBuilder(workspace string) *ContextBuilder {
 	// Built-in skills come from $COMPA_BUILTIN_SKILLS or the install, never
 	// from the working directory: a skills/ folder where Compa happens to be
 	// launched must not join the system prompt as built-ins.
 	builtinSkillsDir := skills.BuiltinDir()
-	globalSkillsDir := filepath.Join(getGlobalConfigDir(), "skills")
 
 	return &ContextBuilder{
 		workspace:      workspace,
-		skillsLoader:   skills.NewSkillsLoader(workspace, globalSkillsDir, builtinSkillsDir),
+		skillsLoader:   skills.NewSkillsLoader(workspace, globalSkillsDir(), builtinSkillsDir),
 		memory:         NewMemoryStore(workspace),
 		promptRegistry: NewPromptRegistry(),
 	}

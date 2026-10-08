@@ -95,13 +95,15 @@ is running. The **Tools** page turns each tool on or off.
 File tools work in the workspace folder, `~/.compa/workspace` by default
 (**Config** → **Agent** → **Workspace Directory**). With **Restrict to
 Workspace** on, which is the default, file tools refuse paths outside the
-workspace, except reading Compa's attachment folder and the paths that
-`tools.allow_read_paths` and `tools.allow_write_paths` in `config.json` match;
+workspace, except reading Compa's attachment folder, the skill folders outside
+the workspace and the paths that `tools.allow_read_paths` and
+`tools.allow_write_paths` in `config.json` match;
 `agents.defaults.allow_read_outside_workspace` lets them read anywhere.
 The path patterns are regular expressions matched against the full path, such
 as `^/home/me/notes/`; in JSON, each `\` of a Windows path is written `\\\\`.
 Commands start in the workspace and are blocked when they name other paths,
-except those `tools.allow_read_paths` matches. They still run as your user
+except the attachment and skill folders and those `tools.allow_read_paths`
+matches. They still run as your user
 account, so this is a guard, not a sandbox. **Config** → **Run Commands**
 controls commands: **Allow Commands**, the command blacklist and whitelist, and
 the timeout.
