@@ -6,6 +6,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/xibodev/compa/v3/pkg/config"
 )
 
 func TestNewAuthCommand(t *testing.T) {
@@ -31,8 +33,10 @@ func TestNewAuthCommand(t *testing.T) {
 		"login",
 		"logout",
 		"status",
-		"weixin",
-		"wecom",
+	}
+	// auth weixin and auth wecom only in builds with the paused channels.
+	if config.PausedChannelsInBuild {
+		allowedCommands = append(allowedCommands, "weixin", "wecom")
 	}
 
 	subcommands := cmd.Commands()

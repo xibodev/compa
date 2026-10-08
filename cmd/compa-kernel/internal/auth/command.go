@@ -15,9 +15,10 @@ func NewAuthCommand() *cobra.Command {
 		newLoginCommand(),
 		newLogoutCommand(),
 		newStatusCommand(),
-		newWeixinCommand(),
-		newWeComCommand(),
 	)
+	// auth weixin and auth wecom set up paused channels, in builds made with
+	// the paused_channels build tag.
+	cmd.AddCommand(pausedChannelCommands()...)
 
 	return cmd
 }

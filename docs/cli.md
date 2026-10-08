@@ -112,8 +112,8 @@ decides it.
 | `auth login -p <openai\|anthropic>` | Store an API key for a provider. |
 | `auth logout [-p <provider>]` | Remove stored credentials (OpenAI and Anthropic without `-p`). |
 | `auth status` | Show current auth status. |
-| `auth weixin` | Connect a WeChat personal account via QR code. |
-| `auth wecom` | Scan a WeCom QR code and set up the WeCom channel. |
+| `auth weixin` | Connect a WeChat personal account via QR code. In builds with the [paused channels](use.md#paused-channels) only. |
+| `auth wecom` | Scan a WeCom QR code and set up the WeCom channel. In builds with the paused channels only. |
 
 ### gateway
 

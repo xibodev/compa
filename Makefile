@@ -202,9 +202,11 @@ all: build
 
 ## kernel: Build compa-kernel, the harness without the web shell
 #
-# This is the full product MINUS the browser: agent loop, message bus, every
-# channel transport, tools, skills, hooks, sessions, the module host, the CLI
-# and the TUI. It runs headless, as a TUI, or as a gateway serving channels.
+# This is the full product MINUS the browser: agent loop, message bus, the
+# supported channel transports, tools, skills, hooks, sessions, the module
+# host, the CLI and the TUI. It runs headless, as a TUI, or as a gateway
+# serving channels. GO_BUILD_TAGS=goolm,stdjson,paused_channels adds the
+# paused channels.
 #
 # It is the SAME binary the full product ships beside the shell, under the
 # same name, so a standalone install and a bundled one cannot drift.
@@ -463,7 +465,7 @@ help:
 	@echo "  COMPA_HOME        Compa's data folder, deleted by uninstall-all (default: ~/.compa)"
 	@echo "  CONFIRM=1         lets uninstall-all delete COMPA_HOME"
 	@echo "  VERSION           version stamped into the programs (default: git describe, without the leading v)"
-	@echo "  GO_BUILD_TAGS     Go build tags (default: goolm,stdjson)"
+	@echo "  GO_BUILD_TAGS     Go build tags (default: goolm,stdjson; add paused_channels for the paused channels)"
 	@echo "  LOCAL_CACHE=1     keep Go's build and module caches in .cache/ in this checkout"
 	@echo ""
 	@echo "Current configuration:"

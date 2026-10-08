@@ -8,9 +8,12 @@
 version: "2"
 
 run:
+  # paused_channels lints the code only builds with the paused channels use,
+  # such as their registration and the WeChat and WeCom logins.
   build-tags:
     - goolm
     - stdjson
+    - paused_channels
 
 linters:
   default: none

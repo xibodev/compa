@@ -103,16 +103,6 @@ func TestPairingListEmptyIsAnEmptyArray(t *testing.T) {
 	}
 }
 
-func TestPairingNativeWhatsAppListsTheWhatsAppChannel(t *testing.T) {
-	_, mux, home := pairingTestHandler(t)
-	recordPairingRequest(t, home, pairing.Request{Channel: "whatsapp", SenderID: "whatsapp:15550001"})
-
-	rec := pairingRequestJSON(t, mux, http.MethodGet, "/api/channels/whatsapp_native/pairing", "")
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"whatsapp:15550001"`) {
-		t.Fatalf("status = %d, body = %s; want the request of channel_list.whatsapp", rec.Code, rec.Body.String())
-	}
-}
-
 func TestPairingUnknownChannelIsNotFound(t *testing.T) {
 	_, mux, _ := pairingTestHandler(t)
 	for _, path := range []string{

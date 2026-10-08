@@ -32,11 +32,10 @@ type Handler struct {
 	modelResolver *modelservice.Resolver
 	// Serializes model-related config writes. Other config endpoints still
 	// coordinate their own load-modify-save cycles.
-	configMu    sync.Mutex
-	weixinMu    sync.Mutex
-	weixinFlows map[string]*weixinFlow
-	wecomMu     sync.Mutex
-	wecomFlows  map[string]*wecomFlow
+	configMu sync.Mutex
+	// The QR login flows of the paused WeChat and WeCom channels, in builds
+	// that include them.
+	pausedChannelFlows
 	// liveApplies tracks the background applies of saved changes that
 	// ApplyLiveChanges and a pairing approval schedule, so tests can wait
 	// for them.
@@ -54,10 +53,9 @@ func NewHandler(configPath string) *Handler {
 		configPath:                 configPath,
 		serverPort:                 launcherconfig.DefaultPort,
 		serverAllowLocalhostBypass: launcherconfig.Default().AllowLocalhostBypass,
-		weixinFlows:                make(map[string]*weixinFlow),
-		wecomFlows:                 make(map[string]*wecomFlow),
 		extensionFlowsState:        extensionFlowsState{extensionFlows: make(map[string]*extensionFlow)},
 	}
+	h.initPausedChannelFlows()
 	h.providerCredentialResolver = modelservice.ResolveCredentialReference
 	h.providerCatalogHTTPClient = http.DefaultClient
 	h.providerCatalogSync = h.syncProviderCatalog
@@ -141,11 +139,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// Runtime build/version metadata
 	h.registerVersionRoutes(mux)
 
-	// WeChat QR login flow
-	h.registerWeixinRoutes(mux)
-
-	// WeCom QR login flow
-	h.registerWecomRoutes(mux)
+	// WeChat and WeCom QR login flows, in builds with the paused channels
+	h.registerPausedChannelRoutes(mux)
 }
 
 // Shutdown gracefully shuts down the handler, stopping the gateway if it was started by this handler.

@@ -16,7 +16,11 @@ on it; report security problems as [SECURITY.md](SECURITY.md) describes.
 
 Every Go command takes the build tags `goolm,stdjson`. The `whatsapp_native`
 tag adds the WhatsApp channel that links your own account; it links GPL-3.0
-code (see [NOTICE](NOTICE)), so releases leave it out.
+code (see [NOTICE](NOTICE)), so releases leave it out. The `paused_channels`
+tag adds the [paused channels](docs/use.md#paused-channels), which releases
+leave out too. CI builds and tests with each tag; a change to code that only
+those builds use is checked with the tag, such as
+`go test -tags goolm,stdjson,paused_channels ./pkg/gateway/...`.
 
 Build the web UI first, as [Run from source](docs/install.md#run-from-source)
 shows: `compa` embeds `web/backend/dist` when it links, and a stale or missing

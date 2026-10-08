@@ -15,6 +15,18 @@ Notable changes to Compa, newest first. Versions follow
   takes tools, instead of going on without tools. See
   [Embed the Go runtime](docs/embedding.md).
 
+### Changed
+
+- Releases, and builds without extra build tags, include only the supported
+  channels: the web chat, Telegram, Discord, Slack, WhatsApp through its
+  bridge, and the Slack and Teams webhooks. The paused channels (Delta Chat,
+  DingTalk, Feishu, IRC, LINE, MaixCam, Matrix, MQTT, OneBot, QQ, VK, WeCom and
+  WeChat), with `compa-kernel auth weixin` and `auth wecom`, are only in
+  builds made with the `paused_channels` build tag; native WhatsApp still
+  needs `whatsapp_native`. A config that turns one on still loads, and the
+  gateway logs `Channel not in this build`. See
+  [Paused channels](docs/use.md#paused-channels).
+
 ### Fixed
 
 - `compa-kernel mcp add`, `mcp remove` and `mcp edit` save their change when

@@ -1,8 +1,11 @@
-//go:build !mipsle && !netbsd && !(freebsd && arm) && !android
+//go:build paused_channels && !mipsle && !netbsd && !(freebsd && arm) && !android
 
 package gateway
 
 import (
+	// Matrix is a paused channel, in builds made with the paused_channels
+	// build tag (see channels_paused.go).
+	//
 	// Matrix currently pulls in mautrix crypto and modernc sqlite transitively.
 	//
 	// We exclude it on:

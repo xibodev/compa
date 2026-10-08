@@ -1048,6 +1048,15 @@ func (s *finalizeHookStreamer) ClearFinalizedStreamMarker() {
 func (m *Manager) initChannel(typeName, channelName string) {
 	f, ok := getFactory(typeName)
 	if !ok {
+		if tag := config.ChannelBuildTag(typeName); tag != "" {
+			// A paused channel, or native WhatsApp, in a build without it.
+			logger.WarnCF("channels", "Channel not in this build; builds made with its build tag include it", map[string]any{
+				"channel":   channelName,
+				"type":      typeName,
+				"build_tag": tag,
+			})
+			return
+		}
 		logger.WarnCF("channels", "Factory not registered", map[string]any{
 			"channel": channelName,
 			"type":    typeName,

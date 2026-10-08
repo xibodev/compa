@@ -162,6 +162,9 @@ another folder to keep them apart. On macOS, the menu-bar icon needs `compa`
 built with cgo, which is the default when Xcode's command-line tools are
 installed. [CONTRIBUTING.md](../CONTRIBUTING.md) covers tests and checks.
 
+For the [paused channels](use.md#paused-channels), build both programs with
+`-tags goolm,stdjson,paused_channels`.
+
 ## Ports
 
 | Port | Used by | Change it with |

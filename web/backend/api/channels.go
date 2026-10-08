@@ -14,7 +14,11 @@ type channelCatalogItem struct {
 	Variant   string `json:"variant,omitempty"`
 }
 
-var channelCatalog = []channelCatalogItem{
+// channelCatalog lists the channels this build includes, for the channel
+// pages: a paused channel only in builds made with the paused_channels build
+// tag, and native WhatsApp only with whatsapp_native. The kernel beside the
+// launcher is built with the same tags, so it runs the channels listed.
+var channelCatalog = channelsInBuild([]channelCatalogItem{
 	{Name: "weixin", ConfigKey: "weixin"},
 	{Name: "telegram", ConfigKey: "telegram"},
 	{Name: "discord", ConfigKey: "discord"},
@@ -32,6 +36,18 @@ var channelCatalog = []channelCatalogItem{
 	{Name: "matrix", ConfigKey: "matrix"},
 	{Name: "irc", ConfigKey: "irc"},
 	{Name: "mqtt", ConfigKey: "mqtt"},
+})
+
+// channelsInBuild returns the items whose channel this build includes; an
+// item's name is its channel type.
+func channelsInBuild(items []channelCatalogItem) []channelCatalogItem {
+	var inBuild []channelCatalogItem
+	for _, item := range items {
+		if config.ChannelInBuild(item.Name) {
+			inBuild = append(inBuild, item)
+		}
+	}
+	return inBuild
 }
 
 type channelConfigResponse struct {
@@ -49,7 +65,7 @@ func (h *Handler) registerChannelRoutes(mux *http.ServeMux) {
 	h.registerPairingRoutes(mux)
 }
 
-// handleListChannelCatalog returns the channels supported by backend.
+// handleListChannelCatalog returns the channels this build includes.
 //
 //	GET /api/channels/catalog
 func (h *Handler) handleListChannelCatalog(w http.ResponseWriter, r *http.Request) {

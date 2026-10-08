@@ -258,14 +258,15 @@ transcriptions** replies to them with the transcript.
 
 ## Channels
 
-Channels let you talk to Compa from chat apps: Telegram, Discord, Slack,
-WhatsApp, Matrix, LINE, IRC, Feishu, DingTalk, WeCom, WeChat, QQ and others.
-Chat in the browser works without any of them.
+Channels let you talk to Compa from chat apps: Telegram, Discord, Slack, and
+WhatsApp through a bridge program. The Slack and Teams webhooks only send, for
+notifications. Chat in the browser works without any of them. Other chat apps
+are [paused](#paused-channels).
 
 Open **Channels**, pick an app, fill in its fields (usually a bot token from
 that app), turn on **Enable channel** and save. If Compa says the gateway needs
 a restart (**Gateway restart required**), choose **Restart gateway** in the
-status menu at the top. WeChat and WeCom connect by scanning a QR code.
+status menu at the top.
 
 **Allow From** lists the user and group IDs that may use a channel; `*` lets
 anyone in. Allowing a group by its ID also admits its forum topics and threads
@@ -318,6 +319,20 @@ default, only your "message yourself" chat; **Allowed**, that chat and the
 chats the policies above let in; **All**, every chat, which the policies above
 decide as on any channel, pairing requests included. Compa replies as you.
 Your own messages in other chats are never taken as instructions.
+
+### Paused channels
+
+Delta Chat, DingTalk, Feishu (Lark), IRC, LINE, MaixCam, Matrix, MQTT, OneBot,
+QQ, VK, WeCom and WeChat are paused: they get no fixes for now, and releases
+leave them out. Builds made with the `paused_channels` build tag include them,
+such as `make product GO_BUILD_TAGS=goolm,stdjson,paused_channels` (see
+[Run from source](install.md#run-from-source)). Their pages then show under
+**Channels**; WeChat and WeCom connect by scanning a QR code, there or with
+`compa-kernel auth weixin` and `auth wecom`. Native WhatsApp, also paused,
+needs the `whatsapp_native` tag.
+
+A config that turns on a channel the build leaves out still loads, and the
+gateway logs `Channel not in this build` with the build tag that adds it.
 
 ## Skills and modules
 
