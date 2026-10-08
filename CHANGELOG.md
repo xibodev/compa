@@ -38,6 +38,11 @@ Notable changes to Compa, newest first. Versions follow
 - **Gateway restart required** clears once the gateway reloads the saved
   config by itself, with `gateway.hot_reload` on or after `/reload` in a chat;
   it stayed until the gateway restarted.
+- On OneBot, a message with only text reaches the agent as text, as one with
+  media does: escapes such as `&amp;` undone, faces as `[face:ID]`, mentions as
+  `@name`; it got OneBot's raw codes, such as `[CQ:at,qq=…]`. A mention of
+  someone other than the bot now stays in the text of every message, and a
+  mention of the bot whose QQ number arrives as a JSON number counts.
 
 ## 3.0.0 - 2026-10-06
 
