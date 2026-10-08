@@ -58,6 +58,8 @@ installs, options, updating and uninstalling: [docs/install.md](docs/install.md)
 - [Use Compa](docs/use.md): models, chat, voice, channels, skills, modules, logs.
 - [Troubleshooting, privacy and security](docs/troubleshooting.md)
 - [Command line](docs/cli.md): `compa` flags and `compa-kernel` commands.
+- [Gateway interface](docs/gateway.md): HTTP and WebSocket, for programs that
+  run the gateway.
 - [Embed the Go runtime](docs/embedding.md)
 
 ## For developers

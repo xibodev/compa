@@ -119,7 +119,7 @@ decides it.
 
 `compa-kernel gateway` runs chat, tools, channels and scheduled jobs in the
 foreground. Compa starts it for you, so run it yourself only when Compa isn't
-running.
+running. Programs talk to it as [Gateway interface](gateway.md) describes.
 
 | Flag | What it does |
 |---|---|

@@ -14,6 +14,10 @@ Notable changes to Compa, newest first. Versions follow
   route's next target, or fails with `agent.ErrToolsRequired` when no target
   takes tools, instead of going on without tools. See
   [Embed the Go runtime](docs/embedding.md).
+- [Gateway interface](docs/gateway.md) describes how programs that run the
+  gateway talk to it: the pid file, the health and control routes, and the web
+  chat's socket, files and history. `/health` and the pid file give the
+  interface's version as `protocol`, now 1.
 
 ### Fixed
 

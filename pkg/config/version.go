@@ -19,6 +19,12 @@ var (
 	GoVersion string  // Go version used for building
 )
 
+// GatewayProtocol is the version of the interface docs/gateway.md describes:
+// the gateway's HTTP routes, web chat frames and pid file. It goes up only
+// when a change can break a program written against that page; additions,
+// such as a new route, frame or field, leave it as it is.
+const GatewayProtocol = 1
+
 // FormatVersion returns the version string with optional git commit
 func FormatVersion() string {
 	v := Version

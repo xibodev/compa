@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	"github.com/xibodev/compa/v3/pkg/config"
 )
 
 // tmpDir returns a clean temporary directory for a test.
@@ -83,7 +85,7 @@ func TestWritePidFile(t *testing.T) {
 	if err = json.Unmarshal(raw, &fileData); err != nil {
 		t.Fatalf("failed to unmarshal pid file: %v", err)
 	}
-	if fileData.PID != data.PID || fileData.Token != data.Token {
+	if fileData.PID != data.PID || fileData.Token != data.Token || fileData.Protocol != config.GatewayProtocol {
 		t.Error("file data mismatch")
 	}
 
