@@ -3,6 +3,24 @@
 Thanks for helping. Open an issue to discuss a larger change before you start
 on it; report security problems as [SECURITY.md](SECURITY.md) describes.
 
+## What Compa is
+
+Compa serves one person, its owner. Judge every change, and every review,
+against that:
+
+- A channel is the owner's way to reach their own Compa from a chat app, or to
+  get its notifications there. Compa reads only the owner's messages. Anyone
+  else who reaches a channel's bot is ignored before Compa does any work.
+- Compa doesn't act on chat platforms beyond the owner's chats with it: it
+  doesn't message other people, read other chats, or reply as the owner.
+- The supported channels are the web chat, Telegram, Discord, Slack, WhatsApp
+  through the bridge, and the Slack and Teams webhooks. Work on the other
+  channels is paused ([#55](https://github.com/xibodev/compa/issues/55)).
+- Don't add features or hardening for other people, such as groups, allow
+  lists of other senders, or per-sender behavior. What Compa reads, such as web
+  pages, files and tool output, is still untrusted; the approval policy deals
+  with that.
+
 ## Tools
 
 - Go 1.26.6, the version in `go.mod`.

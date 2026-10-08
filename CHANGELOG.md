@@ -15,6 +15,18 @@ Notable changes to Compa, newest first. Versions follow
   takes tools, instead of going on without tools. See
   [Embed the Go runtime](docs/embedding.md).
 
+### Deprecated
+
+- Compa serves one person, and its chat apps are your way to reach it
+  ([#55](https://github.com/xibodev/compa/issues/55)). In 4.0 the default
+  build keeps the web chat, Telegram, Discord, Slack, WhatsApp through the
+  bridge, and the Slack and Teams webhooks; the other channels, which get no
+  more fixes, leave it. Compa will answer only your direct messages, so other
+  people's IDs and `*` in **Allow From**, **DM Policy**, **Group Policy** and
+  group triggers go. So do the message tool's `any` targets, the reaction tool,
+  `reasoning_channel_id`, Discord voice, and native WhatsApp's **Allowed** and
+  **All** chats.
+
 ### Fixed
 
 - `compa-kernel mcp add`, `mcp remove` and `mcp edit` save their change when

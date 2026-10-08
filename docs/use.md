@@ -258,14 +258,26 @@ transcriptions** replies to them with the transcript.
 
 ## Channels
 
-Channels let you talk to Compa from chat apps: Telegram, Discord, Slack,
-WhatsApp, Matrix, LINE, IRC, Feishu, DingTalk, WeCom, WeChat, QQ and others.
-Chat in the browser works without any of them.
+Channels let you reach your own Compa from a chat app you use, or get its
+notifications there; chat in the browser works without any of them. Compa is
+meant for you alone. The supported apps are Telegram, Discord, Slack and
+WhatsApp (through a bridge), and the Slack and Teams webhooks, which only send.
+The others, such as Matrix, LINE, IRC, Feishu, DingTalk, WeCom, WeChat and QQ,
+still work but are experimental: they get no fixes, and 4.0 moves them out of
+the default build.
 
 Open **Channels**, pick an app, fill in its fields (usually a bot token from
 that app), turn on **Enable channel** and save. If Compa says the gateway needs
 a restart (**Gateway restart required**), choose **Restart gateway** in the
 status menu at the top. WeChat and WeCom connect by scanning a QR code.
+
+Other people can find a channel's bot: anyone can message a Telegram bot, and
+anyone who shares a server with a Discord bot or a workspace with a Slack app
+can message it. Put only your own account in **Allow From**, or message the
+bot and approve your own request under **Pairing Requests**. The settings below
+that let other people in are deprecated: other people's IDs or `*` in **Allow
+From**, the **Open** policies, and groups. 4.0 removes them and answers only
+your direct messages.
 
 **Allow From** lists the user and group IDs that may use a channel; `*` lets
 anyone in. Allowing a group by its ID also admits its forum topics and threads
@@ -312,12 +324,13 @@ who sent each message. Compa connects to it without a password, so on a
 computer other people also sign in to, keep the bridge running: while it's
 stopped, another account could take its port and write in anyone's name.
 
-WhatsApp native, in builds made with the `whatsapp_native` tag, links your own
-WhatsApp account. Its **Chats** setting chooses what Compa reads: **Self**, the
-default, only your "message yourself" chat; **Allowed**, that chat and the
-chats the policies above let in; **All**, every chat, which the policies above
-decide as on any channel, pairing requests included. Compa replies as you.
-Your own messages in other chats are never taken as instructions.
+WhatsApp native (experimental), in builds made with the `whatsapp_native` tag,
+links your own WhatsApp account. Its **Chats** setting chooses what Compa
+reads: **Self**, the default, only your "message yourself" chat; **Allowed**,
+that chat and the chats the policies above let in; **All**, every chat, which
+the policies above decide as on any channel, pairing requests included. Compa
+replies as you. **Allowed** and **All** are deprecated. Your own messages in
+other chats are never taken as instructions.
 
 ## Skills and modules
 

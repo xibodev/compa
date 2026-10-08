@@ -42,8 +42,8 @@ installs, options, updating and uninstalling: [docs/install.md](docs/install.md)
   providers; and more through an optional extension app. A route tries a list
   of models in order until one answers.
 - Voice: dictation and spoken replies, push-to-talk or hands-free.
-- Chat apps: talk to Compa from Telegram, Discord, Slack, WhatsApp, Matrix and
-  more.
+- Chat apps: message your Compa from your own Telegram, Discord, Slack or
+  WhatsApp, or get its notifications in Slack or Teams. It answers only you.
 - Skills (instructions for particular tasks, with a skill hub to find more) and
   installable modules that add capabilities.
 - Compa keeps its settings, chats and keys in `~/.compa` on your computer;

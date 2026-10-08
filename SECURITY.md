@@ -25,12 +25,18 @@ In scope:
 - The updater: `compa-kernel update` and the launcher's `POST /api/update`.
 - The release workflow and the files it publishes.
 
-Compa is a single-user assistant that runs as your account, and whoever is
-signed in to it is trusted: running commands from the web UI or a chat you
-allowed is what it's for. A problem in scope lets someone else get further than
-the settings allow. Examples are a chat sender outside **Allow From**, a
-website open in your browser, a device on your network, another account on
-your computer, or the author of a skill, module or MCP server you added.
+Compa serves one person, its owner, and runs as the owner's account. The owner
+is trusted: running commands from the web UI, or from their own chat with
+Compa in a chat app, is what it's for. A chat app is only the owner's way to
+reach their own Compa; nobody else is meant to talk to it. A problem in scope
+lets anyone else get Compa to do something, or get further than the settings
+allow. Examples are someone else messaging a channel's bot, a website open in
+your browser, a device on your network, another account on your computer, or
+the author of a skill, module or MCP server you added.
+
+What the settings that let other people talk to Compa allow them is out of
+scope: `*` or other people's IDs in **Allow From**, an **Open** policy, and
+groups. Those settings are deprecated, and 4.0 removes them.
 
 Out of scope are flaws in the model providers, chat apps and other services
 Compa connects to, and in skills, modules and MCP servers that aren't part of
