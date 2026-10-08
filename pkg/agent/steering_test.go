@@ -27,6 +27,11 @@ import (
 
 const testSteeringScope = "session-a"
 
+// steeringWait bounds each wait for something a turn must do. Only a failing
+// test waits that long: on a loaded CI runner, a turn's setup alone took 2 to
+// 4 seconds (see TestRunTurn_HardAbort).
+const steeringWait = 10 * time.Second
+
 func TestSteeringQueue_PushDequeue_OneAtATime(t *testing.T) {
 	sq := newSteeringQueue(SteeringOneAtATime)
 
@@ -366,7 +371,7 @@ func TestAgentLoop_Continue_DeliversAnAnswerOvertakenBySteering(t *testing.T) {
 			t.Fatalf("outbound = %q to %s:%s, want the overtaken answer in test:chat1",
 				out.Content, out.Channel, out.ChatID)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(steeringWait):
 		t.Fatal("the overtaken answer was not delivered")
 	}
 }
@@ -624,7 +629,7 @@ func TestAgentLoop_Steering_SkipsRemainingTools(t *testing.T) {
 	select {
 	case <-tool1ExecCh:
 		// tool_one has started executing
-	case <-time.After(2 * time.Second):
+	case <-time.After(steeringWait):
 		t.Fatal("timeout waiting for tool_one to start")
 	}
 
@@ -641,7 +646,7 @@ func TestAgentLoop_Steering_SkipsRemainingTools(t *testing.T) {
 		if r.resp != "steered response" {
 			t.Fatalf("expected 'steered response', got %q", r.resp)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(steeringWait):
 		t.Fatal("timeout waiting for agent loop to complete")
 	}
 
@@ -786,7 +791,7 @@ func TestAgentLoop_Run_AutoContinuesLateSteeringMessage(t *testing.T) {
 
 	select {
 	case <-provider.firstCallStarted:
-	case <-time.After(2 * time.Second):
+	case <-time.After(steeringWait):
 		t.Fatal("timeout waiting for first provider call to start")
 	}
 
@@ -826,7 +831,7 @@ func TestAgentLoop_Run_AutoContinuesLateSteeringMessage(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Run returned error: %v", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(steeringWait):
 		t.Fatal("timeout waiting for Run to stop")
 	}
 
@@ -923,7 +928,7 @@ func TestAgentLoop_Run_QueuedVoiceMessageIsTranscribedBeforeSteering(t *testing.
 
 	select {
 	case <-provider.firstCallStarted:
-	case <-time.After(2 * time.Second):
+	case <-time.After(steeringWait):
 		t.Fatal("timeout waiting for first provider call to start")
 	}
 
@@ -953,7 +958,7 @@ func TestAgentLoop_Run_QueuedVoiceMessageIsTranscribedBeforeSteering(t *testing.
 		if err != nil {
 			t.Fatalf("Run returned error: %v", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(steeringWait):
 		t.Fatal("timeout waiting for Run to stop")
 	}
 
@@ -1013,7 +1018,7 @@ func TestAgentLoop_Run_PendingStopStillContinuesQueuedFollowUp(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Run() error = %v", err)
 			}
-		case <-time.After(2 * time.Second):
+		case <-time.After(steeringWait):
 			t.Fatal("timeout waiting for Run to stop")
 		}
 	}()
@@ -1043,7 +1048,7 @@ func TestAgentLoop_Run_PendingStopStillContinuesQueuedFollowUp(t *testing.T) {
 
 	select {
 	case <-provider.firstCallStarted:
-	case <-time.After(2 * time.Second):
+	case <-time.After(steeringWait):
 		t.Fatal("timeout waiting for blocker turn to start")
 	}
 
@@ -1055,7 +1060,7 @@ func TestAgentLoop_Run_PendingStopStillContinuesQueuedFollowUp(t *testing.T) {
 		t.Fatalf("PublishInbound(target start) error = %v", err)
 	}
 
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(steeringWait)
 	for {
 		ts := al.getActiveTurnState(targetSessionKey)
 		if ts != nil && strings.HasPrefix(ts.turnID, pendingTurnPrefix) {
@@ -1075,7 +1080,7 @@ func TestAgentLoop_Run_PendingStopStillContinuesQueuedFollowUp(t *testing.T) {
 		t.Fatalf("PublishInbound(/stop) error = %v", err)
 	}
 
-	deadline = time.Now().Add(2 * time.Second)
+	deadline = time.Now().Add(steeringWait)
 	stopSeen := false
 	for !stopSeen {
 		select {
@@ -1098,7 +1103,7 @@ func TestAgentLoop_Run_PendingStopStillContinuesQueuedFollowUp(t *testing.T) {
 		t.Fatalf("PublishInbound(follow-up) error = %v", err)
 	}
 
-	deadline = time.Now().Add(2 * time.Second)
+	deadline = time.Now().Add(steeringWait)
 	for al.pendingSteeringCountForScope(targetSessionKey) == 0 {
 		if time.Now().After(deadline) {
 			t.Fatal("timeout waiting for follow-up to enter scoped steering queue")
@@ -1108,7 +1113,7 @@ func TestAgentLoop_Run_PendingStopStillContinuesQueuedFollowUp(t *testing.T) {
 
 	close(provider.releaseFirstCall)
 
-	deadline = time.Now().Add(5 * time.Second)
+	deadline = time.Now().Add(steeringWait)
 	followUpSeen := false
 	for !followUpSeen {
 		select {
@@ -1123,7 +1128,7 @@ func TestAgentLoop_Run_PendingStopStillContinuesQueuedFollowUp(t *testing.T) {
 		}
 	}
 
-	deadline = time.Now().Add(2 * time.Second)
+	deadline = time.Now().Add(steeringWait)
 	for {
 		if al.GetActiveTurnBySession(targetSessionKey) == nil &&
 			al.pendingSteeringCountForScope(targetSessionKey) == 0 {
@@ -1210,7 +1215,7 @@ func TestAgentLoop_Steering_DirectResponseContinuesWithQueuedMessage(t *testing.
 
 	select {
 	case <-firstStarted:
-	case <-time.After(2 * time.Second):
+	case <-time.After(steeringWait):
 		t.Fatal("timeout waiting for first LLM call to start")
 	}
 
@@ -1227,7 +1232,7 @@ func TestAgentLoop_Steering_DirectResponseContinuesWithQueuedMessage(t *testing.
 		if result.resp != "fresh response after steering" {
 			t.Fatalf("expected refreshed response, got %q", result.resp)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(steeringWait):
 		t.Fatal("timeout waiting for ProcessDirectWithChannel")
 	}
 
@@ -1480,7 +1485,7 @@ func TestAgentLoop_HardAbort_RestoresSession(t *testing.T) {
 
 	select {
 	case <-started:
-	case <-time.After(2 * time.Second):
+	case <-time.After(steeringWait):
 		t.Fatal("timeout waiting for interruptible tool to start")
 	}
 
@@ -1500,7 +1505,7 @@ func TestAgentLoop_HardAbort_RestoresSession(t *testing.T) {
 		if r.resp != "" {
 			t.Fatalf("expected no final response after hard abort, got %q", r.resp)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(steeringWait):
 		t.Fatal("timeout waiting for hard abort result")
 	}
 
@@ -1581,7 +1586,7 @@ func TestAgentLoop_StopCommand_AbortsActiveTurnAndClearsQueuedSteering(t *testin
 			if err != nil {
 				t.Fatalf("Run() error = %v", err)
 			}
-		case <-time.After(2 * time.Second):
+		case <-time.After(steeringWait):
 			t.Fatal("timeout waiting for Run to stop")
 		}
 	}()
@@ -1606,7 +1611,7 @@ func TestAgentLoop_StopCommand_AbortsActiveTurnAndClearsQueuedSteering(t *testin
 
 	select {
 	case <-started:
-	case <-time.After(2 * time.Second):
+	case <-time.After(steeringWait):
 		t.Fatal("timeout waiting for interruptible tool to start")
 	}
 
@@ -1618,7 +1623,7 @@ func TestAgentLoop_StopCommand_AbortsActiveTurnAndClearsQueuedSteering(t *testin
 		t.Fatalf("PublishInbound(follow-up) error = %v", err)
 	}
 
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(steeringWait)
 	for al.pendingSteeringCountForScope(sessionKey) == 0 {
 		if time.Now().After(deadline) {
 			t.Fatal("timeout waiting for follow-up message to enter steering queue")
@@ -1640,11 +1645,11 @@ func TestAgentLoop_StopCommand_AbortsActiveTurnAndClearsQueuedSteering(t *testin
 		if outbound.Content != want {
 			t.Fatalf("stop reply = %q, want %q", outbound.Content, want)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(steeringWait):
 		t.Fatal("timeout waiting for /stop reply")
 	}
 
-	deadline = time.Now().Add(5 * time.Second)
+	deadline = time.Now().Add(steeringWait)
 	for al.GetActiveTurnBySession(sessionKey) != nil {
 		if time.Now().After(deadline) {
 			t.Fatal("timeout waiting for active turn to stop")
@@ -1786,7 +1791,7 @@ func TestAgentLoop_Steering_SkippedToolsHaveErrorResults(t *testing.T) {
 
 	select {
 	case <-resultCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(steeringWait):
 		t.Fatal("timeout")
 	}
 
