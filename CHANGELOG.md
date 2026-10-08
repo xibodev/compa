@@ -31,6 +31,11 @@ Notable changes to Compa, newest first. Versions follow
   `request_ids`, including messages sent while it ran. The chat page uses
   them, so it no longer takes a turn for finished when typing stops early, as
   when you send a message mid-turn.
+- The gateway serves the web chat's session history to clients with the web
+  chat token: `GET /web/sessions` lists the sessions, newest first (`offset`
+  and `limit`), and `GET /web/sessions/{session_id}` returns one's transcript,
+  with the JSON the launcher's `/api/sessions` answers. A session is found by
+  the id the client opened `/web/ws` with, in any case.
 
 ### Fixed
 
@@ -72,6 +77,8 @@ Notable changes to Compa, newest first. Versions follow
 - When a message can't be saved to the conversation, for example on a full
   disk, the chat says so, the turn emits `agent.error` with stage
   `session_save`, and gateway.log has the error; only stderr said so.
+- On Windows, the chat page finds earlier conversations when the workspace is
+  written as `~\folder`; it looked in the home folder instead.
 
 ## 3.0.0 - 2026-10-06
 

@@ -28,6 +28,7 @@ import (
 	"github.com/xibodev/compa/v3/pkg/health"
 	"github.com/xibodev/compa/v3/pkg/logger"
 	"github.com/xibodev/compa/v3/pkg/media"
+	"github.com/xibodev/compa/v3/pkg/session/history"
 	"github.com/xibodev/compa/v3/pkg/utils"
 )
 
@@ -110,12 +111,15 @@ func (w *channelWorker) halt() {
 }
 
 type Manager struct {
-	channels                  map[string]Channel
-	workers                   map[string]*channelWorker
-	bus                       *bus.MessageBus
-	runtimeEvents             runtimeevents.Bus
-	config                    *config.Config
-	mediaStore                media.MediaStore
+	channels      map[string]Channel
+	workers       map[string]*channelWorker
+	bus           *bus.MessageBus
+	runtimeEvents runtimeevents.Bus
+	config        *config.Config
+	mediaStore    media.MediaStore
+	// sessionHistory tells a channel that serves session history where to
+	// read it; see SetSessionHistory.
+	sessionHistory            func() history.Reader
 	dispatchTask              *asyncTask
 	mux                       *dynamicServeMux
 	httpServer                *http.Server
@@ -131,6 +135,12 @@ type Manager struct {
 
 type mediaStoreSetter interface {
 	SetMediaStore(s media.MediaStore)
+}
+
+// sessionHistorySetter is implemented by channels that serve the session
+// history of their chats, as the web chat does.
+type sessionHistorySetter interface {
+	SetSessionHistory(source func() history.Reader)
 }
 
 // ManagerOption configures a channel Manager.
@@ -670,6 +680,21 @@ func (m *Manager) SetMediaStore(store media.MediaStore) {
 	}
 }
 
+// SetSessionHistory gives the channels that serve session history, such as
+// the web chat, the reader of the sessions to serve: source is called for
+// each request, so it can follow the configuration as it reloads.
+func (m *Manager) SetSessionHistory(source func() history.Reader) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.sessionHistory = source
+	for _, ch := range m.channels {
+		if setter, ok := ch.(sessionHistorySetter); ok {
+			setter.SetSessionHistory(source)
+		}
+	}
+}
+
 // GetStreamer implements bus.StreamDelegate.
 // It checks if the named channel supports streaming and returns a Streamer.
 func (m *Manager) GetStreamer(ctx context.Context, channelName, chatID, sessionKey string) (bus.Streamer, bool) {
@@ -1071,6 +1096,11 @@ func (m *Manager) initChannel(typeName, channelName string) {
 		if m.mediaStore != nil {
 			if setter, ok := ch.(mediaStoreSetter); ok {
 				setter.SetMediaStore(m.mediaStore)
+			}
+		}
+		if m.sessionHistory != nil {
+			if setter, ok := ch.(sessionHistorySetter); ok {
+				setter.SetSessionHistory(m.sessionHistory)
 			}
 		}
 		// Inject PlaceholderRecorder if channel supports it
