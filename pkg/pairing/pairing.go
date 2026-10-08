@@ -1,7 +1,9 @@
-// Package pairing keeps the direct messages that a channel with dm_policy
-// "pairing" received from senders not in its allow_from. Such a message is
-// not processed; the channel records the sender here, and the owner approves
-// it in the dashboard, which appends SenderID to the channel's allow_from.
+// Package pairing keeps the direct messages a channel received while its
+// allow_from listed no account. Such a message is not processed; the channel
+// records the sender here, and the owner approves their own account in the
+// dashboard, which adds SenderID to the channel's allow_from and drops the
+// channel's other requests. Once allow_from lists an account, the channel
+// records no more.
 //
 // The requests live in pairing.json in the Compa home. Each channel keeps at
 // most MaxPendingPerChannel of them: a new sender beyond that replaces the one
@@ -28,9 +30,9 @@ const (
 	// FileName is the store's file in the Compa home.
 	FileName = "pairing.json"
 	// MaxPendingPerChannel bounds the requests kept for one channel.
-	MaxPendingPerChannel = 20
+	MaxPendingPerChannel = 3
 	// Expiry is how long a request is kept after its sender's last message.
-	Expiry = 7 * 24 * time.Hour
+	Expiry = time.Hour
 
 	// maxDisplayNameRunes bounds the sender-chosen name kept with a request.
 	maxDisplayNameRunes = 128
@@ -147,6 +149,21 @@ func Remove(home, channel, senderID string) error {
 				continue
 			}
 			kept = append(kept, r)
+		}
+		return kept
+	})
+}
+
+// RemoveChannel deletes every request held for channel, as binding the
+// channel's owner does.
+func RemoveChannel(home, channel string) error {
+	channel = strings.TrimSpace(channel)
+	return update(home, func(requests []Request) []Request {
+		kept := requests[:0]
+		for _, r := range requests {
+			if r.Channel != channel {
+				kept = append(kept, r)
+			}
 		}
 		return kept
 	})

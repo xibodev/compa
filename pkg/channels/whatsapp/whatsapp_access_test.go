@@ -20,7 +20,7 @@ func newAccessTestChannel(t *testing.T, allowFrom ...string) (*WhatsAppChannel, 
 		t.Fatalf("NewWhatsAppChannel: %v", err)
 	}
 	ch.ctx = context.Background()
-	ch.SetAccessPolicy(config.DMPolicyPairing, config.GroupPolicyAllowlist)
+	ch.RequireOwner()
 	return ch, messageBus
 }
 
@@ -36,7 +36,8 @@ func bridgeMediaFile(t *testing.T) string {
 	return f.Name()
 }
 
-func TestIncomingMessage_AllowListedGroupMemberIsAdmitted(t *testing.T) {
+// Group chats are ignored, even one allow_from lists.
+func TestIncomingMessage_GroupMessageIsIgnored(t *testing.T) {
 	ch, messageBus := newAccessTestChannel(t, "whatsapp:111", "group1@g.us")
 
 	// The sender is not listed; the group is.
@@ -47,19 +48,16 @@ func TestIncomingMessage_AllowListedGroupMemberIsAdmitted(t *testing.T) {
 
 	select {
 	case inbound := <-messageBus.InboundChan():
-		if len(inbound.Media) != 1 || inbound.Context.SenderIsOwner || inbound.Context.ChatType != "group" {
-			t.Fatalf("media = %v, owner = %v, chat type = %q",
-				inbound.Media, inbound.Context.SenderIsOwner, inbound.Context.ChatType)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("a member of an allow-listed group was not admitted")
+		t.Fatalf("a group message was published: %#v", inbound)
+	case <-time.After(100 * time.Millisecond):
 	}
 }
 
 func TestIncomingMessage_UnpairedSenderIsRecordedWithoutMedia(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv(config.EnvHome, home)
-	ch, messageBus := newAccessTestChannel(t, "whatsapp:111")
+	// No owner is bound yet, so the stranger is recorded as a pairing request.
+	ch, messageBus := newAccessTestChannel(t)
 
 	ch.handleIncomingMessage(map[string]any{
 		"from": "999", "chat": "999", "content": "hi", "id": "m2",

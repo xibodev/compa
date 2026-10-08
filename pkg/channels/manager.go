@@ -1128,23 +1128,17 @@ func (m *Manager) initChannel(typeName, channelName string) {
 
 // applyChannelConfig gives a newly constructed channel the parts of its
 // channel_list entry that every channel shares: its configured name, which
-// inbound messages, replies and pairing requests use, and its access
-// policies. The dashboard's web chat, which only authenticated users reach,
-// has none; the web client, which talks to a remote web-chat server, is a
-// chat channel like the others.
+// inbound messages, replies and pairing requests use, and its owner-only
+// access check (see RequireOwner). The dashboard's web chat, which only
+// authenticated users reach, needs no check; the web client, which talks to
+// a remote web-chat server, is a chat channel like the others.
 func (m *Manager) applyChannelConfig(channelName, typeName string, ch Channel) {
 	if setter, ok := ch.(interface{ SetName(name string) }); ok {
 		setter.SetName(channelName)
 	}
-	var bc *config.Channel
-	if m.config != nil {
-		bc = m.config.Channels[channelName]
+	if setter, ok := ch.(interface{ RequireOwner() }); ok && typeName != config.ChannelWeb {
+		setter.RequireOwner()
 	}
-	if setter, ok := ch.(interface{ SetAccessPolicy(dm, group string) }); ok && bc != nil &&
-		typeName != config.ChannelWeb {
-		setter.SetAccessPolicy(bc.EffectiveDMPolicy(), bc.EffectiveGroupPolicy())
-	}
-	warnIfOpenToEveryone(channelName, ch)
 }
 
 func (m *Manager) getChannelConfigAndEnabled(channelName string) (*config.Channel, bool) {

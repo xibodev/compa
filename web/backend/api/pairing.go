@@ -31,6 +31,10 @@ type pairingDecision struct {
 // longer in channel_list.
 var errPairingChannelMissing = errors.New("the channel is not configured")
 
+// errPairingOwnerBound reports an approval for a channel whose allow_from
+// already lists an account: pairing binds the owner's account once.
+var errPairingOwnerBound = errors.New("the channel already has its owner")
+
 // pairingHome is the Compa home whose pairing.json the channels write; tests
 // replace it.
 var pairingHome = config.GetHome
@@ -86,10 +90,13 @@ func (h *Handler) handleListPairingRequests(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, map[string]any{"requests": views})
 }
 
-// handleApprovePairingRequest admits a held sender: it appends the sender to
-// the channel's allow_from, removes the request, and applies the change to
-// the running gateway through its reload (see applyLiveConfig), so the
-// sender is admitted without a restart.
+// handleApprovePairingRequest binds the channel's owner: while its
+// allow_from lists no account, it makes the held sender the one account
+// listed ("*", which admits no one, goes), drops the channel's other
+// requests, and applies the change to the running gateway through its
+// reload (see applyLiveConfig), so the owner is admitted without a restart.
+// A channel that already lists an account is refused with 409: another of
+// the owner's accounts is added to Allow From directly.
 //
 //	POST /api/channels/{name}/pairing/approve
 func (h *Handler) handleApprovePairingRequest(w http.ResponseWriter, r *http.Request) {
@@ -114,17 +121,31 @@ func (h *Handler) handleApprovePairingRequest(w http.ResponseWriter, r *http.Req
 		if bc == nil {
 			return errPairingChannelMissing
 		}
+		listed, otherAccount := false, false
 		for _, entry := range bc.AllowFrom {
-			if strings.TrimSpace(entry) == senderID {
-				return errConfigUnchanged
+			switch strings.TrimSpace(entry) {
+			case senderID:
+				listed = true
+			case "", "*":
+			default:
+				otherAccount = true
 			}
 		}
-		bc.AllowFrom = append(bc.AllowFrom, senderID)
+		switch {
+		case listed:
+			return errConfigUnchanged
+		case otherAccount:
+			return errPairingOwnerBound
+		}
+		bc.AllowFrom = config.FlexibleStringSlice{senderID}
 		return nil
 	})
 	switch {
 	case errors.Is(err, errPairingChannelMissing):
 		writeJSONError(w, http.StatusNotFound, "channel not found")
+		return
+	case errors.Is(err, errPairingOwnerBound):
+		writeJSONError(w, http.StatusConflict, "this channel already has its owner's account in Allow From; add another of your accounts there")
 		return
 	case err != nil:
 		logger.ErrorCF("pairing", "Failed to approve a pairing request", map[string]any{"channel": key, "error": err.Error()})
@@ -132,10 +153,10 @@ func (h *Handler) handleApprovePairingRequest(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	if err := pairing.Remove(home, key, senderID); err != nil {
-		// The sender is admitted; approving again removes the request.
-		logger.ErrorCF("pairing", "Failed to remove an approved pairing request", map[string]any{"channel": key, "error": err.Error()})
-		writeJSONError(w, http.StatusInternalServerError, "the sender was approved, but the request could not be removed")
+	if err := pairing.RemoveChannel(home, key); err != nil {
+		// The owner is bound; approving again removes the requests.
+		logger.ErrorCF("pairing", "Failed to remove the channel's pairing requests", map[string]any{"channel": key, "error": err.Error()})
+		writeJSONError(w, http.StatusInternalServerError, "the sender was approved, but the requests could not be removed")
 		return
 	}
 	logger.InfoCF("pairing", "Pairing request approved", map[string]any{"channel": key, "sender_id": senderID})

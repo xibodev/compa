@@ -11,21 +11,18 @@ import (
 )
 
 // newAccessTestWebClient builds a web client whose channel_list entry has
-// the given dm_policy, group_policy and allow_from, with the access policies
-// the manager gives it.
-func newAccessTestWebClient(t *testing.T, dm, group string, allowFrom ...string) (*WebClientChannel, *bus.MessageBus) {
+// the given allow_from, with the owner-only access the manager gives it.
+func newAccessTestWebClient(t *testing.T, allowFrom ...string) (*WebClientChannel, *bus.MessageBus) {
 	t.Helper()
 
 	mb := bus.NewMessageBus()
-	bc := &config.Channel{
-		Type: config.ChannelWebClient, Enabled: true, AllowFrom: allowFrom, DMPolicy: dm, GroupPolicy: group,
-	}
+	bc := &config.Channel{Type: config.ChannelWebClient, Enabled: true, AllowFrom: allowFrom}
 	ch, err := NewWebClientChannel(bc, &config.WebChatClientSettings{URL: "ws://localhost:8080/ws"}, mb)
 	if err != nil {
 		t.Fatalf("NewWebClientChannel() error = %v", err)
 	}
 	ch.ctx = context.Background()
-	ch.SetAccessPolicy(bc.EffectiveDMPolicy(), bc.EffectiveGroupPolicy())
+	ch.RequireOwner()
 	return ch, mb
 }
 
@@ -42,9 +39,8 @@ func assertNoInbound(t *testing.T, mb *bus.MessageBus, what string) {
 func TestWebClientChannel_UnpairedServerIsRecordedWithoutDecodingMedia(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv(config.EnvHome, home)
-	// No allow_from and no policies: direct messages pair, as on every chat
-	// channel.
-	ch, mb := newAccessTestWebClient(t, "", "")
+	// No allow_from: direct messages pair, as on every chat channel.
+	ch, mb := newAccessTestWebClient(t)
 
 	// Media the channel would refuse to decode: the message is decided on first.
 	ch.handleServerMessage(&webConn{sessionID: "sess-unpaired"}, WebMessage{
@@ -59,10 +55,8 @@ func TestWebClientChannel_UnpairedServerIsRecordedWithoutDecodingMedia(t *testin
 	}
 }
 
-func TestWebClientChannel_DirectMessagesFollowTheDMPolicy(t *testing.T) {
-	// An open group policy would let IsAllowedSender wave the server through;
-	// its messages are direct ones, which the allowlist rejects.
-	ch, mb := newAccessTestWebClient(t, config.DMPolicyAllowlist, config.GroupPolicyOpen, "web_client:someone-else")
+func TestWebClientChannel_UnlistedServerIsIgnored(t *testing.T) {
+	ch, mb := newAccessTestWebClient(t, "web_client:someone-else")
 
 	ch.handleServerMessage(&webConn{sessionID: "sess-unlisted"}, WebMessage{
 		Type:    TypeMessageCreate,
@@ -72,7 +66,7 @@ func TestWebClientChannel_DirectMessagesFollowTheDMPolicy(t *testing.T) {
 }
 
 func TestWebClientChannel_ListedServerIsAdmittedWithMedia(t *testing.T) {
-	ch, mb := newAccessTestWebClient(t, "", "", "web_client:web-remote")
+	ch, mb := newAccessTestWebClient(t, "web_client:web-remote")
 	imageURL := "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+X2ioAAAAASUVORK5CYII="
 
 	ch.handleServerMessage(&webConn{sessionID: "sess-listed"}, WebMessage{

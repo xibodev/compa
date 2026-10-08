@@ -436,7 +436,7 @@ func validateConfig(cfg *config.Config) []string {
 		if bc == nil {
 			continue
 		}
-		errs = append(errs, validateChannelPolicyValues(name, bc)...)
+		errs = append(errs, validateChannelSettingValues(name, bc)...)
 		streaming, ok := channelStreamingConfig(bc)
 		if !ok {
 			continue
@@ -525,21 +525,11 @@ func validateRegexPatterns(field string, patterns []string) []string {
 	return errs
 }
 
-// validateChannelPolicyValues rejects the dm_policy, group_policy and
-// (native WhatsApp) settings.chats values loading the config would reject,
-// so a typo is refused when saved rather than breaking the next start.
-func validateChannelPolicyValues(name string, bc *config.Channel) []string {
+// validateChannelSettingValues rejects the (native WhatsApp) settings.chats
+// values loading the config would reject, so a typo is refused when saved
+// rather than breaking the next start.
+func validateChannelSettingValues(name string, bc *config.Channel) []string {
 	var errs []string
-	switch p := strings.TrimSpace(bc.DMPolicy); p {
-	case "", config.DMPolicyPairing, config.DMPolicyAllowlist, config.DMPolicyOpen, config.DMPolicyDisabled:
-	default:
-		errs = append(errs, fmt.Sprintf("channel %q dm_policy %q must be one of pairing, allowlist, open, disabled", name, p))
-	}
-	switch p := strings.TrimSpace(bc.GroupPolicy); p {
-	case "", config.GroupPolicyAllowlist, config.GroupPolicyOpen, config.GroupPolicyDisabled:
-	default:
-		errs = append(errs, fmt.Sprintf("channel %q group_policy %q must be one of allowlist, open, disabled", name, p))
-	}
 	if decoded, err := bc.GetDecoded(); err == nil {
 		if wa, ok := decoded.(*config.WhatsAppSettings); ok {
 			switch c := strings.TrimSpace(wa.Chats); c {
@@ -614,6 +604,8 @@ func normalizeChannelArrayFields(raw map[string]any) error {
 			chMap["allow_from"] = normalized
 		}
 
+		// group_trigger is no longer a setting, but an older client may still
+		// send it; it is decoded, then dropped.
 		if groupTrigger, ok := asMapField(chMap, "group_trigger"); ok {
 			if rawPrefixes, exists := groupTrigger["prefixes"]; exists {
 				normalized, err := normalizeStringArrayValue(rawPrefixes, stringArrayParserOptions{})

@@ -37,7 +37,7 @@ func newTestNativeChannel(chats string, bc *config.Channel) (*WhatsAppNativeChan
 		runCtx: context.Background(),
 	}
 	if bc.DMPolicy != "" || bc.GroupPolicy != "" {
-		ch.SetAccessPolicy(bc.EffectiveDMPolicy(), bc.EffectiveGroupPolicy())
+		ch.RequireOwner()
 	}
 	return ch, messageBus
 }
@@ -228,12 +228,12 @@ func TestHandleMessage_AllowedModeMakesNoPairingRequests(t *testing.T) {
 	}
 }
 
-func TestHandleMessage_AllModeFollowsPolicies(t *testing.T) {
+func TestHandleMessage_AllModeMakesPairingRequests(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv(config.EnvHome, home)
 	stranger := types.NewJID("15550004444", types.DefaultUserServer)
 
-	// With the pairing policy, a stranger is held for the owner's approval.
+	// While no owner is bound, a stranger is held for the owner's approval.
 	paired := &config.Channel{
 		Type:        config.ChannelWhatsAppNative,
 		Enabled:     true,
@@ -249,26 +249,10 @@ func TestHandleMessage_AllModeFollowsPolicies(t *testing.T) {
 	if len(requests) != 1 || requests[0].SenderID != "whatsapp:15550004444@s.whatsapp.net" {
 		t.Fatalf("pairing requests = %+v, want the stranger", requests)
 	}
-
-	// With open policies (what a 1.0 config migrates to), everyone is input.
-	open := &config.Channel{
-		Type:        config.ChannelWhatsAppNative,
-		Enabled:     true,
-		DMPolicy:    config.DMPolicyOpen,
-		GroupPolicy: config.GroupPolicyOpen,
-	}
-	ch, messageBus = newTestNativeChannel(config.WhatsAppChatsAll, open)
-	ch.handleMessage(textEvent("m2", stranger, stranger, false, "hi"), testOwnPhone, testOwnLID)
-	inbound, ok := receiveInbound(t, messageBus)
-	if !ok {
-		t.Fatal("open policies take every chat in all mode")
-	}
-	if inbound.Context.SenderIsOwner {
-		t.Error("a sender admitted by an open policy is not the owner")
-	}
 }
 
-func TestHandleMessage_AllowedModeTakesListedGroup(t *testing.T) {
+// Groups are not input, even one allow_from lists.
+func TestHandleMessage_AllowedModeIgnoresListedGroup(t *testing.T) {
 	bc := &config.Channel{
 		Type:        config.ChannelWhatsAppNative,
 		Enabled:     true,
@@ -287,46 +271,7 @@ func TestHandleMessage_AllowedModeTakesListedGroup(t *testing.T) {
 	}
 
 	ch.handleMessage(textEvent("m2", listedGroup, member, false, "hi"), testOwnPhone, testOwnLID)
-	inbound, ok := receiveInbound(t, messageBus)
-	if !ok {
-		t.Fatal("a listed group is input in allowed mode")
-	}
-	if inbound.Context.ChatType != "group" || inbound.Context.SenderIsOwner {
-		t.Errorf("chat type = %q, owner = %v", inbound.Context.ChatType, inbound.Context.SenderIsOwner)
-	}
-}
-
-func TestHandleMessage_GroupNeedsMentionWhenMentionOnly(t *testing.T) {
-	bc := &config.Channel{
-		Type:         config.ChannelWhatsAppNative,
-		Enabled:      true,
-		GroupTrigger: config.GroupTriggerConfig{MentionOnly: true},
-	}
-	ch, messageBus := newTestNativeChannel(config.WhatsAppChatsAll, bc)
-	group := types.NewJID("120363000000000001", types.GroupServer)
-	member := types.NewJID("15550003333", types.DefaultUserServer)
-
-	ch.handleMessage(textEvent("m1", group, member, false, "lunch?"), testOwnPhone, testOwnLID)
 	if inbound, ok := receiveInbound(t, messageBus); ok {
-		t.Fatalf("an unaddressed group message is not input: %#v", inbound)
-	}
-
-	mention := textEvent("m2", group, member, false, "")
-	mention.Message = &waE2E.Message{ExtendedTextMessage: &waE2E.ExtendedTextMessage{
-		Text: proto.String("@" + testOwnPhone + " what's the weather?"),
-		ContextInfo: &waE2E.ContextInfo{
-			MentionedJID: []string{testOwnPhone + "@s.whatsapp.net"},
-		},
-	}}
-	ch.handleMessage(mention, testOwnPhone, testOwnLID)
-	inbound, ok := receiveInbound(t, messageBus)
-	if !ok {
-		t.Fatal("a group message mentioning the account is input")
-	}
-	if inbound.Context.ChatType != "group" || !inbound.Context.Mentioned {
-		t.Errorf("chat type = %q, mentioned = %v", inbound.Context.ChatType, inbound.Context.Mentioned)
-	}
-	if inbound.Content != "what's the weather?" {
-		t.Errorf("content = %q", inbound.Content)
+		t.Fatalf("a listed group is not input either: %#v", inbound)
 	}
 }

@@ -261,18 +261,6 @@ func TestHandleInboundContext_PublishesNormalizedContext(t *testing.T) {
 			wantChat:   "chat-1",
 			wantSender: "user-1",
 		},
-		{
-			name: "group uses chat as peer",
-			inbound: bus.InboundContext{
-				Channel:   "test",
-				ChatID:    "group-1",
-				ChatType:  "group",
-				SenderID:  "user-2",
-				MessageID: "msg-2",
-			},
-			wantChat:   "group-1",
-			wantSender: "user-2",
-		},
 	}
 
 	for _, tt := range tests {

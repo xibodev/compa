@@ -391,14 +391,10 @@ func TestHandlePatchConfig_NormalizesStringChannelArrayFields(t *testing.T) {
 			webChatChannel.AllowFrom,
 		)
 	}
-	if len(webChatChannel.GroupTrigger.Prefixes) != 3 ||
-		webChatChannel.GroupTrigger.Prefixes[0] != "/" ||
-		webChatChannel.GroupTrigger.Prefixes[1] != "!;" ||
-		webChatChannel.GroupTrigger.Prefixes[2] != "?" {
-		t.Fatalf(
-			"web group_trigger.prefixes = %#v, want [\"/\", \"!;\", \"?\"]",
-			webChatChannel.GroupTrigger.Prefixes,
-		)
+	// group_trigger is no longer a setting: an older client's string
+	// prefixes still save, and are dropped.
+	if len(webChatChannel.GroupTrigger.Prefixes) != 0 {
+		t.Fatalf("web group_trigger.prefixes = %#v, want them dropped", webChatChannel.GroupTrigger.Prefixes)
 	}
 
 	decoded, err := webChatChannel.GetDecoded()

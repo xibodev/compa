@@ -786,9 +786,6 @@ func TestDefaultConfig_DeltaChatExample(t *testing.T) {
 	if deltachat.Enabled {
 		t.Fatal("DefaultConfig().deltachat should be disabled")
 	}
-	if !deltachat.GroupTrigger.MentionOnly {
-		t.Fatal("DefaultConfig().deltachat should use mention-only group trigger")
-	}
 	decoded, err := deltachat.GetDecoded()
 	if err != nil {
 		t.Fatalf("deltachat GetDecoded() error = %v", err)

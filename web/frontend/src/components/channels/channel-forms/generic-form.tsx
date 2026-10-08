@@ -27,7 +27,7 @@ interface GenericFormProps {
   hiddenKeys?: string[]
   requiredKeys?: string[]
   supportsStreaming?: boolean
-  /** Chat channels choose who may talk to them, beside Allow From. */
+  /** A chat channel answers only the accounts its Allow From lists. */
   accessPolicy?: boolean
   /** Native WhatsApp also chooses which chats are input. */
   whatsAppChats?: boolean
@@ -40,17 +40,10 @@ interface GenericFormProps {
 }
 
 // Fields to skip in the generic form (handled by enabled toggle or internal).
-const SKIP_FIELDS = new Set([
-  "enabled",
-  "reasoning_channel_id",
-  "dm_policy",
-  "group_policy",
-  "chats",
-])
+const SKIP_FIELDS = new Set(["enabled", "reasoning_channel_id", "chats"])
 
 // Fields that are objects/nested — show as JSON or skip.
 const OBJECT_FIELDS = new Set([
-  "group_trigger",
   "typing",
   "placeholder",
   "allow_token_query",
@@ -103,15 +96,14 @@ export function GenericForm({
   const { t } = useTranslation()
   const hiddenFieldSet = new Set(hiddenKeys)
   const requiredFieldSet = new Set(requiredKeys)
-  const groupTriggerConfig = asRecord(config.group_trigger)
   const typingConfig = asRecord(config.typing)
   const placeholderConfig = asRecord(config.placeholder)
   const placeholderEnabled = asBool(placeholderConfig.enabled)
   const showStreamingConfig =
     (config.streaming !== undefined || supportsStreaming) &&
     !hiddenFieldSet.has("streaming")
-  // A chat channel's policies decide what Allow From means, so it shows
-  // even while empty.
+  // Allow From decides whom a chat channel answers, so it shows even while
+  // empty.
   const showAllowFrom =
     (config.allow_from !== undefined || accessPolicy) &&
     !hiddenFieldSet.has("allow_from")
@@ -142,7 +134,6 @@ export function GenericForm({
       corp_id: t("channels.form.desc.corpId"),
       bot_id: t("channels.form.desc.appId"),
       websocket_url: t("channels.form.desc.wsUrl"),
-      group_allow_from: t("channels.form.desc.allowFrom"),
       send_thinking_message: t("channels.form.desc.genericField", {
         field: "thinking message behavior",
       }),
@@ -277,13 +268,11 @@ export function GenericForm({
   const hasAdvancedContent =
     advancedFields.length > 0 ||
     showAllowFrom ||
-    accessPolicy ||
+    whatsAppChats ||
     (config.allow_origins !== undefined &&
       !hiddenFieldSet.has("allow_origins")) ||
     (config.allow_token_query !== undefined &&
       !hiddenFieldSet.has("allow_token_query")) ||
-    (config.group_trigger !== undefined &&
-      !hiddenFieldSet.has("group_trigger")) ||
     (config.typing !== undefined && !hiddenFieldSet.has("typing")) ||
     (config.placeholder !== undefined && !hiddenFieldSet.has("placeholder")) ||
     (config.streaming !== undefined && !hiddenFieldSet.has("streaming"))
@@ -317,12 +306,8 @@ export function GenericForm({
               />
             )}
 
-            {accessPolicy && (
-              <ChannelAccessFields
-                config={config}
-                onChange={onChange}
-                showChats={whatsAppChats}
-              />
+            {whatsAppChats && (
+              <ChannelAccessFields config={config} onChange={onChange} />
             )}
 
             {config.allow_origins !== undefined &&
@@ -352,42 +337,6 @@ export function GenericForm({
                     ariaLabel={formatLabel("allow_token_query")}
                   />
                 </div>
-              )}
-
-            {config.group_trigger !== undefined &&
-              !hiddenFieldSet.has("group_trigger") && (
-                <>
-                  <div>
-                    <SwitchCardField
-                      label={t("channels.field.groupTriggerMentionOnly")}
-                      hint={t("channels.form.desc.groupTriggerMentionOnly")}
-                      checked={asBool(groupTriggerConfig.mention_only)}
-                      onCheckedChange={(checked) =>
-                        onChange("group_trigger", {
-                          ...groupTriggerConfig,
-                          mention_only: checked,
-                        })
-                      }
-                      ariaLabel={t("channels.field.groupTriggerMentionOnly")}
-                    />
-                  </div>
-
-                  <ChannelArrayListField
-                    label={t("channels.field.groupTriggerPrefixes")}
-                    hint={t("channels.form.desc.groupTriggerPrefixes")}
-                    value={asStringArray(groupTriggerConfig.prefixes)}
-                    onChange={(value) =>
-                      onChange("group_trigger", {
-                        ...groupTriggerConfig,
-                        prefixes: value,
-                      })
-                    }
-                    placeholder={t("channels.field.groupTriggerPrefixes")}
-                    fieldPath="group_trigger.prefixes"
-                    registerFlusher={registerArrayFieldFlusher}
-                    resetVersion={arrayFieldResetVersion}
-                  />
-                </>
               )}
 
             {config.typing !== undefined && !hiddenFieldSet.has("typing") && (

@@ -226,14 +226,14 @@ type Channel struct {
 	Enabled   bool                `json:"enabled"                 yaml:"-"`
 	Type      string              `json:"type"                    yaml:"-"`
 	AllowFrom FlexibleStringSlice `json:"allow_from,omitempty"    yaml:"-"`
-	// DMPolicy decides which direct messages are processed: "pairing",
-	// "allowlist", "open" or "disabled". See EffectiveDMPolicy.
-	DMPolicy string `json:"dm_policy,omitempty" yaml:"-"`
-	// GroupPolicy decides which group messages are processed: "allowlist",
-	// "open" or "disabled". See EffectiveGroupPolicy.
+	// DMPolicy, GroupPolicy and GroupTrigger are no longer settings: a
+	// channel answers only its owner, in direct messages. A config.json an
+	// earlier version wrote still loads; decoding clears them, and they are
+	// not written.
+	DMPolicy           string             `json:"dm_policy,omitempty"     yaml:"-"`
 	GroupPolicy        string             `json:"group_policy,omitempty"  yaml:"-"`
 	ReasoningChannelID string             `json:"reasoning_channel_id"    yaml:"-"`
-	GroupTrigger       GroupTriggerConfig `json:"group_trigger,omitempty" yaml:"-"`
+	GroupTrigger       GroupTriggerConfig `json:"group_trigger,omitzero"  yaml:"-"`
 	Typing             TypingConfig       `json:"typing,omitempty"        yaml:"-"`
 	Placeholder        PlaceholderConfig  `json:"placeholder,omitempty"   yaml:"-"`
 	Settings           RawNode            `json:"settings,omitzero"       yaml:"settings,omitempty"`
@@ -521,12 +521,11 @@ func (c *ChannelsConfig) UnmarshalJSON(data []byte) error {
 			(*c)[name] = nil
 			continue
 		}
-		// A channel answers in groups only when mentioned unless its entry
-		// says otherwise, as the default channels do.
-		bc := &Channel{GroupTrigger: GroupTriggerConfig{MentionOnly: true}}
+		bc := &Channel{}
 		if err := json.Unmarshal(entry, bc); err != nil {
 			return err
 		}
+		bc.DMPolicy, bc.GroupPolicy, bc.GroupTrigger = "", "", GroupTriggerConfig{}
 		bc.SetName(name)
 		(*c)[name] = bc
 	}
@@ -798,9 +797,6 @@ func initChannelList(channels ChannelsConfig, rec channelEnvRecorder) error {
 		}
 		if err := rec.applyEnabled(name, bc); err != nil {
 			return fmt.Errorf("channel %q: environment override: %w", name, err)
-		}
-		if err := validateChannelPolicies(name, bc); err != nil {
-			return err
 		}
 		// Decode into the correct typed settings
 		if target := newChannelSettings(bc.Type); target != nil {

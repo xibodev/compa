@@ -1,7 +1,6 @@
 import { useTranslation } from "react-i18next"
 
 import type { ChannelConfig } from "@/api/channels"
-import { ChannelAccessFields } from "@/components/channels/channel-access-fields"
 import { getSecretInputPlaceholder } from "@/components/channels/channel-config-fields"
 import { MessageCodeBlock } from "@/components/chat/message-code-block"
 import { Field, KeyInput, SwitchCardField } from "@/components/shared-form"
@@ -160,7 +159,6 @@ export function MqttForm({
               placeholder="0"
             />
           </Field>
-          <ChannelAccessFields config={config} onChange={onChange} />
         </CardContent>
       </Card>
 

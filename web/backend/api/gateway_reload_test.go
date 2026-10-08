@@ -251,7 +251,7 @@ func TestApplyLiveChangesOnlyAppliesSavedChangesToARunningGateway(t *testing.T) 
 // runs nor after it.
 func TestPairingApprovalReloadsTheRunningGateway(t *testing.T) {
 	resetGatewayTestState(t)
-	h, mux, home := pairingTestHandler(t, "telegram:1")
+	h, mux, home := pairingTestHandler(t)
 	recordPairingRequest(t, home, pairing.Request{Channel: "telegram", SenderID: "telegram:123"})
 	reloads := trackedFakeGateway(t, loadSavedConfig(t, h.configPath), http.StatusOK, nil)
 

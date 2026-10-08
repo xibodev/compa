@@ -19,8 +19,6 @@ import {
 } from "@/api/channels"
 import { type ArrayFieldFlusher } from "@/components/channels/channel-array-list-field"
 import {
-  asStringArray,
-  mergeUniqueStringItems,
   normalizeAllowFromValues,
   serializeStringArrayForSubmit,
 } from "@/components/channels/channel-array-utils"
@@ -28,6 +26,7 @@ import {
   SECRET_FIELD_MAP,
   buildEditConfig,
   getFieldValueForValidation,
+  hasOwnerAccount,
   isSecretField,
 } from "@/components/channels/channel-config-fields"
 import { getChannelDisplayName } from "@/components/channels/channel-display-name"
@@ -94,22 +93,8 @@ function setConfigValueByPath(
   return setRecordValueByPath(source, fieldPath.split("."), value)
 }
 
-function serializeGroupTriggerForSubmit(value: unknown): unknown {
-  const groupTrigger = asRecord(value)
-  if (Object.keys(groupTrigger).length === 0) {
-    return value
-  }
-  return {
-    ...groupTrigger,
-    prefixes: serializeStringArrayForSubmit(groupTrigger.prefixes),
-  }
-}
-
 const CHANNEL_COMMON_CONFIG_KEYS = new Set([
   "allow_from",
-  "dm_policy",
-  "group_policy",
-  "group_trigger",
   "placeholder",
   "reasoning_channel_id",
   "typing",
@@ -150,8 +135,6 @@ function buildSavePayload(
         payload[key] = serializeStringArrayForSubmit(
           normalizeAllowFromValues(value),
         )
-      } else if (key === "group_trigger") {
-        payload[key] = serializeGroupTriggerForSubmit(value)
       } else {
         payload[key] = value
       }
@@ -412,6 +395,11 @@ export function ChannelConfigPage({ channelName }: ChannelConfigPageProps) {
   }, [channel, channelName, t])
 
   const hidesPageLevelEnableToggle = channel?.name === "wecom"
+  // Pairing binds the owner's account once: while the saved allow_from lists
+  // no account, the gateway records who sends the bot a direct message, and
+  // approving one adds that account. The web chat needs no pairing.
+  const showsPairingRequests =
+    channel !== null && channel.name !== "web" && !hasOwnerAccount(baseConfig)
 
   const hiddenKeys = useMemo(() => {
     if (!channel) return []
@@ -571,14 +559,14 @@ export function ChannelConfigPage({ channelName }: ChannelConfigPageProps) {
   )
 
   // An approved sender is in the saved allow_from now. Adding it to the
-  // loaded and the edited config keeps unsaved edits, and a later save
-  // keeps the sender.
+  // loaded and the edited config keeps unsaved edits, a later save keeps the
+  // sender, and the pairing requests hide: the owner's account is bound.
   const handlePairingApproved = useCallback((senderID: string) => {
+    // Approving binds the owner's account: it becomes the one account in
+    // Allow From, as the server saves it ("*" goes).
     const withSender = (config: ChannelConfig): ChannelConfig => ({
       ...config,
-      allow_from: mergeUniqueStringItems(asStringArray(config.allow_from), [
-        senderID,
-      ]),
+      allow_from: [senderID],
     })
     setBaseConfig(withSender)
     setEditConfig(withSender)
@@ -742,7 +730,7 @@ export function ChannelConfigPage({ channelName }: ChannelConfigPageProps) {
               </div>
             )}
 
-            {channel && channel.name !== "web" && (
+            {channel && showsPairingRequests && (
               <ChannelPairingRequests
                 channelName={channel.name}
                 onApproved={handlePairingApproved}

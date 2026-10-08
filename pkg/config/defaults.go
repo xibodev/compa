@@ -377,18 +377,6 @@ func defaultChannels() ChannelsConfig {
 		if bc.Type == "" {
 			bc.Type = name
 		}
-		if bc.Type == ChannelWeb {
-			// The browser chat is the owner's own dashboard, behind its own
-			// sign-in; who may use it is not a channel policy.
-			bc.DMPolicy = DMPolicyOpen
-			bc.GroupPolicy = GroupPolicyOpen
-		} else {
-			// A chat app answers its owner, once paired, and in groups only
-			// when mentioned.
-			bc.DMPolicy = DMPolicyPairing
-			bc.GroupPolicy = GroupPolicyAllowlist
-			bc.GroupTrigger.MentionOnly = true
-		}
 		channels[name] = bc
 	}
 	return channels

@@ -149,20 +149,15 @@ func defaultChannelConfig(configKey string) *config.Channel {
 }
 
 // addChannelCommonConfig adds the channel_list fields every channel shares
-// to its settings. dm_policy and group_policy are the policies in effect, so
-// a channel that never set one shows the one its allow_from implies, and
-// group_trigger is always present, so mention_only reads as saved.
+// to its settings.
 func addChannelCommonConfig(settings map[string]any, bc *config.Channel) {
 	settings["enabled"] = bc.Enabled
 	if len(bc.AllowFrom) > 0 {
 		settings["allow_from"] = []string(bc.AllowFrom)
 	}
-	settings["dm_policy"] = bc.EffectiveDMPolicy()
-	settings["group_policy"] = bc.EffectiveGroupPolicy()
 	if bc.ReasoningChannelID != "" {
 		settings["reasoning_channel_id"] = bc.ReasoningChannelID
 	}
-	settings["group_trigger"] = bc.GroupTrigger
 	if bc.Typing.Enabled {
 		settings["typing"] = bc.Typing
 	}

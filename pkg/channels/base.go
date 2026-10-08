@@ -76,8 +76,7 @@ func WithReasoningChannelID(id string) BaseChannelOption {
 
 // WithAuthenticatedAccess marks a channel that only authenticated users can
 // reach, such as the built-in web chat, which only the password-protected
-// dashboard serves. An empty allow_from does not open such a channel to
-// everyone, so it is not reported as open access.
+// dashboard serves. Every message it receives is from the owner.
 func WithAuthenticatedAccess() BaseChannelOption {
 	return func(c *BaseChannel) { c.authenticatedAccess = true }
 }
@@ -102,7 +101,7 @@ type BaseChannel struct {
 	owner               Channel // the concrete channel that embeds this BaseChannel
 	reasoningChannelID  string
 	authenticatedAccess bool
-	policy              atomic.Pointer[accessPolicy] // see SetAccessPolicy
+	ownerOnly           atomic.Bool // see RequireOwner
 	pairingThrottle     pairingThrottle
 	senderLimits        senderLimits
 	queuedInbound       atomic.Int64 // messages being handed to the bus
@@ -135,32 +134,6 @@ func NewBaseChannel(
 		opt(bc)
 	}
 	return bc
-}
-
-// OpenToEveryone reports whether anyone who reaches the channel may talk to
-// the agent without having acknowledged it with "*" in allow_from: a policy
-// admits everyone, and nothing authenticates who reaches the channel (see
-// WithAuthenticatedAccess).
-func (c *BaseChannel) OpenToEveryone() bool {
-	if c.authenticatedAccess || c.allowsEveryone() {
-		return false
-	}
-	dm, group := c.policies()
-	return dm == config.DMPolicyOpen || group == config.GroupPolicyOpen
-}
-
-// warnIfOpenToEveryone logs the security warning for a channel open to
-// everyone. Compa aims to be secure by default; "*" in allow_from
-// acknowledges open access, for example for a public bot.
-func warnIfOpenToEveryone(name string, ch Channel) {
-	open, ok := ch.(interface{ OpenToEveryone() bool })
-	if !ok || !open.OpenToEveryone() {
-		return
-	}
-	logger.WarnCF("channels", "SECURITY: Channel allows EVERYONE", map[string]any{
-		"channel": name,
-		"hint":    "Set allow_from to your ID, or use '*' to explicitly acknowledge open access.",
-	})
 }
 
 // MaxMessageLength returns the maximum message length (in runes) for this channel.
@@ -227,10 +200,10 @@ func (c *BaseChannel) IsRunning() bool {
 	return c.running.Load()
 }
 
-// IsAllowed reports whether the sender with this raw ID may be admitted in
-// some chat: it matches allow_from, or a policy admits (or, for pairing,
-// records) senders it does not list. HandleMessageWithContext makes the
-// final decision for each message.
+// IsAllowed reports whether the sender with this raw ID may be admitted in a
+// direct message: it matches allow_from, or allow_from lists no account yet,
+// so the message is recorded as a pairing request. HandleMessageWithContext
+// makes the final decision for each message.
 func (c *BaseChannel) IsAllowed(senderID string) bool {
 	return c.mayAdmit(c.senderListed(bus.SenderInfo{}, senderID))
 }
@@ -242,7 +215,7 @@ func (c *BaseChannel) IsAllowedSender(sender bus.SenderInfo) bool {
 	return c.mayAdmit(c.senderListed(sender, ""))
 }
 
-// HandleMessageWithContext applies the channel's access policy to an inbound
+// HandleMessageWithContext applies the channel's access check to an inbound
 // message and publishes the admitted ones. Every platform's inbound messages
 // pass through it.
 func (c *BaseChannel) HandleMessageWithContext(
@@ -261,11 +234,7 @@ func (c *BaseChannel) HandleMessageWithContext(
 	// A platform that established the sender is the owner by its own means
 	// (the owner's "message yourself" chat on WhatsApp) has decided already.
 	if !inboundCtx.SenderIsOwner {
-		chatID := inboundCtx.ChatID
-		if chatID == "" {
-			chatID = deliveryChatID
-		}
-		decision, owner := c.admission(inboundCtx.ChatType, sender, senderID, chatID)
+		decision, owner := c.admission(inboundCtx.ChatType, sender, senderID)
 		switch decision {
 		case admitPair:
 			c.recordPairingRequest(sender, senderID)

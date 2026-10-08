@@ -89,13 +89,12 @@ func NewTeamsWebhookChannel(
 		}
 	}
 
+	// Send-only: it receives no messages, so it admits no one.
 	base := channels.NewBaseChannel(
 		"teams_webhook",
 		cfg,
 		bus,
-		[]string{
-			"*",
-		}, // Output-only channel; "*" suppresses misleading "allows EVERYONE" audit warning
+		nil,
 		// A first cut by characters; Send keeps each post within maxPayloadBytes.
 		channels.WithMaxMessageLength(24000),
 	)

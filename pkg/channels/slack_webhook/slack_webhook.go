@@ -57,11 +57,12 @@ func NewSlackWebhookChannel(
 		}
 	}
 
+	// Send-only: it receives no messages, so it admits no one.
 	base := channels.NewBaseChannel(
 		"slack_webhook",
 		cfg,
 		bus,
-		[]string{"*"},
+		nil,
 		channels.WithMaxMessageLength(40000),
 	)
 

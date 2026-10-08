@@ -292,8 +292,6 @@ func TestManagerAppliesChannelConfig(t *testing.T) {
 	f := registerReloadTestFactory(t)
 	cfg := reloadTestConfig(map[string]string{"my_rt": `{}`})
 	cfg.Channels["my_rt"].AllowFrom = config.FlexibleStringSlice{"rt:owner"}
-	cfg.Channels["my_rt"].DMPolicy = config.DMPolicyAllowlist
-	cfg.Channels["my_rt"].GroupPolicy = config.GroupPolicyDisabled
 	if _, err := NewManager(cfg, bus.NewMessageBus(), nil); err != nil {
 		t.Fatalf("NewManager() error = %v", err)
 	}
@@ -304,13 +302,13 @@ func TestManagerAppliesChannelConfig(t *testing.T) {
 	}
 	stranger := bus.SenderInfo{Platform: "rt", PlatformID: "x", CanonicalID: "rt:x"}
 	if ch.Admits("direct", stranger, "x") {
-		t.Fatal("the allowlist dm_policy was not applied")
+		t.Fatal("a stranger was admitted")
 	}
 	owner := bus.SenderInfo{Platform: "rt", PlatformID: "owner", CanonicalID: "rt:owner"}
 	if !ch.Admits("direct", owner, "owner") {
 		t.Fatal("allow_from was not applied")
 	}
 	if ch.Admits("group", owner, "g") {
-		t.Fatal("the disabled group_policy was not applied")
+		t.Fatal("a group message was admitted")
 	}
 }
