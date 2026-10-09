@@ -71,8 +71,8 @@ the gateway makes one up and doesn't tell you. Several sockets may open the
 same session, and each gets all of its frames.
 
 By default the socket takes a request with no `Origin` header, or one whose
-host and port are the gateway's; `allow_origins` lists the origins to take
-instead (`*` for any). The gateway pings every 30 seconds (`ping_interval`) and
+host is the one the request was sent to; `allow_origins` lists the origins to
+take instead (`*` for any). The gateway pings every 30 seconds (`ping_interval`) and
 closes a socket that sends nothing, pongs included, for 60 (`read_timeout`). It
 takes 100 sockets at most (`max_connections`); past that it answers `503`, or
 closes the socket with code `1013`.
@@ -109,8 +109,8 @@ a turn, with `message.create` alone.
 ### Files
 
 An attachment's `url` is `/web/media/<id>`: `GET` or `HEAD` it with the token.
-Images, audio and video come with `Content-Disposition: inline`, anything else
-as `attachment`. An id lasts about 30 minutes
+Common image types (PNG, JPEG, GIF, WebP, BMP, AVIF) come with
+`Content-Disposition: inline`, anything else as `attachment`. An id lasts about 30 minutes
 (`tools.media_cleanup.max_age_minutes`), and not past a restart or a reload;
 after that, `404`.
 
@@ -121,5 +121,5 @@ after that, `404`.
 | `GET /web/sessions?offset=0&limit=20` | The sessions, most recently updated first, each with `id`, `title`, `preview`, `message_count`, `created` and `updated`. |
 | `GET /web/sessions/<id>` | One session: `id`, `messages`, `summary`, `created` and `updated`; `404` when it has nothing to show. Each message has `role` (`user` or `assistant`) and `content` and, where they apply, `kind`, `created_at`, `model_name`, `requested_selection`, `served_target`, `served_identity`, `media`, `attachments` and `tool_calls`. |
 
-The id is the one the socket opened with, in any case. Another method gets
-`405`.
+The id is the one the socket opened with, in any case. Methods other than `GET`
+and `HEAD` get `405`.

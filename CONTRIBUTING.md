@@ -6,7 +6,7 @@ on it; report security problems as [SECURITY.md](SECURITY.md) describes.
 ## Tools
 
 - Go 1.26.6, the version in `go.mod`.
-- Node.js 22 and pnpm, the version `packageManager` pins in
+- Node.js 22.13 or later, and pnpm, the version `packageManager` pins in
   `web/frontend/package.json`.
 - For the checks: [golangci-lint](https://golangci-lint.run) v2.14.0,
   shellcheck and PSScriptAnalyzer; PowerShell 7 runs the Windows installer's
@@ -14,12 +14,7 @@ on it; report security problems as [SECURITY.md](SECURITY.md) describes.
 
 ## Build
 
-Every Go command takes the build tags `goolm,stdjson`. Add `paused_channels`
-(`-tags goolm,stdjson,paused_channels`, or
-`make product GO_BUILD_TAGS=goolm,stdjson,paused_channels`) to include the
-[paused channels](docs/use.md#paused-channels), such as Telegram and Discord.
-They aren't maintained and may not compile. Every build includes the WhatsApp
-channel, which links GPL-3.0 code; see [NOTICE](NOTICE).
+Every Go command takes the build tags `goolm,stdjson`.
 
 Build the web UI first, as [Run from source](docs/install.md#run-from-source)
 shows: `compa` embeds `web/backend/dist` when it links, and a stale or missing

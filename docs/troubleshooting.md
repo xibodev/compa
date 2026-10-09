@@ -18,9 +18,9 @@ and the status menu at the top of the page shows **Gateway: Stopped** or
      it found no `compa-kernel` in Compa's folder. Install again, or keep both
      programs in one folder.
    - `config.json` doesn't load, for example after a hand edit. The Config page
-     then says **Failed to load configuration**. A key Compa doesn't know fails
-     the load too, and the error names it, such as `tools.future_tool`. Fix the
-     file, or use **Factory Reset** (see [Start over](#start-over)).
+     then says **Failed to load configuration**, and the error names the line
+     or the unknown key. Fix the file, or use **Factory Reset** (see
+     [Start over](#start-over)).
    - Port 18790 is taken; see the next section.
 
 ## Port already in use
@@ -62,9 +62,9 @@ The **Logs** page shows the gateway's recent output and has a level menu. For
 more detail everywhere, start Compa with `compa -d`.
 
 `launcher.log` and `gateway.log` start over in a new file at 10 MB, and Compa
-keeps up to 5 of each (`logging.max_size_mb` and `logging.max_files` in
-`config.json`). With `logging.redact_secrets`, on by default, Compa masks the
-keys and tokens it knows before it writes a log line.
+keeps up to 5 of each (**Config** → **Logging**). With **Redact Secrets**, on
+by default, Compa masks the keys and tokens it knows before it writes a log
+line.
 
 ## A model doesn't answer
 
@@ -116,8 +116,6 @@ When [`tools.approval`](use.md#approvals) asks about a call:
   **Allow From** lists them.
 - Slack: the channel needs both the **Bot Token** (`xoxb-`) and the **App
   Token** (`xapp-`).
-- A paused channel, such as Telegram, isn't in a default build: the log says
-  `Factory not registered` for it. See [Paused channels](use.md#paused-channels).
 
 ## A saved change doesn't take effect
 
@@ -174,6 +172,7 @@ Everything is in `~/.compa`:
 | Path | What |
 |---|---|
 | `config.json` | Settings, provider connections, model routes. |
+| `launcher-config.json` | The web UI's settings: port, LAN access, allowed hosts and networks. |
 | `.security.yml` | Channel tokens and other secret settings. |
 | `auth.json` | Provider API keys and sign-ins, and the extension's shared secret. |
 | `launcher-auth.db` | The dashboard password, as a bcrypt hash. |

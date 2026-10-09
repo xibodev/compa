@@ -39,7 +39,7 @@ this repository; report those to their authors.
 
 ## Verify a release
 
-Each release lists the SHA-256 checksum of every file in `SHA256SUMS`, which
+Each release lists the SHA-256 checksum of every other file in `SHA256SUMS`, which
 the installers and the updater check. GitHub records which workflow run built
 each archive, installer and `SHA256SUMS`:
 
