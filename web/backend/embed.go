@@ -9,8 +9,8 @@ import (
 	"path"
 	"strings"
 
-	"github.com/xibodev/compa/v3/pkg/logger"
-	"github.com/xibodev/compa/v3/web/backend/middleware"
+	"github.com/xibodev/compa/v4/pkg/logger"
+	"github.com/xibodev/compa/v4/web/backend/middleware"
 )
 
 //go:embed all:dist

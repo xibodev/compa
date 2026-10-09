@@ -17,9 +17,9 @@ import (
 
 	"github.com/google/jsonschema-go/jsonschema"
 
-	"github.com/xibodev/compa/v3/cmd/compa-kernel/internal"
-	"github.com/xibodev/compa/v3/pkg/config"
-	pkgmcp "github.com/xibodev/compa/v3/pkg/mcp"
+	"github.com/xibodev/compa/v4/cmd/compa-kernel/internal"
+	"github.com/xibodev/compa/v4/pkg/config"
+	pkgmcp "github.com/xibodev/compa/v4/pkg/mcp"
 )
 
 type probeResult struct {

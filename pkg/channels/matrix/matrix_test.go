@@ -16,9 +16,9 @@ import (
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 
-	"github.com/xibodev/compa/v3/pkg/channels"
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/media"
+	"github.com/xibodev/compa/v4/pkg/channels"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/media"
 )
 
 func TestMatrixLocalpartMentionRegexp(t *testing.T) {

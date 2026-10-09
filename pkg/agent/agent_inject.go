@@ -6,17 +6,17 @@ import (
 	"context"
 	"strings"
 
-	"github.com/xibodev/compa/v3/pkg/agent/interfaces"
-	"github.com/xibodev/compa/v3/pkg/audio/asr"
-	"github.com/xibodev/compa/v3/pkg/bus"
-	"github.com/xibodev/compa/v3/pkg/channels"
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/constants"
-	"github.com/xibodev/compa/v3/pkg/logger"
-	"github.com/xibodev/compa/v3/pkg/media"
-	"github.com/xibodev/compa/v3/pkg/providers"
-	"github.com/xibodev/compa/v3/pkg/state"
-	"github.com/xibodev/compa/v3/pkg/tools"
+	"github.com/xibodev/compa/v4/pkg/agent/interfaces"
+	"github.com/xibodev/compa/v4/pkg/audio/asr"
+	"github.com/xibodev/compa/v4/pkg/bus"
+	"github.com/xibodev/compa/v4/pkg/channels"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/constants"
+	"github.com/xibodev/compa/v4/pkg/logger"
+	"github.com/xibodev/compa/v4/pkg/media"
+	"github.com/xibodev/compa/v4/pkg/providers"
+	"github.com/xibodev/compa/v4/pkg/state"
+	"github.com/xibodev/compa/v4/pkg/tools"
 )
 
 func (al *AgentLoop) RegisterTool(tool tools.Tool) {

@@ -7,10 +7,10 @@ import (
 	"sync"
 	"time"
 
-	runtimeevents "github.com/xibodev/compa/v3/pkg/events"
-	"github.com/xibodev/compa/v3/pkg/logger"
-	"github.com/xibodev/compa/v3/pkg/providers"
-	"github.com/xibodev/compa/v3/pkg/session"
+	runtimeevents "github.com/xibodev/compa/v4/pkg/events"
+	"github.com/xibodev/compa/v4/pkg/logger"
+	"github.com/xibodev/compa/v4/pkg/providers"
+	"github.com/xibodev/compa/v4/pkg/session"
 )
 
 // defaultContextManagerName selects the built-in context manager in config.

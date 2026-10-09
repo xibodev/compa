@@ -6,7 +6,7 @@ import (
 	"strings"
 	"sync/atomic"
 
-	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/config"
 )
 
 // chatTargets is the tools.message.targets policy of a tool that writes to

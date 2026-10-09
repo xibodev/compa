@@ -10,9 +10,9 @@ import (
 
 	"github.com/mymmrac/telego"
 
-	"github.com/xibodev/compa/v3/pkg/channels"
-	"github.com/xibodev/compa/v3/pkg/commands"
-	"github.com/xibodev/compa/v3/pkg/logger"
+	"github.com/xibodev/compa/v4/pkg/channels"
+	"github.com/xibodev/compa/v4/pkg/commands"
+	"github.com/xibodev/compa/v4/pkg/logger"
 )
 
 var commandRegistrationBackoff = []time.Duration{

@@ -30,7 +30,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/xibodev/compa/v3/pkg/modproto"
+	"github.com/xibodev/compa/v4/pkg/modproto"
 )
 
 const moduleID = "fake"

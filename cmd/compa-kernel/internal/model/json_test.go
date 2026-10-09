@@ -14,8 +14,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/modelservice"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/modelservice"
 )
 
 // runModel runs the model command with args. It returns what the command

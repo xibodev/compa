@@ -3,8 +3,8 @@ package whatsapp
 import (
 	"sync"
 
-	"github.com/xibodev/compa/v3/pkg/bus"
-	"github.com/xibodev/compa/v3/pkg/identity"
+	"github.com/xibodev/compa/v4/pkg/bus"
+	"github.com/xibodev/compa/v4/pkg/identity"
 )
 
 // WhatsApp servers of the two forms an account's own address takes.

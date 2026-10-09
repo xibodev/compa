@@ -11,11 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/memory"
-	"github.com/xibodev/compa/v3/pkg/providers"
-	"github.com/xibodev/compa/v3/pkg/session"
-	"github.com/xibodev/compa/v3/pkg/utils"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/memory"
+	"github.com/xibodev/compa/v4/pkg/providers"
+	"github.com/xibodev/compa/v4/pkg/session"
+	"github.com/xibodev/compa/v4/pkg/utils"
 )
 
 // setupSessionTestEnv points HOME and COMPA_HOME at a temporary

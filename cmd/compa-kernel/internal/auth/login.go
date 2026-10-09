@@ -3,7 +3,7 @@ package auth
 import (
 	"github.com/spf13/cobra"
 
-	"github.com/xibodev/compa/v3/cmd/compa-kernel/internal/jsonout"
+	"github.com/xibodev/compa/v4/cmd/compa-kernel/internal/jsonout"
 )
 
 func newLoginCommand() *cobra.Command {

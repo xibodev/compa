@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/xibodev/compa/v3/pkg/providers"
+	"github.com/xibodev/compa/v4/pkg/providers"
 )
 
 type InstanceSelectionResult struct {

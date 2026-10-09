@@ -13,10 +13,10 @@ import (
 	"strings"
 	"time"
 
-	basechannels "github.com/xibodev/compa/v3/pkg/channels"
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/fileutil"
-	"github.com/xibodev/compa/v3/pkg/logger"
+	basechannels "github.com/xibodev/compa/v4/pkg/channels"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/fileutil"
+	"github.com/xibodev/compa/v4/pkg/logger"
 )
 
 const (

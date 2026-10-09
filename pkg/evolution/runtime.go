@@ -14,9 +14,9 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/logger"
-	"github.com/xibodev/compa/v3/pkg/skills"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/logger"
+	"github.com/xibodev/compa/v4/pkg/skills"
 )
 
 var ErrApplyDraftFailed = errors.New("apply draft failed")

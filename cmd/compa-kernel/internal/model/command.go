@@ -8,10 +8,10 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/xibodev/compa/v3/cmd/compa-kernel/internal"
-	"github.com/xibodev/compa/v3/cmd/compa-kernel/internal/jsonout"
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/modelservice"
+	"github.com/xibodev/compa/v4/cmd/compa-kernel/internal"
+	"github.com/xibodev/compa/v4/cmd/compa-kernel/internal/jsonout"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/modelservice"
 )
 
 // checkSelection validates a selection against the config; tests replace it.

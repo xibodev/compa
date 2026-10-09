@@ -14,12 +14,12 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/xibodev/compa/v3"
-	"github.com/xibodev/compa/v3/cmd/compa-kernel/internal"
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/fileutil"
-	"github.com/xibodev/compa/v3/pkg/skills"
-	"github.com/xibodev/compa/v3/pkg/utils"
+	"github.com/xibodev/compa/v4"
+	"github.com/xibodev/compa/v4/cmd/compa-kernel/internal"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/fileutil"
+	"github.com/xibodev/compa/v4/pkg/skills"
+	"github.com/xibodev/compa/v4/pkg/utils"
 )
 
 const skillsSearchMaxResults = 20

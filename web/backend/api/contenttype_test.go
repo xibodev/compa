@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xibodev/compa/v3/pkg/view"
+	"github.com/xibodev/compa/v4/pkg/view"
 )
 
 // The bug this exists for: the host tells the cockpit an artefact is a

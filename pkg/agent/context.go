@@ -13,12 +13,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/logger"
-	"github.com/xibodev/compa/v3/pkg/providers"
-	"github.com/xibodev/compa/v3/pkg/skills"
-	"github.com/xibodev/compa/v3/pkg/tokenizer"
-	"github.com/xibodev/compa/v3/pkg/utils"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/logger"
+	"github.com/xibodev/compa/v4/pkg/providers"
+	"github.com/xibodev/compa/v4/pkg/skills"
+	"github.com/xibodev/compa/v4/pkg/tokenizer"
+	"github.com/xibodev/compa/v4/pkg/utils"
 )
 
 type ContextBuilder struct {

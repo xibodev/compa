@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/config"
 )
 
 // ErrNotFound reports that no web chat session has the asked id, or that it

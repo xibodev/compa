@@ -18,10 +18,10 @@ import (
 
 	"github.com/caarlos0/env/v11"
 
-	"github.com/xibodev/compa/v3/pkg"
-	"github.com/xibodev/compa/v3/pkg/approval"
-	"github.com/xibodev/compa/v3/pkg/fileutil"
-	"github.com/xibodev/compa/v3/pkg/logger"
+	"github.com/xibodev/compa/v4/pkg"
+	"github.com/xibodev/compa/v4/pkg/approval"
+	"github.com/xibodev/compa/v4/pkg/fileutil"
+	"github.com/xibodev/compa/v4/pkg/logger"
 )
 
 func init() {

@@ -9,16 +9,16 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/isolation"
-	"github.com/xibodev/compa/v3/pkg/logger"
-	"github.com/xibodev/compa/v3/pkg/media"
-	"github.com/xibodev/compa/v3/pkg/memory"
-	"github.com/xibodev/compa/v3/pkg/providers"
-	"github.com/xibodev/compa/v3/pkg/routing"
-	"github.com/xibodev/compa/v3/pkg/session"
-	"github.com/xibodev/compa/v3/pkg/skills"
-	"github.com/xibodev/compa/v3/pkg/tools"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/isolation"
+	"github.com/xibodev/compa/v4/pkg/logger"
+	"github.com/xibodev/compa/v4/pkg/media"
+	"github.com/xibodev/compa/v4/pkg/memory"
+	"github.com/xibodev/compa/v4/pkg/providers"
+	"github.com/xibodev/compa/v4/pkg/routing"
+	"github.com/xibodev/compa/v4/pkg/session"
+	"github.com/xibodev/compa/v4/pkg/skills"
+	"github.com/xibodev/compa/v4/pkg/tools"
 )
 
 // AgentInstance represents a fully configured agent with its own workspace,

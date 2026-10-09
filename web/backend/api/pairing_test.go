@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/pairing"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/pairing"
 )
 
 // pairingTestHandler saves a config whose telegram and whatsapp channels

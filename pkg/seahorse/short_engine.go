@@ -13,7 +13,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/xibodev/compa/v3/pkg/logger"
+	"github.com/xibodev/compa/v4/pkg/logger"
 )
 
 // Config holds engine configuration.

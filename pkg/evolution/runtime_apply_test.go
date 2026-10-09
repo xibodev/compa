@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/evolution"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/evolution"
 )
 
 // runColdPathWithApproval runs the cold path, approves the candidate drafts it

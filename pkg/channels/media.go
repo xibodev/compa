@@ -3,7 +3,7 @@ package channels
 import (
 	"context"
 
-	"github.com/xibodev/compa/v3/pkg/bus"
+	"github.com/xibodev/compa/v4/pkg/bus"
 )
 
 // MediaSender is an optional interface for channels that can send

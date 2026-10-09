@@ -14,7 +14,7 @@ import (
 	waLog "go.mau.fi/whatsmeow/util/log"
 	_ "modernc.org/sqlite"
 
-	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/config"
 )
 
 const (

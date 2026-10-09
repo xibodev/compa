@@ -11,13 +11,13 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/xibodev/compa/v3/pkg/approval"
-	"github.com/xibodev/compa/v3/pkg/bus"
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/constants"
-	"github.com/xibodev/compa/v3/pkg/cron"
-	"github.com/xibodev/compa/v3/pkg/session"
-	"github.com/xibodev/compa/v3/pkg/utils"
+	"github.com/xibodev/compa/v4/pkg/approval"
+	"github.com/xibodev/compa/v4/pkg/bus"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/constants"
+	"github.com/xibodev/compa/v4/pkg/cron"
+	"github.com/xibodev/compa/v4/pkg/session"
+	"github.com/xibodev/compa/v4/pkg/utils"
 )
 
 // JobExecutor is the interface for executing cron jobs through the agent

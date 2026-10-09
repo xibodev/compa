@@ -15,9 +15,9 @@ import (
 
 	"github.com/bwmarrin/discordgo"
 
-	"github.com/xibodev/compa/v3/pkg/audio/tts"
-	"github.com/xibodev/compa/v3/pkg/bus"
-	"github.com/xibodev/compa/v3/pkg/channels"
+	"github.com/xibodev/compa/v4/pkg/audio/tts"
+	"github.com/xibodev/compa/v4/pkg/bus"
+	"github.com/xibodev/compa/v4/pkg/channels"
 )
 
 type stubTTSProvider struct{}

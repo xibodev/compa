@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/xibodev/compa/v3/pkg/bus"
-	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/bus"
+	"github.com/xibodev/compa/v4/pkg/config"
 )
 
 // ChannelFactory is a constructor function that creates a Channel from config and message bus.

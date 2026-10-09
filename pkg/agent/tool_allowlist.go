@@ -4,9 +4,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/logger"
-	"github.com/xibodev/compa/v3/pkg/tools"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/logger"
+	"github.com/xibodev/compa/v4/pkg/tools"
 )
 
 const dynamicMCPToolPrefix = "mcp_"

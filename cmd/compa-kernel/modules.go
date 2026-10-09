@@ -25,12 +25,12 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/xibodev/compa/v3/cmd/compa-kernel/internal"
-	"github.com/xibodev/compa/v3/internal/module"
-	"github.com/xibodev/compa/v3/internal/moduletools"
-	"github.com/xibodev/compa/v3/pkg/approval"
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/modproto"
+	"github.com/xibodev/compa/v4/cmd/compa-kernel/internal"
+	"github.com/xibodev/compa/v4/internal/module"
+	"github.com/xibodev/compa/v4/internal/moduletools"
+	"github.com/xibodev/compa/v4/pkg/approval"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/modproto"
 )
 
 // Home is the host's state root for the CLI: config.GetHome, the one the

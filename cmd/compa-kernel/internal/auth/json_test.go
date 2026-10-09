@@ -13,8 +13,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/xibodev/compa/v3/pkg/auth"
-	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/auth"
+	"github.com/xibodev/compa/v4/pkg/config"
 )
 
 // runAuth runs an auth subcommand with args and returns what it wrote to

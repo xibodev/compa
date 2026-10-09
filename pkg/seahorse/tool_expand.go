@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/xibodev/compa/v3/pkg/tools"
+	"github.com/xibodev/compa/v4/pkg/tools"
 )
 
 // ExpandTool recovers full message content by ID.

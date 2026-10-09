@@ -15,12 +15,12 @@ import (
 	"github.com/open-dingtalk/dingtalk-stream-sdk-go/client"
 	dinglog "github.com/open-dingtalk/dingtalk-stream-sdk-go/logger"
 
-	"github.com/xibodev/compa/v3/pkg/bus"
-	"github.com/xibodev/compa/v3/pkg/channels"
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/identity"
-	"github.com/xibodev/compa/v3/pkg/logger"
-	"github.com/xibodev/compa/v3/pkg/utils"
+	"github.com/xibodev/compa/v4/pkg/bus"
+	"github.com/xibodev/compa/v4/pkg/channels"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/identity"
+	"github.com/xibodev/compa/v4/pkg/logger"
+	"github.com/xibodev/compa/v4/pkg/utils"
 )
 
 // DingTalkChannel implements the Channel interface for DingTalk (钉钉)

@@ -7,9 +7,9 @@ import (
 	"sort"
 	"time"
 
-	"github.com/xibodev/compa/v3/pkg/logger"
-	"github.com/xibodev/compa/v3/pkg/providers"
-	"github.com/xibodev/compa/v3/pkg/tokenizer"
+	"github.com/xibodev/compa/v4/pkg/logger"
+	"github.com/xibodev/compa/v4/pkg/providers"
+	"github.com/xibodev/compa/v4/pkg/tokenizer"
 )
 
 // CompactInput controls compaction behavior.

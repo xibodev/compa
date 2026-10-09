@@ -5,7 +5,7 @@ package api
 import (
 	"os/exec"
 
-	"github.com/xibodev/compa/v3/web/backend/utils"
+	"github.com/xibodev/compa/v4/web/backend/utils"
 )
 
 func launcherExecCommand(name string, args ...string) *exec.Cmd {

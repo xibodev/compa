@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/xibodev/compa/v3/pkg/logger"
+	"github.com/xibodev/compa/v4/pkg/logger"
 )
 
 // DownloadToFile streams an HTTP response body to a temporary file in small

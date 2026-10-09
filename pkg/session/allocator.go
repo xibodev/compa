@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/xibodev/compa/v3/pkg/bus"
-	"github.com/xibodev/compa/v3/pkg/routing"
+	"github.com/xibodev/compa/v4/pkg/bus"
+	"github.com/xibodev/compa/v4/pkg/routing"
 )
 
 // Allocation contains the structured scope and opaque session key selected for

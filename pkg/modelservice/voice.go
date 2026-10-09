@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/config"
 )
 
 // ErrNoVoiceTarget reports a voice request whose target is not configured.

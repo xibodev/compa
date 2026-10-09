@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/v3/pkg/bus"
+	"github.com/xibodev/compa/v4/pkg/bus"
 )
 
 // syncBuffer is a bytes.Buffer safe for the chat's concurrent writers.

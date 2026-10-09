@@ -22,8 +22,8 @@ import (
 
 	"github.com/h2non/filetype"
 
-	"github.com/xibodev/compa/v3/pkg/bus"
-	"github.com/xibodev/compa/v3/pkg/media"
+	"github.com/xibodev/compa/v4/pkg/bus"
+	"github.com/xibodev/compa/v4/pkg/media"
 )
 
 const (

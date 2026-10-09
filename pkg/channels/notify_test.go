@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/v3/pkg/bus"
-	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/bus"
+	"github.com/xibodev/compa/v4/pkg/config"
 )
 
 // A notification reaches its chat and every webhook; a notify-only one, the

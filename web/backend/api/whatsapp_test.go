@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/config"
 )
 
 func whatsappLinkRequest(t *testing.T, mux *http.ServeMux, method string) whatsappLinkResponse {

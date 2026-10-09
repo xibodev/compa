@@ -3,8 +3,8 @@ package cron
 import (
 	"github.com/spf13/cobra"
 
-	"github.com/xibodev/compa/v3/cmd/compa-kernel/internal"
-	"github.com/xibodev/compa/v3/pkg/cron"
+	"github.com/xibodev/compa/v4/cmd/compa-kernel/internal"
+	"github.com/xibodev/compa/v4/pkg/cron"
 )
 
 // exampleJobID looks like a real job ID: 16 hex characters.

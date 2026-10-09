@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/xibodev/compa/v3/pkg/logger"
+	"github.com/xibodev/compa/v4/pkg/logger"
 )
 
 // Drafts are written to skills only after a human accepts them (AcceptDraft),

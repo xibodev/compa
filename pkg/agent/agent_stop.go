@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/xibodev/compa/v3/pkg/bus"
-	"github.com/xibodev/compa/v3/pkg/commands"
+	"github.com/xibodev/compa/v4/pkg/bus"
+	"github.com/xibodev/compa/v4/pkg/commands"
 )
 
 func (al *AgentLoop) tryHandleStopCommand(

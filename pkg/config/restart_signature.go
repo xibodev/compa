@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/xibodev/compa/v3/pkg/approval"
+	"github.com/xibodev/compa/v4/pkg/approval"
 )
 
 // RestartSignature is the part of a config the gateway applies only when it

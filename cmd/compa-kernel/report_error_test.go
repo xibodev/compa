@@ -8,8 +8,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/xibodev/compa/v3/cmd/compa-kernel/internal/jsonout"
-	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v4/cmd/compa-kernel/internal/jsonout"
+	"github.com/xibodev/compa/v4/pkg/config"
 )
 
 // A command run with --json reports a failure as {"error": ...} on stdout;

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xibodev/compa/v3/pkg/evolution"
+	"github.com/xibodev/compa/v4/pkg/evolution"
 )
 
 func TestReviewDraft_QuarantinesInvalidDraft(t *testing.T) {

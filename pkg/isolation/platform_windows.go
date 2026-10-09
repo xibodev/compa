@@ -11,8 +11,8 @@ import (
 
 	"golang.org/x/sys/windows"
 
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/logger"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/logger"
 )
 
 const disableMaxPrivilege = 0x1

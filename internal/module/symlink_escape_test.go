@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xibodev/compa/v3/pkg/modproto"
+	"github.com/xibodev/compa/v4/pkg/modproto"
 )
 
 // The physical half of confinement -- the EvalSymlinks pass that catches what a

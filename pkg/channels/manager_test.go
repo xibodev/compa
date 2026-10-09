@@ -12,12 +12,12 @@ import (
 
 	"golang.org/x/time/rate"
 
-	"github.com/xibodev/compa/v3/pkg/bus"
-	"github.com/xibodev/compa/v3/pkg/config"
-	runtimeevents "github.com/xibodev/compa/v3/pkg/events"
-	"github.com/xibodev/compa/v3/pkg/media"
-	"github.com/xibodev/compa/v3/pkg/session/history"
-	"github.com/xibodev/compa/v3/pkg/utils"
+	"github.com/xibodev/compa/v4/pkg/bus"
+	"github.com/xibodev/compa/v4/pkg/config"
+	runtimeevents "github.com/xibodev/compa/v4/pkg/events"
+	"github.com/xibodev/compa/v4/pkg/media"
+	"github.com/xibodev/compa/v4/pkg/session/history"
+	"github.com/xibodev/compa/v4/pkg/utils"
 )
 
 // mockChannel is a test double that delegates Send to a configurable function.

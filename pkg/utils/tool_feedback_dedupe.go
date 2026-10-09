@@ -3,7 +3,7 @@ package utils
 import (
 	"strings"
 
-	"github.com/xibodev/compa/v3/pkg/providers"
+	"github.com/xibodev/compa/v4/pkg/providers"
 )
 
 func normalizeToolFeedbackComparisonText(text string) string {

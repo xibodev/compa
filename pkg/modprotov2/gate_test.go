@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xibodev/compa/v3/pkg/contractv2"
-	"github.com/xibodev/compa/v3/pkg/modproto"
+	"github.com/xibodev/compa/v4/pkg/contractv2"
+	"github.com/xibodev/compa/v4/pkg/modproto"
 )
 
 // The settled version matrix, exercised through the REAL entry point rather

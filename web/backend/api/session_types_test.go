@@ -1,6 +1,6 @@
 package api
 
-import "github.com/xibodev/compa/v3/pkg/session/history"
+import "github.com/xibodev/compa/v4/pkg/session/history"
 
 // The session tests decode responses into the shared history types.
 type (

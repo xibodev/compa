@@ -3,7 +3,7 @@ package web
 import (
 	"net/http"
 
-	"github.com/xibodev/compa/v3/pkg/session/history"
+	"github.com/xibodev/compa/v4/pkg/session/history"
 )
 
 // SetSessionHistory gives the channel the reader of the sessions it serves

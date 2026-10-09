@@ -9,10 +9,10 @@ import (
 
 	"github.com/tencent-connect/botgo/dto"
 
-	"github.com/xibodev/compa/v3/pkg/bus"
-	"github.com/xibodev/compa/v3/pkg/channels"
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/pairing"
+	"github.com/xibodev/compa/v4/pkg/bus"
+	"github.com/xibodev/compa/v4/pkg/channels"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/pairing"
 )
 
 func newAccessTestChannel(t *testing.T, allowFrom ...string) (*QQChannel, *bus.MessageBus, *int) {

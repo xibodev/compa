@@ -5,12 +5,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xibodev/compa/v3/pkg/bus"
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/constants"
-	"github.com/xibodev/compa/v3/pkg/identity"
-	"github.com/xibodev/compa/v3/pkg/logger"
-	"github.com/xibodev/compa/v3/pkg/pairing"
+	"github.com/xibodev/compa/v4/pkg/bus"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/constants"
+	"github.com/xibodev/compa/v4/pkg/identity"
+	"github.com/xibodev/compa/v4/pkg/logger"
+	"github.com/xibodev/compa/v4/pkg/pairing"
 )
 
 // Compa serves one person, its owner. A channel answers only the owner's

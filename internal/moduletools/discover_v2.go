@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/xibodev/compa/v3/pkg/modprotov2"
+	"github.com/xibodev/compa/v4/pkg/modprotov2"
 )
 
 // V2 is a discovered module's v2 standing: which contract governs it, and

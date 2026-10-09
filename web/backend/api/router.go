@@ -7,8 +7,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/xibodev/compa/v3/pkg/modelservice"
-	"github.com/xibodev/compa/v3/web/backend/launcherconfig"
+	"github.com/xibodev/compa/v4/pkg/modelservice"
+	"github.com/xibodev/compa/v4/web/backend/launcherconfig"
 )
 
 // pausedChannelRoutes register the routes of paused channels (the WeChat and

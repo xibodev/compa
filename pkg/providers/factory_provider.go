@@ -9,9 +9,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/providers/coretransport"
-	"github.com/xibodev/compa/v3/pkg/providers/openai_compat"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/providers/coretransport"
+	"github.com/xibodev/compa/v4/pkg/providers/openai_compat"
 )
 
 // CallSpec is what the agent pipeline reads about one model call: one model

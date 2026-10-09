@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xibodev/compa/v3/pkg/evolution"
-	"github.com/xibodev/compa/v3/pkg/providers"
-	"github.com/xibodev/compa/v3/pkg/skills"
+	"github.com/xibodev/compa/v4/pkg/evolution"
+	"github.com/xibodev/compa/v4/pkg/providers"
+	"github.com/xibodev/compa/v4/pkg/skills"
 )
 
 type recordingDraftGenerator struct {

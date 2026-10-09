@@ -15,10 +15,10 @@ import (
 	"github.com/ergochat/irc-go/ircmsg"
 	"golang.org/x/time/rate"
 
-	"github.com/xibodev/compa/v3/pkg/bus"
-	"github.com/xibodev/compa/v3/pkg/channels"
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/logger"
+	"github.com/xibodev/compa/v4/pkg/bus"
+	"github.com/xibodev/compa/v4/pkg/channels"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/logger"
 )
 
 // Servers disconnect clients that send lines in fast bursts ("Excess Flood"),

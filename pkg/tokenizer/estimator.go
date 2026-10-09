@@ -3,7 +3,7 @@ package tokenizer
 import (
 	"encoding/json"
 
-	"github.com/xibodev/compa/v3/pkg/providers"
+	"github.com/xibodev/compa/v4/pkg/providers"
 )
 
 // IsCJK reports whether r is a CJK ideograph, a kana or a Hangul syllable

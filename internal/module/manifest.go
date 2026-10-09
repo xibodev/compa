@@ -12,8 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xibodev/compa/v3/pkg/fileutil"
-	"github.com/xibodev/compa/v3/pkg/modproto"
+	"github.com/xibodev/compa/v4/pkg/fileutil"
+	"github.com/xibodev/compa/v4/pkg/modproto"
 )
 
 // ManifestName is the file Install writes into a module's directory to record

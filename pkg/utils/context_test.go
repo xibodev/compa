@@ -8,7 +8,7 @@ package utils
 import (
 	"testing"
 
-	"github.com/xibodev/compa/v3/pkg/providers"
+	"github.com/xibodev/compa/v4/pkg/providers"
 )
 
 func TestCalculateDefaultMaxContextRunes(t *testing.T) {

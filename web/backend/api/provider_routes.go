@@ -7,8 +7,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/modelservice"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/modelservice"
 )
 
 type providerInstanceCatalogResponse struct {

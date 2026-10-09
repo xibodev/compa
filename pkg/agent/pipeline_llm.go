@@ -13,11 +13,11 @@ import (
 
 	core "github.com/xibodev/llmgw-core"
 
-	"github.com/xibodev/compa/v3/pkg/constants"
-	runtimeevents "github.com/xibodev/compa/v3/pkg/events"
-	"github.com/xibodev/compa/v3/pkg/logger"
-	"github.com/xibodev/compa/v3/pkg/providers"
-	"github.com/xibodev/compa/v3/pkg/session"
+	"github.com/xibodev/compa/v4/pkg/constants"
+	runtimeevents "github.com/xibodev/compa/v4/pkg/events"
+	"github.com/xibodev/compa/v4/pkg/logger"
+	"github.com/xibodev/compa/v4/pkg/providers"
+	"github.com/xibodev/compa/v4/pkg/session"
 )
 
 // CallLLM performs an LLM call with fallback support, hook invocation, and retry logic.

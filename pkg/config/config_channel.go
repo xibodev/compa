@@ -13,7 +13,7 @@ import (
 	"github.com/caarlos0/env/v11"
 	"gopkg.in/yaml.v3"
 
-	"github.com/xibodev/compa/v3/pkg/logger"
+	"github.com/xibodev/compa/v4/pkg/logger"
 )
 
 // Channel type constants — single source of truth for all channel type names.

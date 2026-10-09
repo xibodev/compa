@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/v3/pkg/memory"
-	"github.com/xibodev/compa/v3/pkg/session"
+	"github.com/xibodev/compa/v4/pkg/memory"
+	"github.com/xibodev/compa/v4/pkg/session"
 )
 
 // webChatScope returns the session key and scope the gateway records for the

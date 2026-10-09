@@ -1,6 +1,6 @@
 package tools
 
-import hardwaretools "github.com/xibodev/compa/v3/pkg/tools/hardware"
+import hardwaretools "github.com/xibodev/compa/v4/pkg/tools/hardware"
 
 type (
 	I2CTool    = hardwaretools.I2CTool

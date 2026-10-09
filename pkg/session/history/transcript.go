@@ -12,12 +12,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/memory"
-	"github.com/xibodev/compa/v3/pkg/providers"
-	"github.com/xibodev/compa/v3/pkg/providers/messageutil"
-	"github.com/xibodev/compa/v3/pkg/session"
-	"github.com/xibodev/compa/v3/pkg/utils"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/memory"
+	"github.com/xibodev/compa/v4/pkg/providers"
+	"github.com/xibodev/compa/v4/pkg/providers/messageutil"
+	"github.com/xibodev/compa/v4/pkg/session"
+	"github.com/xibodev/compa/v4/pkg/utils"
 )
 
 // sessionFile is a session read from the JSONL store: its visible history plus

@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xibodev/compa/v3/internal/module"
-	"github.com/xibodev/compa/v3/pkg/modproto"
+	"github.com/xibodev/compa/v4/internal/module"
+	"github.com/xibodev/compa/v4/pkg/modproto"
 )
 
 // installedModule returns a runner for a module installed under the host's

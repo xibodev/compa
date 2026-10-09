@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/xibodev/compa/v3/pkg/modelservice"
+	"github.com/xibodev/compa/v4/pkg/modelservice"
 )
 
 // syncProviderCatalog lists an instance's models through its llmgw-core

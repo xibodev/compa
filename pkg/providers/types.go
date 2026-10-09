@@ -3,7 +3,7 @@ package providers
 import (
 	"context"
 
-	"github.com/xibodev/compa/v3/pkg/providers/protocoltypes"
+	"github.com/xibodev/compa/v4/pkg/providers/protocoltypes"
 )
 
 type (

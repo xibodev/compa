@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xibodev/compa/v3/pkg/auth"
-	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/auth"
+	"github.com/xibodev/compa/v4/pkg/config"
 )
 
 // connectFixture points the auth store and catalogs at a fresh home and

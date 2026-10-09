@@ -16,16 +16,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/v3/pkg/agent"
-	"github.com/xibodev/compa/v3/pkg/approval"
-	"github.com/xibodev/compa/v3/pkg/bus"
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/cron"
-	runtimeevents "github.com/xibodev/compa/v3/pkg/events"
-	"github.com/xibodev/compa/v3/pkg/health"
-	"github.com/xibodev/compa/v3/pkg/logger"
-	"github.com/xibodev/compa/v3/pkg/state"
-	"github.com/xibodev/compa/v3/pkg/tools"
+	"github.com/xibodev/compa/v4/pkg/agent"
+	"github.com/xibodev/compa/v4/pkg/approval"
+	"github.com/xibodev/compa/v4/pkg/bus"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/cron"
+	runtimeevents "github.com/xibodev/compa/v4/pkg/events"
+	"github.com/xibodev/compa/v4/pkg/health"
+	"github.com/xibodev/compa/v4/pkg/logger"
+	"github.com/xibodev/compa/v4/pkg/state"
+	"github.com/xibodev/compa/v4/pkg/tools"
 )
 
 func TestRun_StartupFailuresReturnErrorAndEmitStructuredLog(t *testing.T) {

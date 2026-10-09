@@ -13,7 +13,7 @@ import (
 
 	llmgwproviders "github.com/xibodev/llmgw-core/providers"
 
-	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/config"
 )
 
 // anonymousUpstream is a fake anonymous provider: it serves catalog at

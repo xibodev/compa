@@ -14,12 +14,12 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/xibodev/compa/v3/pkg/approval"
-	runtimeevents "github.com/xibodev/compa/v3/pkg/events"
-	"github.com/xibodev/compa/v3/pkg/logger"
-	mcpclient "github.com/xibodev/compa/v3/pkg/mcp"
-	"github.com/xibodev/compa/v3/pkg/media"
-	toolshared "github.com/xibodev/compa/v3/pkg/tools/shared"
+	"github.com/xibodev/compa/v4/pkg/approval"
+	runtimeevents "github.com/xibodev/compa/v4/pkg/events"
+	"github.com/xibodev/compa/v4/pkg/logger"
+	mcpclient "github.com/xibodev/compa/v4/pkg/mcp"
+	"github.com/xibodev/compa/v4/pkg/media"
+	toolshared "github.com/xibodev/compa/v4/pkg/tools/shared"
 )
 
 // MCPManager defines the interface for MCP manager operations

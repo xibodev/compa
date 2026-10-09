@@ -12,10 +12,10 @@ import (
 
 	"golang.org/x/term"
 
-	"github.com/xibodev/compa/v3/cmd/compa-kernel/internal"
-	"github.com/xibodev/compa/v3/pkg/auth"
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/modelservice"
+	"github.com/xibodev/compa/v4/cmd/compa-kernel/internal"
+	"github.com/xibodev/compa/v4/pkg/auth"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/modelservice"
 )
 
 const supportedProvidersMsg = "supported providers: openai, anthropic"

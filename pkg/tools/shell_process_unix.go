@@ -6,7 +6,7 @@ import (
 	"os/exec"
 	"syscall"
 
-	"github.com/xibodev/compa/v3/pkg/isolation"
+	"github.com/xibodev/compa/v4/pkg/isolation"
 )
 
 func prepareCommandForTermination(cmd *exec.Cmd) {

@@ -6,7 +6,7 @@ import (
 	"os/exec"
 	"syscall"
 
-	ppid "github.com/xibodev/compa/v3/pkg/pid"
+	ppid "github.com/xibodev/compa/v4/pkg/pid"
 )
 
 // requestGatewayStop sends SIGTERM, the kernel's graceful shutdown.

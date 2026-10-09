@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/v3/pkg/bus"
+	"github.com/xibodev/compa/v4/pkg/bus"
 )
 
 func TestInboundRateLimitPerSender(t *testing.T) {

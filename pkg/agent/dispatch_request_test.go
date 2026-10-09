@@ -3,8 +3,8 @@ package agent
 import (
 	"testing"
 
-	"github.com/xibodev/compa/v3/pkg/bus"
-	"github.com/xibodev/compa/v3/pkg/session"
+	"github.com/xibodev/compa/v4/pkg/bus"
+	"github.com/xibodev/compa/v4/pkg/session"
 )
 
 func TestDispatchRequest_AddressingComesFromInboundContext(t *testing.T) {

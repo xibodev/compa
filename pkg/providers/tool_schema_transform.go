@@ -3,7 +3,7 @@ package providers
 import (
 	"context"
 
-	"github.com/xibodev/compa/v3/pkg/providers/common"
+	"github.com/xibodev/compa/v4/pkg/providers/common"
 )
 
 type toolSchemaTransformProvider struct {

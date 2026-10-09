@@ -6,9 +6,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xibodev/compa/v3/pkg/bus"
-	"github.com/xibodev/compa/v3/pkg/channels"
-	"github.com/xibodev/compa/v3/pkg/logger"
+	"github.com/xibodev/compa/v4/pkg/bus"
+	"github.com/xibodev/compa/v4/pkg/channels"
+	"github.com/xibodev/compa/v4/pkg/logger"
 )
 
 // turnNoticeWait bounds how long a turn waits for the channel to have its

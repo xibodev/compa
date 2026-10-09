@@ -3,8 +3,8 @@ package channels
 import (
 	"context"
 
-	"github.com/xibodev/compa/v3/pkg/bus"
-	"github.com/xibodev/compa/v3/pkg/commands"
+	"github.com/xibodev/compa/v4/pkg/bus"
+	"github.com/xibodev/compa/v4/pkg/commands"
 )
 
 // TypingCapable — channels that can show a typing/thinking indicator.

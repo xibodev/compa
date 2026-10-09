@@ -8,8 +8,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	runtimeevents "github.com/xibodev/compa/v3/pkg/events"
-	"github.com/xibodev/compa/v3/pkg/logger"
+	runtimeevents "github.com/xibodev/compa/v4/pkg/events"
+	"github.com/xibodev/compa/v4/pkg/logger"
 )
 
 // ErrBusClosed is returned when publishing to a closed MessageBus.
