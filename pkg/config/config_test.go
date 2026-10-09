@@ -1187,6 +1187,31 @@ func TestLoadConfig_UnknownFieldsReportsExactPaths(t *testing.T) {
 	}
 }
 
+func TestLoadConfig_DropsRetiredFields(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	raw := `{"agents":{"defaults":{"subturn":{"max_depth":2,"default_token_budget":0}}}}`
+	if err := os.WriteFile(configPath, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig() rejected a 1.0.0 config: %v", err)
+	}
+	if cfg.Agents.Defaults.SubTurn.MaxDepth != 2 {
+		t.Fatalf("max_depth = %d, want the rest of the config kept", cfg.Agents.Defaults.SubTurn.MaxDepth)
+	}
+	if err := SaveConfig(configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(saved), "default_token_budget") {
+		t.Fatal("SaveConfig() kept a retired field")
+	}
+}
+
 func TestDefaultConfig_ExecAllowRemoteEnabled(t *testing.T) {
 	cfg := DefaultConfig()
 	if !cfg.Tools.Exec.AllowRemote {

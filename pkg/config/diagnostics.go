@@ -13,13 +13,25 @@ import (
 	"golang.org/x/term"
 )
 
+// retiredConfigFields are settings an earlier release saved and this one no
+// longer has. Loading ignores them, so an old config.json still loads, and
+// the next save drops them.
+var retiredConfigFields = map[string]bool{
+	"agents.defaults.subturn.default_token_budget": true, // 1.0.0
+}
+
 func decodeJSONWithDiagnostics(data []byte, target any, label string) error {
 	var raw any
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return wrapJSONError(data, err, label)
 	}
 
-	unknownFields := collectUnknownJSONFields(raw, reflect.TypeOf(target), "")
+	var unknownFields []string
+	for _, field := range collectUnknownJSONFields(raw, reflect.TypeOf(target), "") {
+		if !retiredConfigFields[field] {
+			unknownFields = append(unknownFields, field)
+		}
+	}
 	if len(unknownFields) > 0 {
 		sort.Strings(unknownFields)
 		return fmt.Errorf(
