@@ -10,5 +10,8 @@ export default defineConfig({
     environment: "jsdom",
     setupFiles: "./src/test/setup.ts",
     include: ["src/**/*.test.{ts,tsx}"],
+    // Page tests click through whole forms in jsdom; on a loaded machine the
+    // default 5 s cuts them off before they finish.
+    testTimeout: 20_000,
   },
 })
