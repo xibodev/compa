@@ -33,7 +33,7 @@ jobs:
 
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: 1.26.6
+          go-version: 1.26.9
           cache-dependency-path: go.sum
 
       - name: gofmt
@@ -110,7 +110,7 @@ jobs:
 
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: 1.26.6
+          go-version: 1.26.9
           cache-dependency-path: go.sum
 
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
@@ -161,7 +161,7 @@ jobs:
 
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: 1.26.6
+          go-version: 1.26.9
           cache-dependency-path: go.sum
 
       - name: Test with the race detector
@@ -178,7 +178,7 @@ jobs:
 
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: 1.26.6
+          go-version: 1.26.9
           cache-dependency-path: go.sum
 
       # Settings in .golangci.yml.
@@ -263,7 +263,7 @@ jobs:
       # Builds the stand-ins the installer tests install.
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: 1.26.6
+          go-version: 1.26.9
           cache-dependency-path: go.sum
 
       - name: shellcheck
@@ -307,7 +307,7 @@ jobs:
 
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: 1.26.6
+          go-version: 1.26.9
           cache-dependency-path: go.sum
 
       - name: Test install.ps1 under PowerShell 7

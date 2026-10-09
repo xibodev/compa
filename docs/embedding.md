@@ -3,7 +3,7 @@
 `github.com/xibodev/compa/v4/pkg/agent` is the agent runtime Compa runs: the
 agent loop with its tools, skills, sessions and model resolution. You can run
 it inside your own Go program, with no web UI and no second process. It needs
-Go 1.26.6 or later.
+Go 1.26.9 or later.
 
 ```sh
 go get github.com/xibodev/compa/v4

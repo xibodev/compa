@@ -141,7 +141,7 @@ ssh -L 18800:127.0.0.1:18800 you@the-computer-running-compa
 
 ## Run from source
 
-You need Go 1.26.6, Node.js 22.13 or later, and pnpm. From the repository
+You need Go 1.26.9, Node.js 22.13 or later, and pnpm. From the repository
 root:
 
 ```sh

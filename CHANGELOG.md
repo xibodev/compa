@@ -3,7 +3,7 @@
 Notable changes to Compa, newest first. Versions follow
 [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## 4.0.0 - 2026-10-08
 
 ### Added
 
@@ -60,6 +60,8 @@ Notable changes to Compa, newest first. Versions follow
 
 ### Fixed
 
+- Built with Go 1.26.9 and golang.org/x/net 0.60.0, which fix vulnerabilities
+  in HTTP/2, `net/http`, `crypto/tls` and `os`.
 - A `config.json` saved by Compa 1.0.0 loads; its retired
   `default_token_budget` setting is dropped.
 - `compa-kernel auth status` no longer crashes on a `null` entry in
