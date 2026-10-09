@@ -1,0 +1,133 @@
+THIRD-PARTY SOFTWARE NOTICES
+
+These programs include the third-party software listed below:
+
+  compa, for windows/amd64, built with go1.26.6, cgo off and the build tags goolm,stdjson
+  compa-kernel, for windows/amd64, built with go1.26.6, cgo off and the build tags goolm,stdjson
+
+Each entry names the programs that include it, the license texts that apply
+to it, numbered and printed in full at the end, and where to get its source.
+
+THE GO STANDARD LIBRARY AND RUNTIME
+
+go1.26.6
+  in: compa, compa-kernel
+  license: [1] LICENSE, [2] PATENTS
+  source: https://go.dev/dl/go1.26.6.src.tar.gz
+
+GO MODULES
+
+example.com/BigCo/d v2.0.0+incompatible
+  in: compa-kernel
+  license: [3] COPYING
+  source: https://proxy.golang.org/example.com/!big!co/d/@v/v2.0.0+incompatible.zip
+
+example.com/a v1.0.0
+  in: compa, compa-kernel
+  license: [4] LICENSE
+  source: https://proxy.golang.org/example.com/a/@v/v1.0.0.zip
+
+example.com/b v1.2.0
+  in: compa-kernel
+  license: [5] LICENSE-APACHE, [6] LICENSE-MIT, [7] third_party/xxhash/COPYRIGHT.md, [8] third_party/xxhash/LICENSE.txt
+  source: https://proxy.golang.org/example.com/b/@v/v1.2.0.zip
+
+example.com/c-fork v0.0.0-20260101000000-abcdef123456
+  replaces: example.com/c
+  in: compa
+  license: [4] LICENSES/MIT.txt
+  source: https://proxy.golang.org/example.com/c-fork/@v/v0.0.0-20260101000000-abcdef123456.zip
+
+NPM PACKAGES IN COMPA'S WEB UI
+
+@fontsource-variable/inter 5.3.0 (OFL-1.1)
+  license: [9]
+  source: https://registry.npmjs.org/@fontsource-variable/inter/-/inter-5.3.0.tgz
+
+@scope/pkg 1.0.0 (MIT)
+  license: [4]
+  source: https://registry.npmjs.org/@scope/pkg/-/pkg-1.0.0.tgz
+
+bare 2.0.0 (ISC)
+  license: [10]
+  source: https://registry.npmjs.org/bare/-/bare-2.0.0.tgz
+
+early 3.0.0 (BSD-3-Clause)
+  license: [11]
+  source: https://registry.npmjs.org/early/-/early-3.0.0.tgz
+
+silent 0.1.0 (no license named)
+  license: none in the package
+  source: https://registry.npmjs.org/silent/-/silent-0.1.0.tgz
+
+LICENSE TEXTS
+
+===============================================================================
+[1]
+===============================================================================
+
+Go license
+
+===============================================================================
+[2]
+===============================================================================
+
+Go patents
+
+===============================================================================
+[3]
+===============================================================================
+
+BigCo license
+
+===============================================================================
+[4]
+===============================================================================
+
+MIT License
+
+Copyright (c) A
+
+===============================================================================
+[5]
+===============================================================================
+
+Apache License
+
+===============================================================================
+[6]
+===============================================================================
+
+MIT License
+
+Copyright (c) B
+
+===============================================================================
+[7]
+===============================================================================
+
+Copyright (c) xxhash authors
+
+===============================================================================
+[8]
+===============================================================================
+
+xxhash license
+
+===============================================================================
+[9]
+===============================================================================
+
+Inter, under the OFL
+
+===============================================================================
+[10]
+===============================================================================
+
+ISC License
+
+===============================================================================
+[11]
+===============================================================================
+
+BSD license of early

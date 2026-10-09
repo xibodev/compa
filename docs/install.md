@@ -14,9 +14,9 @@ In PowerShell:
 irm https://github.com/xibodev/compa/releases/latest/download/install.ps1 | iex
 ```
 
-This installs `compa.exe` and `compa-kernel.exe` in
-`%LOCALAPPDATA%\Programs\Compa`, adds that folder to your `PATH`, adds
-**Compa** to the Start Menu and starts Compa.
+This installs `compa.exe` and `compa-kernel.exe`, with the release's license
+files, in `%LOCALAPPDATA%\Programs\Compa`, adds that folder to your `PATH`,
+adds **Compa** to the Start Menu and starts Compa.
 
 ## macOS and Linux
 
@@ -24,10 +24,11 @@ This installs `compa.exe` and `compa-kernel.exe` in
 curl -fsSL https://github.com/xibodev/compa/releases/latest/download/install.sh | sh
 ```
 
-This installs `compa` and `compa-kernel` in `~/.local/bin` and, on a desktop,
-starts Compa. Without a desktop (over SSH, or Linux without a display) it
-prints how to start Compa instead. If `~/.local/bin` isn't on your `PATH`, it
-prints the line to add. It needs `curl` or `wget`, and `sha256sum` or
+This installs `compa` and `compa-kernel` in `~/.local/bin`, and the release's
+license files in `~/.local/share/doc/compa`. On a desktop it then starts
+Compa. Without a desktop (over SSH, or Linux without a display) it prints how
+to start Compa instead. If `~/.local/bin` isn't on your `PATH`, it prints the
+line to add. It needs `curl` or `wget`, and `sha256sum` or
 `shasum`.
 
 ## First run
@@ -82,9 +83,13 @@ macOS and Linux:
 curl -fsSL https://github.com/xibodev/compa/releases/latest/download/install.sh | COMPA_UNINSTALL=1 sh
 ```
 
-This removes the programs, the launch-at-login entry and, on Windows, the
-`PATH` entry and Start Menu shortcut. Your data stays in `~/.compa`; delete it
-to remove it too.
+This removes the programs and their license files, the launch-at-login entry
+and, on Windows, the `PATH` entry and Start Menu shortcut. Your data stays in
+`~/.compa`; delete it to remove it too.
+
+The license files are `LICENSE`, `NOTICE` and `THIRD_PARTY_NOTICES`, which
+lists the third-party code in the programs with its license texts and where to
+get its source.
 
 ## Installer options
 

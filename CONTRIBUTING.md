@@ -54,6 +54,11 @@ and `pnpm run format`, which checks the formatting with Prettier;
 `install.ps1`. `make fmt` formats the Go code, and `pnpm run format:write` in
 `web/frontend` the web UI's.
 
+CI also writes the `THIRD_PARTY_NOTICES` a release ships, on Linux, Windows and
+macOS, with `scripts/notices.sh` (see `cmd/notices`). It fails when a Go module
+compiled into `compa` or `compa-kernel` has no license file, so check that a
+new dependency has one.
+
 ## Pull requests
 
 - Keep a change to one concern, with a test for each behavior it changes.

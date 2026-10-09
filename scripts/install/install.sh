@@ -4,9 +4,10 @@
 #   curl -fsSL https://github.com/xibodev/compa/releases/latest/download/install.sh | sh
 #
 # Installs compa, the launcher, and compa-kernel, the harness it runs, into
-# ~/.local/bin. Run in a terminal on a desktop, it then starts Compa, which
-# opens your browser to finish setting up; anywhere else (CI, Docker, a remote
-# shell) it prints how to start Compa instead. Your settings and data live in
+# ~/.local/bin, and the release's license files into ~/.local/share/doc/compa.
+# Run in a terminal on a desktop, it then starts Compa, which opens your
+# browser to finish setting up; anywhere else (CI, Docker, a remote shell) it
+# prints how to start Compa instead. Your settings and data live in
 # ~/.compa, which this script leaves alone apart from the log of the Compa it
 # starts, and it does not edit your shell startup files.
 #
@@ -234,6 +235,48 @@ cleanup() {
 	if [ -n "$TMP" ]; then rm -rf "$TMP"; fi
 }
 
+# The license files a release holds, kept where the documentation of the
+# programs a user installs goes rather than among the programs.
+LICENSE_FILES='LICENSE NOTICE THIRD_PARTY_NOTICES'
+license_dir() {
+	printf '%s\n' "${XDG_DATA_HOME:-$HOME/.local/share}/doc/compa"
+}
+
+# install_licenses: copy in the release's license files, and drop those
+# another release left that this one lacks. The programs are installed by
+# then, so a failure here only warns.
+install_licenses() {
+	licenses=$(license_dir)
+	if ! mkdir -p "$licenses" 2>/dev/null; then
+		step "Could not create $licenses for the license files."
+		return 0
+	fi
+	for file in $LICENSE_FILES; do
+		if [ -f "$TMP/files/$file" ]; then
+			if ! cp "$TMP/files/$file" "$licenses/$file" 2>/dev/null; then
+				step "Could not write the license files to $licenses."
+				return 0
+			fi
+			chmod 644 "$licenses/$file" 2>/dev/null || true
+		else
+			rm -f "$licenses/$file"
+		fi
+	done
+	step "Kept the license files in $licenses."
+}
+
+remove_licenses() {
+	licenses=$(license_dir)
+	removed=
+	for file in $LICENSE_FILES; do
+		if [ -e "$licenses/$file" ]; then
+			rm -f "$licenses/$file" && removed=1
+		fi
+	done
+	rmdir "$licenses" 2>/dev/null || true
+	if [ -n "$removed" ]; then step "Removed the license files from $licenses."; fi
+}
+
 data_dir() {
 	printf '%s\n' "${COMPA_HOME:-$HOME/.compa}"
 }
@@ -327,6 +370,7 @@ install_compa() {
 	DIR=$(cd "$DIR" && pwd -P)
 	install_programs "$DIR"
 	step "Installed compa and compa-kernel."
+	install_licenses
 
 	say ""
 	say "Compa $TAG is installed."
@@ -376,6 +420,7 @@ uninstall_compa() {
 	else
 		step "The programs were not there."
 	fi
+	remove_licenses
 	remove_login_item "$DIR"
 	say ""
 	say "Compa is uninstalled."

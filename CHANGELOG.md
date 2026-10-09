@@ -30,6 +30,10 @@ Notable changes to Compa, newest first. Versions follow
 - [Gateway interface](docs/gateway.md) documents how programs talk to the
   gateway, as protocol 1. The web chat sends `turn.start` and `turn.end`
   frames, and serves its session history at `/web/sessions`.
+- Each release archive holds `THIRD_PARTY_NOTICES`, the licenses of the
+  third-party code in the programs. The installers keep it with `LICENSE` and
+  `NOTICE`: beside the programs on Windows, in `~/.local/share/doc/compa` on
+  macOS and Linux.
 
 ### Changed
 
@@ -49,8 +53,9 @@ Notable changes to Compa, newest first. Versions follow
   default; `tools.message.targets: "current_chat"` keeps it to the current
   chat.
 - **Breaking:** Slack needs the app token (`xapp-`) as well as the bot token.
-- For Go programs that embed Compa: `session.SessionStore`'s `AddMessage` and
-  `AddFullMessage` return an error.
+- **Breaking** for Go programs that embed Compa: the module path is
+  `github.com/xibodev/compa/v4`, and `session.SessionStore`'s `AddMessage`
+  and `AddFullMessage` return an error.
 - llmgw-core 1.9.1, llm-provider-auth 1.0.1 and llm-translate 0.4.0.
 
 ### Fixed

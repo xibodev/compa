@@ -122,17 +122,19 @@ func ArchiveName(tag, goos, goarch string) string {
 }
 
 // Programs is the content of a release archive for goos: compa and
-// compa-kernel (with ".exe" on Windows) plus LICENSE and NOTICE.
+// compa-kernel (with ".exe" on Windows) plus LICENSE, NOTICE and
+// THIRD_PARTY_NOTICES.
 func Programs(goos, launcher, kernel string) map[string]string {
 	ext := ""
 	if goos == "windows" {
 		ext = ".exe"
 	}
 	return map[string]string{
-		"compa" + ext:        launcher,
-		"compa-kernel" + ext: kernel,
-		"LICENSE":            "MIT License\n",
-		"NOTICE":             "Compa\n",
+		"compa" + ext:         launcher,
+		"compa-kernel" + ext:  kernel,
+		"LICENSE":             "MIT License\n",
+		"NOTICE":              "Compa\n",
+		"THIRD_PARTY_NOTICES": "THIRD-PARTY SOFTWARE NOTICES\n",
 	}
 }
 

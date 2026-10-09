@@ -35,6 +35,11 @@ brand/LICENSES.md states the terms that apply to them.
 Third-party software
 --------------------
 
+Compa's programs include third-party software: Go modules and the Go standard
+library, and in compa's web UI npm packages and the Inter font. Each release
+archive lists them in THIRD_PARTY_NOTICES, with their license texts and where
+to get their source; cmd/notices writes that file when a release is built.
+
 The WhatsApp channel (pkg/channels/whatsapp) links go.mau.fi/libsignal, which
 is licensed under the GNU General Public License version 3. Every build of
 compa and compa-kernel includes it, release builds too. Anyone who distributes
