@@ -5,12 +5,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xibodev/compa/v3/pkg/bus"
-	"github.com/xibodev/compa/v3/pkg/constants"
-	"github.com/xibodev/compa/v3/pkg/devices/events"
-	"github.com/xibodev/compa/v3/pkg/devices/sources"
-	"github.com/xibodev/compa/v3/pkg/logger"
-	"github.com/xibodev/compa/v3/pkg/state"
+	"github.com/xibodev/compa/v4/pkg/bus"
+	"github.com/xibodev/compa/v4/pkg/constants"
+	"github.com/xibodev/compa/v4/pkg/devices/events"
+	"github.com/xibodev/compa/v4/pkg/devices/sources"
+	"github.com/xibodev/compa/v4/pkg/logger"
+	"github.com/xibodev/compa/v4/pkg/state"
 )
 
 type Service struct {

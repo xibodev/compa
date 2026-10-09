@@ -6,7 +6,7 @@ import (
 	"io"
 	"time"
 
-	"github.com/xibodev/compa/v3/pkg/cron"
+	"github.com/xibodev/compa/v4/pkg/cron"
 )
 
 func cronListCmd(out io.Writer, open openStore) error {

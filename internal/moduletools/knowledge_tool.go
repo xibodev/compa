@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	toolshared "github.com/xibodev/compa/v3/pkg/tools/shared"
+	toolshared "github.com/xibodev/compa/v4/pkg/tools/shared"
 )
 
 // KnowledgeTool exposes the existing digest-verified loader as an ordinary,

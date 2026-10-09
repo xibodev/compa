@@ -5,8 +5,8 @@ package agent
 import (
 	"context"
 
-	runtimeevents "github.com/xibodev/compa/v3/pkg/events"
-	"github.com/xibodev/compa/v3/pkg/providers"
+	runtimeevents "github.com/xibodev/compa/v4/pkg/events"
+	"github.com/xibodev/compa/v4/pkg/providers"
 )
 
 // Finalize handles turn finalization, either:
@@ -52,7 +52,7 @@ func (p *Pipeline) Finalize(
 			ServedIdentity:     exec.servedIdentity,
 			ReasoningContent:   responseReasoningContent(exec.response),
 		}
-		ts.agent.Sessions.AddFullMessage(ts.sessionKey, finalMsg)
+		ts.noteSessionWrite(turnCtx, al, ts.agent.Sessions.AddFullMessage(ts.sessionKey, finalMsg))
 		ts.recordPersistedMessage(finalMsg)
 		ts.ingestMessage(turnCtx, al, finalMsg)
 		if err := ts.agent.Sessions.Save(ts.sessionKey); err != nil {

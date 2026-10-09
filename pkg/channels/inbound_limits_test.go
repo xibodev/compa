@@ -6,15 +6,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/v3/pkg/bus"
-	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/bus"
 )
 
 func TestInboundRateLimitPerSender(t *testing.T) {
 	stubPairing(t)
 	msgBus := bus.NewMessageBus()
-	ch := NewBaseChannel("telegram", nil, msgBus, []string{"telegram:111"})
-	ch.SetAccessPolicy(config.DMPolicyOpen, config.GroupPolicyOpen)
+	// Only a channel nothing configured admits senders who are not the
+	// owner: every direct message while allow_from lists no account.
+	ch := NewBaseChannel("telegram", nil, msgBus, nil)
 
 	stranger := telegramSender("999", "")
 	for i := range senderRateBurst {
@@ -22,15 +22,18 @@ func TestInboundRateLimitPerSender(t *testing.T) {
 			t.Fatalf("message %d within the burst was dropped", i+1)
 		}
 	}
-	if _, ok := deliver(t, ch, msgBus, "group", "-100", stranger); ok {
+	if _, ok := deliver(t, ch, msgBus, "direct", "999", stranger); ok {
 		t.Fatal("a sender over the rate limit was not limited")
 	}
 	if _, ok := deliver(t, ch, msgBus, "direct", "888", telegramSender("888", "")); !ok {
 		t.Fatal("one sender's limit applied to another sender")
 	}
+
+	owned := NewBaseChannel("telegram", nil, msgBus, []string{"telegram:111"})
+	owned.RequireOwner()
 	owner := telegramSender("111", "")
 	for i := range senderRateBurst + 5 {
-		if _, ok := deliver(t, ch, msgBus, "direct", "111", owner); !ok {
+		if _, ok := deliver(t, owned, msgBus, "direct", "111", owner); !ok {
 			t.Fatalf("the owner's message %d was rate limited", i+1)
 		}
 	}
@@ -77,8 +80,8 @@ func TestInboundQueueCapDropsInsteadOfBlocking(t *testing.T) {
 	t.Cleanup(func() { maxQueuedInbound = old })
 
 	msgBus := bus.NewMessageBus()
-	ch := NewBaseChannel("telegram", nil, msgBus, nil)
-	ch.SetAccessPolicy(config.DMPolicyOpen, config.GroupPolicyOpen)
+	ch := NewBaseChannel("telegram", nil, msgBus, []string{"telegram:1", "telegram:2"})
+	ch.RequireOwner()
 
 	// Fill the bus so the next publish waits.
 	ctx := context.Background()

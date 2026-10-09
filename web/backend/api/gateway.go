@@ -16,12 +16,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/health"
-	"github.com/xibodev/compa/v3/pkg/logger"
-	"github.com/xibodev/compa/v3/pkg/netbind"
-	ppid "github.com/xibodev/compa/v3/pkg/pid"
-	"github.com/xibodev/compa/v3/web/backend/utils"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/health"
+	"github.com/xibodev/compa/v4/pkg/logger"
+	"github.com/xibodev/compa/v4/pkg/netbind"
+	ppid "github.com/xibodev/compa/v4/pkg/pid"
+	"github.com/xibodev/compa/v4/web/backend/utils"
 )
 
 // gateway holds the state for the managed gateway process.

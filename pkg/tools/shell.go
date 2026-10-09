@@ -22,11 +22,11 @@ import (
 
 	"github.com/creack/pty"
 
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/constants"
-	"github.com/xibodev/compa/v3/pkg/isolation"
-	"github.com/xibodev/compa/v3/pkg/logger"
-	"github.com/xibodev/compa/v3/pkg/pathlink"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/constants"
+	"github.com/xibodev/compa/v4/pkg/isolation"
+	"github.com/xibodev/compa/v4/pkg/logger"
+	"github.com/xibodev/compa/v4/pkg/pathlink"
 )
 
 var (
@@ -41,11 +41,13 @@ func getSessionManager() *SessionManager {
 }
 
 type ExecTool struct {
-	workingDir          string
-	timeout             time.Duration
-	timeoutSet          bool
+	workingDir string
+	timeout    time.Duration
+	timeoutSet bool
+	// denyPatterns are the built-in ones, which a command that matches a
+	// custom allow pattern skips; the custom deny patterns apply to all.
 	denyPatterns        []*regexp.Regexp
-	allowPatterns       []*regexp.Regexp
+	customDenyPatterns  []*regexp.Regexp
 	customAllowPatterns []*regexp.Regexp
 	allowedPathPatterns []*regexp.Regexp
 	restrictToWorkspace bool
@@ -238,6 +240,7 @@ func NewExecToolWithConfig(
 	allowPaths ...[]*regexp.Regexp,
 ) (*ExecTool, error) {
 	denyPatterns := make([]*regexp.Regexp, 0)
+	var customDenyPatterns []*regexp.Regexp
 	customAllowPatterns := make([]*regexp.Regexp, 0)
 	var allowedPathPatterns []*regexp.Regexp
 	allowRemote := true
@@ -260,7 +263,7 @@ func NewExecToolWithConfig(
 					if err != nil {
 						return nil, fmt.Errorf("invalid custom deny pattern %q: %w", pattern, err)
 					}
-					denyPatterns = append(denyPatterns, re)
+					customDenyPatterns = append(customDenyPatterns, re)
 				}
 			}
 		} else {
@@ -287,7 +290,7 @@ func NewExecToolWithConfig(
 		workingDir:          workingDir,
 		timeout:             timeout,
 		denyPatterns:        denyPatterns,
-		allowPatterns:       nil,
+		customDenyPatterns:  customDenyPatterns,
 		customAllowPatterns: customAllowPatterns,
 		allowedPathPatterns: allowedPathPatterns,
 		restrictToWorkspace: restrict,
@@ -1389,11 +1392,6 @@ func expandPowerShellEnvVars(cmd string) string {
 }
 
 func (t *ExecTool) commandMatchesAllowPattern(lower string) bool {
-	for _, pattern := range t.allowPatterns {
-		if pattern.MatchString(lower) {
-			return true
-		}
-	}
 	for _, pattern := range t.customAllowPatterns {
 		if pattern.MatchString(lower) {
 			return true
@@ -1406,18 +1404,19 @@ func (t *ExecTool) guardCommand(command, cwd string) string {
 	cmd := strings.TrimSpace(command)
 	lower := strings.ToLower(cmd)
 
-	// Deny patterns always apply, even when a command matches a custom allow rule.
-	// Custom allow rules can permit a command, but must not disable secret-safety
-	// deny rules such as jq env access checks (#3079).
-	for _, pattern := range t.denyPatterns {
+	// The custom deny patterns apply to every command, so a custom allow
+	// pattern cannot undo them (#3079). A command that matches a custom allow
+	// pattern skips the built-in ones; the limits below still apply.
+	for _, pattern := range t.customDenyPatterns {
 		if pattern.MatchString(lower) {
 			return "Command blocked by safety guard (dangerous pattern detected)"
 		}
 	}
-
-	if len(t.allowPatterns) > 0 {
-		if !t.commandMatchesAllowPattern(lower) {
-			return "Command blocked by safety guard (not in allowlist)"
+	if !t.commandMatchesAllowPattern(lower) {
+		for _, pattern := range t.denyPatterns {
+			if pattern.MatchString(lower) {
+				return "Command blocked by safety guard (dangerous pattern detected)"
+			}
 		}
 	}
 
@@ -1728,18 +1727,6 @@ func (t *ExecTool) SetTimeout(timeout time.Duration) {
 
 func (t *ExecTool) SetRestrictToWorkspace(restrict bool) {
 	t.restrictToWorkspace = restrict
-}
-
-func (t *ExecTool) SetAllowPatterns(patterns []string) error {
-	t.allowPatterns = make([]*regexp.Regexp, 0, len(patterns))
-	for _, p := range patterns {
-		re, err := regexp.Compile(p)
-		if err != nil {
-			return fmt.Errorf("invalid allow pattern %q: %w", p, err)
-		}
-		t.allowPatterns = append(t.allowPatterns, re)
-	}
-	return nil
 }
 
 // unwrapURIDrivePath turns "//C:\ws\f.txt" (what a file:// URI leaves behind

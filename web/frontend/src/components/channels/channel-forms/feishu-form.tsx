@@ -1,7 +1,6 @@
 import { useTranslation } from "react-i18next"
 
 import type { ChannelConfig } from "@/api/channels"
-import { ChannelAccessFields } from "@/components/channels/channel-access-fields"
 import {
   type ArrayFieldFlusher,
   ChannelArrayListField,
@@ -36,13 +35,6 @@ function asBool(value: unknown): boolean {
   return typeof value === "boolean" ? value : false
 }
 
-function asRecord(value: unknown): Record<string, unknown> {
-  if (value && typeof value === "object" && !Array.isArray(value)) {
-    return value as Record<string, unknown>
-  }
-  return {}
-}
-
 export function FeishuForm({
   config,
   onChange,
@@ -52,7 +44,6 @@ export function FeishuForm({
   arrayFieldResetVersion,
 }: FeishuFormProps) {
   const { t } = useTranslation()
-  const groupTriggerConfig = asRecord(config.group_trigger)
 
   return (
     <div className="space-y-6">
@@ -135,7 +126,6 @@ export function FeishuForm({
             registerFlusher={registerArrayFieldFlusher}
             resetVersion={arrayFieldResetVersion}
           />
-          <ChannelAccessFields config={config} onChange={onChange} />
 
           <div>
             <SwitchCardField
@@ -151,21 +141,6 @@ export function FeishuForm({
 
       <Card className="py-3 shadow-sm">
         <CardContent className="divide-border/60 divide-y px-6 py-0 [&>div]:py-5">
-          <div>
-            <SwitchCardField
-              label={t("channels.field.groupTriggerMentionOnly")}
-              hint={t("channels.form.desc.groupTriggerMentionOnly")}
-              checked={asBool(groupTriggerConfig.mention_only)}
-              onCheckedChange={(checked) => {
-                onChange("group_trigger", {
-                  ...groupTriggerConfig,
-                  mention_only: checked,
-                })
-              }}
-              ariaLabel={t("channels.field.groupTriggerMentionOnly")}
-            />
-          </div>
-
           <ChannelArrayListField
             label={t("channels.field.randomReactionEmoji")}
             hint={t("channels.form.desc.randomReactionEmoji")}

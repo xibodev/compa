@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/config"
 )
 
 func TestHandleGetChannelConfig_ReturnsSecretPresenceWithoutLeakingSecrets(t *testing.T) {
@@ -18,16 +18,15 @@ func TestHandleGetChannelConfig_ReturnsSecretPresenceWithoutLeakingSecrets(t *te
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	bc := cfg.Channels[config.ChannelFeishu]
+	bc := cfg.Channels[config.ChannelSlack]
 	bc.Enabled = true
 	decoded, err := bc.GetDecoded()
 	if err != nil {
 		t.Fatalf("GetDecoded() error = %v", err)
 	}
-	bcfg := decoded.(*config.FeishuSettings)
-	bcfg.AppID = "cli_test_app"
-	bcfg.AppSecret = *config.NewSecureString("feishu-secret-from-security")
-	bc.AllowFrom = config.FlexibleStringSlice{"ou_test_user"}
+	bcfg := decoded.(*config.SlackSettings)
+	bcfg.BotToken = *config.NewSecureString("xoxb-secret-from-security")
+	bc.AllowFrom = config.FlexibleStringSlice{"U0TESTUSER"}
 	if err := config.SaveConfig(configPath, cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
@@ -36,19 +35,19 @@ func TestHandleGetChannelConfig_ReturnsSecretPresenceWithoutLeakingSecrets(t *te
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/channels/feishu/config", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/channels/slack/config", nil)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf(
-			"GET /api/channels/feishu/config status = %d, want %d, body=%s",
+			"GET /api/channels/slack/config status = %d, want %d, body=%s",
 			rec.Code,
 			http.StatusOK,
 			rec.Body.String(),
 		)
 	}
-	if strings.Contains(rec.Body.String(), "feishu-secret-from-security") {
+	if strings.Contains(rec.Body.String(), "xoxb-secret-from-security") {
 		t.Fatalf("response leaked secret value: %s", rec.Body.String())
 	}
 
@@ -62,24 +61,21 @@ func TestHandleGetChannelConfig_ReturnsSecretPresenceWithoutLeakingSecrets(t *te
 		t.Fatalf("json.Unmarshal() error = %v", err)
 	}
 
-	if got := resp.ConfigKey; got != "feishu" {
-		t.Fatalf("config_key = %q, want %q", got, "feishu")
-	}
-	if got := resp.Config["app_id"]; got != "cli_test_app" {
-		t.Fatalf("config.app_id = %#v, want %q", got, "cli_test_app")
+	if got := resp.ConfigKey; got != "slack" {
+		t.Fatalf("config_key = %q, want %q", got, "slack")
 	}
 	if got := resp.Config["enabled"]; got != true {
 		t.Fatalf("config.enabled = %#v, want true", got)
 	}
 	allowFrom, ok := resp.Config["allow_from"].([]any)
-	if !ok || len(allowFrom) != 1 || allowFrom[0] != "ou_test_user" {
-		t.Fatalf("config.allow_from = %#v, want [\"ou_test_user\"]", resp.Config["allow_from"])
+	if !ok || len(allowFrom) != 1 || allowFrom[0] != "U0TESTUSER" {
+		t.Fatalf("config.allow_from = %#v, want [\"U0TESTUSER\"]", resp.Config["allow_from"])
 	}
-	if _, exists := resp.Config["app_secret"]; exists {
-		t.Fatalf("config should omit app_secret, got %#v", resp.Config["app_secret"])
+	if _, exists := resp.Config["bot_token"]; exists {
+		t.Fatalf("config should omit bot_token, got %#v", resp.Config["bot_token"])
 	}
-	if len(resp.ConfiguredSecrets) != 1 || resp.ConfiguredSecrets[0] != "app_secret" {
-		t.Fatalf("configured_secrets = %#v, want [\"app_secret\"]", resp.ConfiguredSecrets)
+	if len(resp.ConfiguredSecrets) != 1 || resp.ConfiguredSecrets[0] != "bot_token" {
+		t.Fatalf("configured_secrets = %#v, want [\"bot_token\"]", resp.ConfiguredSecrets)
 	}
 }
 
@@ -108,9 +104,9 @@ func TestHandleGetChannelConfig_ReturnsCommonFieldsWhenSettingsEmpty(t *testing.
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	bc := cfg.Channels[config.ChannelFeishu]
+	bc := cfg.Channels[config.ChannelWhatsApp]
 	bc.Enabled = true
-	bc.AllowFrom = config.FlexibleStringSlice{"ou_common_user"}
+	bc.AllowFrom = config.FlexibleStringSlice{"whatsapp:15550001"}
 	if err := config.SaveConfig(configPath, cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
@@ -119,13 +115,13 @@ func TestHandleGetChannelConfig_ReturnsCommonFieldsWhenSettingsEmpty(t *testing.
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/channels/feishu/config", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/channels/whatsapp/config", nil)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf(
-			"GET /api/channels/feishu/config status = %d, want %d, body=%s",
+			"GET /api/channels/whatsapp/config status = %d, want %d, body=%s",
 			rec.Code,
 			http.StatusOK,
 			rec.Body.String(),
@@ -142,8 +138,8 @@ func TestHandleGetChannelConfig_ReturnsCommonFieldsWhenSettingsEmpty(t *testing.
 		t.Fatalf("config.enabled = %#v, want true", got)
 	}
 	allowFrom, ok := resp.Config["allow_from"].([]any)
-	if !ok || len(allowFrom) != 1 || allowFrom[0] != "ou_common_user" {
-		t.Fatalf("config.allow_from = %#v, want [\"ou_common_user\"]", resp.Config["allow_from"])
+	if !ok || len(allowFrom) != 1 || allowFrom[0] != "whatsapp:15550001" {
+		t.Fatalf("config.allow_from = %#v, want [\"whatsapp:15550001\"]", resp.Config["allow_from"])
 	}
 }
 
@@ -155,13 +151,13 @@ func TestHandleGetChannelConfig_OmitsUnconfiguredStreaming(t *testing.T) {
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/channels/telegram/config", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/channels/slack/config", nil)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf(
-			"GET /api/channels/telegram/config status = %d, want %d, body=%s",
+			"GET /api/channels/slack/config status = %d, want %d, body=%s",
 			rec.Code,
 			http.StatusOK,
 			rec.Body.String(),
@@ -245,7 +241,7 @@ func TestHandleGetChannelConfig_ReturnsDefaultShapeForMissingChannel(t *testing.
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	delete(cfg.Channels, config.ChannelIRC)
+	delete(cfg.Channels, config.ChannelWeb)
 	if err := config.SaveConfig(configPath, cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
@@ -254,13 +250,13 @@ func TestHandleGetChannelConfig_ReturnsDefaultShapeForMissingChannel(t *testing.
 	mux := http.NewServeMux()
 	h.RegisterRoutes(mux)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/channels/irc/config", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/channels/web/config", nil)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf(
-			"GET /api/channels/irc/config status = %d, want %d, body=%s",
+			"GET /api/channels/web/config status = %d, want %d, body=%s",
 			rec.Code,
 			http.StatusOK,
 			rec.Body.String(),
@@ -273,11 +269,8 @@ func TestHandleGetChannelConfig_ReturnsDefaultShapeForMissingChannel(t *testing.
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("json.Unmarshal() error = %v", err)
 	}
-	if got := resp.Config["server"]; got != "" {
-		t.Fatalf("config.server = %#v, want empty string", got)
-	}
-	if got := resp.Config["nick"]; got != "compa" {
-		t.Fatalf("config.nick = %#v, want %q", got, "compa")
+	if got := resp.Config["ping_interval"]; got != float64(30) {
+		t.Fatalf("config.ping_interval = %#v, want the default 30", got)
 	}
 	if got := resp.Config["enabled"]; got != false {
 		t.Fatalf("config.enabled = %#v, want false", got)

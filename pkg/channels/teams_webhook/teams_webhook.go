@@ -14,10 +14,10 @@ import (
 	goteamsnotify "github.com/atc0005/go-teams-notify/v2"
 	"github.com/atc0005/go-teams-notify/v2/adaptivecard"
 
-	"github.com/xibodev/compa/v3/pkg/bus"
-	"github.com/xibodev/compa/v3/pkg/channels"
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/logger"
+	"github.com/xibodev/compa/v4/pkg/bus"
+	"github.com/xibodev/compa/v4/pkg/channels"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/logger"
 )
 
 // statusCodeRe extracts HTTP status codes from error messages like "401 Unauthorized".
@@ -89,13 +89,12 @@ func NewTeamsWebhookChannel(
 		}
 	}
 
+	// Send-only: it receives no messages, so it admits no one.
 	base := channels.NewBaseChannel(
 		"teams_webhook",
 		cfg,
 		bus,
-		[]string{
-			"*",
-		}, // Output-only channel; "*" suppresses misleading "allows EVERYONE" audit warning
+		nil,
 		// A first cut by characters; Send keeps each post within maxPayloadBytes.
 		channels.WithMaxMessageLength(24000),
 	)

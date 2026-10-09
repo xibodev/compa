@@ -17,7 +17,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/xibodev/compa/v3/pkg/fileutil"
+	"github.com/xibodev/compa/v4/pkg/fileutil"
 )
 
 const (

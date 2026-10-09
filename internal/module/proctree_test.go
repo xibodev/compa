@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/v3/internal/module"
-	"github.com/xibodev/compa/v3/pkg/modproto"
+	"github.com/xibodev/compa/v4/internal/module"
+	"github.com/xibodev/compa/v4/pkg/modproto"
 )
 
 // The process-tree guarantees, against a real module that starts a helper

@@ -12,10 +12,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/xibodev/compa/v3/pkg/bus"
-	"github.com/xibodev/compa/v3/pkg/channels"
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/logger"
+	"github.com/xibodev/compa/v4/pkg/bus"
+	"github.com/xibodev/compa/v4/pkg/channels"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/logger"
 )
 
 const maxTextBlockLength = 3000
@@ -57,11 +57,12 @@ func NewSlackWebhookChannel(
 		}
 	}
 
+	// Send-only: it receives no messages, so it admits no one.
 	base := channels.NewBaseChannel(
 		"slack_webhook",
 		cfg,
 		bus,
-		[]string{"*"},
+		nil,
 		channels.WithMaxMessageLength(40000),
 	)
 

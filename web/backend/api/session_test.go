@@ -11,11 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/memory"
-	"github.com/xibodev/compa/v3/pkg/providers"
-	"github.com/xibodev/compa/v3/pkg/session"
-	"github.com/xibodev/compa/v3/pkg/utils"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/memory"
+	"github.com/xibodev/compa/v4/pkg/providers"
+	"github.com/xibodev/compa/v4/pkg/session"
+	"github.com/xibodev/compa/v4/pkg/utils"
 )
 
 // setupSessionTestEnv points HOME and COMPA_HOME at a temporary
@@ -279,7 +279,7 @@ func TestHandleListSessions_TitleUsesFirstUserMessage(t *testing.T) {
 	if len(items) != 1 {
 		t.Fatalf("len(items) = %d, want 1", len(items))
 	}
-	expectedTitle := truncateRunes("fallback preview", maxSessionTitleRunes)
+	expectedTitle := "fallback preview"
 	if items[0].Title != expectedTitle {
 		t.Fatalf("items[0].Title = %q", items[0].Title)
 	}
@@ -1367,7 +1367,7 @@ func TestHandleGetSession_UsesConfiguredToolFeedbackMaxArgsLength(t *testing.T) 
 		t.Fatalf("len(resp.Messages) = %d, want at least 2", len(resp.Messages))
 	}
 
-	wantArgsPreview := visibleAssistantToolArgsPreview(providers.ToolCall{
+	wantArgsPreview := utils.VisibleToolCallArgumentsPreview(providers.ToolCall{
 		Function: &providers.FunctionCall{Arguments: argsJSON},
 	}, 20)
 	toolCall := assertVisibleToolCallMessage(t, resp.Messages[1], "read_file")
@@ -1443,7 +1443,7 @@ func TestHandleGetSession_FallsBackToToolArgumentsWhenExplanationMissing(t *test
 		t.Fatalf("len(resp.Messages) = %d, want at least 2", len(resp.Messages))
 	}
 
-	wantPreview := visibleAssistantToolArgsPreview(providers.ToolCall{
+	wantPreview := utils.VisibleToolCallArgumentsPreview(providers.ToolCall{
 		Function: &providers.FunctionCall{Arguments: argsJSON},
 	}, 20)
 	toolCall := assertVisibleToolCallMessage(t, resp.Messages[1], "read_file")

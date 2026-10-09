@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Compa: a personal AI assistant that runs on your computer</title>
-  <meta name="description" content="Compa is a personal AI assistant that runs on your computer, with a web app for everyday use and an embeddable Go runtime for developers.">
+  <title>Compa: your own AI assistant, on your computer and your phone</title>
+  <meta name="description" content="Compa is a personal AI assistant that runs on your computer and answers only you, in the browser, on WhatsApp or on Slack. It works with your files, runs commands, searches the web and messages people for you.">
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#F7F5EF">
   <link rel="canonical" href="https://xibodev.github.io/compa/">
@@ -12,8 +12,8 @@
 
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="Compa">
-  <meta property="og:title" content="Compa: a personal AI assistant that runs on your computer">
-  <meta property="og:description" content="A web app for everyday use and an embeddable Go runtime for developers.">
+  <meta property="og:title" content="Compa: your own AI assistant, on your computer and your phone">
+  <meta property="og:description" content="Runs on your computer, answers only you, in the browser, on WhatsApp or on Slack.">
   <meta property="og:url" content="https://xibodev.github.io/compa/">
   <meta property="og:image" content="https://xibodev.github.io/compa/og.png">
   <meta property="og:image:type" content="image/png">
@@ -188,8 +188,6 @@
       .visual .tag {
         position: absolute;
         z-index: 2;
-        right: 8%;
-        bottom: 10%;
         padding: .35rem .6rem;
         color: var(--compa-deep);
         background: var(--compa-surface);
@@ -197,11 +195,15 @@
         border-radius: 6px;
         font: .8125rem/1.3 var(--compa-font-mono);
       }
+      .visual .tag-1 { left: 6%; top: 14%; }
+      .visual .tag-2 { right: 4%; top: 46%; }
+      .visual .tag-3 { left: 14%; bottom: 10%; }
     }
 
     /* Sections */
     .section { padding-top: 3rem; padding-bottom: 3rem; border-top: 1px solid var(--compa-line); }
     .section > h2 { font-size: clamp(1.6rem, 3vw, 2.1rem); font-weight: 680; letter-spacing: -.025em; }
+    .section > .intro { max-width: 44rem; margin-top: .75rem; color: var(--compa-muted); }
 
     .grid {
       display: grid;
@@ -220,6 +222,12 @@
     .card h3 { font-size: 1.0625rem; font-weight: 650; }
     .card p { margin-top: .5rem; color: var(--compa-muted); font-size: .9375rem; }
     .card code { color: var(--compa-ink); font-size: .875em; }
+    .steps { counter-reset: step; }
+    .steps .card h3::before {
+      counter-increment: step;
+      content: counter(step) ". ";
+      color: var(--compa-cobalt);
+    }
     .languages { margin-top: 1.25rem; color: var(--compa-muted); font-size: .9375rem; }
 
     .data {
@@ -289,14 +297,16 @@
   <main id="main">
     <section class="wrap hero" aria-labelledby="title">
       <div>
-        <p class="eyebrow">Everyday help · You stay in charge</p>
-        <h1 id="title">A personal AI assistant that runs on your computer.</h1>
-        <p class="lede">Chat with Compa in your browser, using the models you choose. It can work with files, run commands, search the web and answer in your chat apps. Developers can embed its Go runtime.</p>
+        <p class="eyebrow">Runs on your computer · Answers only you</p>
+        <h1 id="title">Your own AI assistant, on your computer and your phone.</h1>
+        <p class="lede">Talk to Compa in your browser, on WhatsApp or on Slack. It works with your files, runs commands, searches the web, sets reminders and messages people for you, with the models you choose.</p>
       </div>
 
       <div class="visual" aria-hidden="true">
         <img src="compa-mark.svg" alt="" width="100" height="100">
-        <span class="tag">~/.compa</span>
+        <span class="tag tag-1">browser</span>
+        <span class="tag tag-2">WhatsApp</span>
+        <span class="tag tag-3">Slack</span>
       </div>
 
       <div class="install" id="install">
@@ -309,38 +319,67 @@
           <div class="cmd-head"><h3>macOS and Linux</h3></div>
           <pre><code>curl -fsSL https://github.com/<wbr>xibodev/<wbr>compa/<wbr>releases/<wbr>latest/<wbr>download/<wbr>install.sh | sh</code></pre>
         </div>
-        <p class="next">On your desktop, Compa starts and opens its setup page in your browser; if you closed it, choose Open Console in Compa's tray menu. Set a password, then on Models press Try free providers or connect a provider, and start chatting. It runs on Windows 10 or later, macOS 12 or later and Linux.</p>
-        <p class="next">Options, updates and uninstalling: <a href="https://github.com/xibodev/compa/blob/main/docs/install.md">the install guide</a>.</p>
+        <p class="next">Runs on Windows 10 or later, macOS 12 or later and Linux. Options, updates and uninstalling: <a href="https://github.com/xibodev/compa/blob/main/docs/install.md">the install guide</a>.</p>
         <p class="sr-only" aria-live="polite" id="copy-status"></p>
       </div>
+    </section>
+
+    <section class="wrap section" id="start" aria-labelledby="start-title">
+      <h2 id="start-title">Get started</h2>
+      <ol class="grid steps">
+        <li class="card">
+          <h3>Set a password</h3>
+          <p>The installer starts Compa and opens its setup page in your browser. If you closed it, choose Open Console in Compa's tray menu.</p>
+        </li>
+        <li class="card">
+          <h3>Pick a model</h3>
+          <p>On Models, press Try free providers, connect a provider with an API key, or point Compa at a model server on your computer.</p>
+        </li>
+        <li class="card">
+          <h3>Chat, then take it with you</h3>
+          <p>Chat in the browser. To reach Compa from your phone, link WhatsApp by QR code or add a Slack bot on Channels.</p>
+        </li>
+      </ol>
     </section>
 
     <section class="wrap section" id="features" aria-labelledby="features-title">
       <h2 id="features-title">What it does</h2>
       <ul class="grid">
         <li class="card">
-          <h3>Chat that can act</h3>
-          <p>Compa can read, write and edit files in its workspace, run shell commands, search the web, read pages and schedule jobs. Replies can show each tool it called.</p>
+          <h3>Wherever you are</h3>
+          <p>Chat in the browser, or message Compa on WhatsApp, where it joins your account as a linked device, or on Slack. Send it photos, voice notes and documents.</p>
+        </li>
+        <li class="card">
+          <h3>Yours alone</h3>
+          <p>Compa answers only you, in direct messages, and ignores group chats. Your first message asks to pair; once you approve it, everyone else is ignored.</p>
+        </li>
+        <li class="card">
+          <h3>It gets things done</h3>
+          <p>It reads, writes and edits files in its workspace, runs shell commands, searches the web, reads pages, schedules jobs and uses tools from MCP servers.</p>
+        </li>
+        <li class="card">
+          <h3>It reaches people for you</h3>
+          <p>Compa can message anyone on your channels, such as a WhatsApp contact, from your account. Keep it to the current chat with one setting, or have it ask first.</p>
+        </li>
+        <li class="card">
+          <h3>You approve what matters</h3>
+          <p>Approval rules decide which tool calls run, wait for you or are refused. Compa asks in your chat, and you answer with <code>/approve</code> or <code>/deny</code>.</p>
+        </li>
+        <li class="card">
+          <h3>It keeps you posted</h3>
+          <p>Results of scheduled jobs, reminders and approval requests reach your chat, and a copy goes to Slack and Microsoft Teams webhooks.</p>
         </li>
         <li class="card">
           <h3>The models you choose</h3>
-          <p>Connect OpenAI, Anthropic, Google Gemini, OpenRouter, Groq, Mistral AI and others with an API key, use an Ollama or LocalAI server on your computer or network, or add any OpenAI- or Anthropic-compatible endpoint. Try free providers tests keyless ones for you. A route tries its models in order until one answers.</p>
+          <p>OpenAI, Anthropic, Google Gemini, OpenRouter, Groq, Mistral AI and more with an API key; Ollama, LM Studio or LocalAI on your computer; any OpenAI- or Anthropic-compatible endpoint; free keyless providers. A route falls back to the next model when one fails.</p>
         </li>
         <li class="card">
           <h3>Voice</h3>
-          <p>Dictate messages and hear replies with the speech models of your providers, push-to-talk or hands-free.</p>
+          <p>Dictate messages and hear replies, push-to-talk or hands-free. Voice notes from WhatsApp are transcribed.</p>
         </li>
         <li class="card">
-          <h3>Your chat apps</h3>
-          <p>Talk to Compa from Telegram, Discord, Slack, WhatsApp, Matrix and more. Chat in the browser works without any of them.</p>
-        </li>
-        <li class="card">
-          <h3>Skills and modules</h3>
-          <p>Add skills from the skill hub, or install modules: separate programs that add capabilities. A module capability that needs approval runs only when you approve it.</p>
-        </li>
-        <li class="card">
-          <h3>An embeddable Go runtime</h3>
-          <p><code>compa-kernel</code> works on its own in a terminal, and <code>pkg/agent</code> runs the same agent loop inside your own Go program.</p>
+          <h3>Skills, modules and Go</h3>
+          <p>Add skills from the skill hub and modules that add capabilities. Developers can run the same agent inside their own Go program with <code>pkg/agent</code>.</p>
         </li>
       </ul>
       <p class="languages">The web UI is in English, <span lang="cs">Čeština</span>, <span lang="pt-BR">Português (Brasil)</span>, <span lang="zh-Hans">简体中文</span> and <span lang="bn">বাংলা</span>.</p>
@@ -351,9 +390,10 @@
       <div class="data">
         <ul>
           <li>Compa keeps its settings, chats and keys in <code>~/.compa</code> on your computer.</li>
-          <li>Your messages go to the model providers you choose. Free providers are third-party services, and web search, chat apps and the skill hub reach their own services when you use them.</li>
+          <li>Your messages go to the model providers you choose. Free providers are third-party services, and web search, WhatsApp, Slack and the skill hub reach their own services when you use them.</li>
           <li>A password protects the web UI, which listens only on this computer unless you turn on LAN access.</li>
           <li>Tools run as your user account. File tools stay inside the workspace by default: a guard, not a sandbox.</li>
+          <li>Whoever can write from your paired account can use Compa and its tools, so keep that account to yourself.</li>
         </ul>
         <p class="more"><a href="https://github.com/xibodev/compa/blob/main/docs/troubleshooting.md#privacy-and-security">Privacy and security in detail</a></p>
       </div>
@@ -362,20 +402,21 @@
     <section class="wrap section" id="docs" aria-labelledby="docs-title">
       <h2 id="docs-title">Documentation</h2>
       <ul class="docs">
-        <li><a href="https://github.com/xibodev/compa/blob/main/docs/install.md">Install</a><span>Installers, updates, uninstalling, ports and LAN access.</span></li>
-        <li><a href="https://github.com/xibodev/compa/blob/main/docs/use.md">Use Compa</a><span>Models, chat, voice, channels, skills, modules and logs.</span></li>
+        <li><a href="https://github.com/xibodev/compa/blob/main/docs/install.md">Install</a><span>Installers, updates, uninstalling, ports, LAN access and building from source.</span></li>
+        <li><a href="https://github.com/xibodev/compa/blob/main/docs/use.md">Use Compa</a><span>Models, chat, tools, approvals, voice, WhatsApp, Slack, skills and modules.</span></li>
         <li><a href="https://github.com/xibodev/compa/blob/main/docs/troubleshooting.md">Troubleshooting</a><span>Common problems, then privacy and security.</span></li>
         <li><a href="https://github.com/xibodev/compa/blob/main/docs/cli.md">Command line</a><span>The <code>compa</code> options and <code>compa-kernel</code> commands.</span></li>
+        <li><a href="https://github.com/xibodev/compa/blob/main/docs/gateway.md">Gateway interface</a><span>HTTP and WebSocket, for programs that run the gateway.</span></li>
         <li><a href="https://github.com/xibodev/compa/blob/main/docs/embedding.md">Embed the Go runtime</a><span>Run the agent loop inside your own Go program.</span></li>
       </ul>
-      <p class="repo"><a href="https://github.com/xibodev/compa">Source code on GitHub</a> · <a href="https://github.com/xibodev/compa/releases">Releases</a></p>
+      <p class="repo"><a href="https://github.com/xibodev/compa">Source code on GitHub</a> · <a href="https://github.com/xibodev/compa/releases">Releases</a> · <a href="https://github.com/xibodev/compa/blob/main/CHANGELOG.md">Changelog</a></p>
     </section>
   </main>
 
   <footer class="site-footer">
     <div class="wrap foot">
       <img src="compa-mark.svg" alt="" width="100" height="100">
-      <p>Compa is open source under the <a href="https://github.com/xibodev/compa/blob/main/LICENSE">MIT License</a>. “Compa” is Mexican Spanish slang for pal.</p>
+      <p>Open source: MIT, with exceptions; see <a href="https://github.com/xibodev/compa/blob/main/LICENSE">LICENSE</a> and <a href="https://github.com/xibodev/compa/blob/main/NOTICE">NOTICE</a>. “Compa” is Mexican Spanish slang for pal.</p>
     </div>
   </footer>
 

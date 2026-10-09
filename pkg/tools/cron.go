@@ -11,13 +11,13 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/xibodev/compa/v3/pkg/approval"
-	"github.com/xibodev/compa/v3/pkg/bus"
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/constants"
-	"github.com/xibodev/compa/v3/pkg/cron"
-	"github.com/xibodev/compa/v3/pkg/session"
-	"github.com/xibodev/compa/v3/pkg/utils"
+	"github.com/xibodev/compa/v4/pkg/approval"
+	"github.com/xibodev/compa/v4/pkg/bus"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/constants"
+	"github.com/xibodev/compa/v4/pkg/cron"
+	"github.com/xibodev/compa/v4/pkg/session"
+	"github.com/xibodev/compa/v4/pkg/utils"
 )
 
 // JobExecutor is the interface for executing cron jobs through the agent
@@ -684,6 +684,7 @@ func (t *CronTool) RunJob(ctx context.Context, job *cron.CronJob) (string, error
 
 	if response != "" {
 		t.executor.PublishResponseIfNeeded(ctx, channel, chatID, sessionKey, response)
+		t.publish(bus.OutboundMessage{Content: response, Notify: true})
 	}
 	return "ok", ctx.Err()
 }
@@ -720,12 +721,18 @@ func (t *CronTool) checkCommand(ctx context.Context, jobName string, args map[st
 	}
 }
 
-// publishJobOutput sends a scheduled command's report to the job's chat.
+// publishJobOutput sends a scheduled command's report to the job's chat,
+// and as a notification to the webhooks.
 func (t *CronTool) publishJobOutput(channel, chatID, output string) {
-	pubCtx, pubCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer pubCancel()
-	t.msgBus.PublishOutbound(pubCtx, bus.OutboundMessage{
+	t.publish(bus.OutboundMessage{
 		Context: bus.NewOutboundContext(channel, chatID, ""),
 		Content: output,
+		Notify:  true,
 	})
+}
+
+func (t *CronTool) publish(msg bus.OutboundMessage) {
+	pubCtx, pubCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer pubCancel()
+	t.msgBus.PublishOutbound(pubCtx, msg)
 }

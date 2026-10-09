@@ -4,20 +4,21 @@ import (
 	"bytes"
 	"encoding/json"
 
-	"github.com/xibodev/compa/v3/pkg/providers"
+	"github.com/xibodev/compa/v4/pkg/providers"
 )
 
 // SessionStore defines the persistence operations used by the agent loop.
 // JSONLBackend is the durable implementation; the agent loop also runs
 // sub-turns on an in-memory store behind the same interface.
 //
-// Write methods (Add*, Set*, Truncate*) are fire-and-forget: they do not
-// return errors. Implementations should log failures internally.
+// Add* return the store's error, so a turn knows when a message it appended
+// is missing from the session. The other write methods (Set*, Truncate*) do
+// not return errors; implementations log their failures.
 type SessionStore interface {
 	// AddMessage appends a simple role/content message to the session.
-	AddMessage(sessionKey, role, content string)
+	AddMessage(sessionKey, role, content string) error
 	// AddFullMessage appends a complete message including tool calls.
-	AddFullMessage(sessionKey string, msg providers.Message)
+	AddFullMessage(sessionKey string, msg providers.Message) error
 	// GetHistory returns the full message history for the session.
 	GetHistory(key string) []providers.Message
 	// GetSummary returns the conversation summary, or "" if none.

@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/logger"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/logger"
 )
 
 const pidFileName = ".compa.pid"
@@ -24,8 +24,11 @@ type PidFileData struct {
 	PID     int    `json:"pid"`
 	Token   string `json:"token"`
 	Version string `json:"version"`
-	Port    int    `json:"port"`
-	Host    string `json:"host"`
+	// Protocol is the version of the gateway's interface:
+	// config.GatewayProtocol.
+	Protocol int    `json:"protocol"`
+	Port     int    `json:"port"`
+	Host     string `json:"host"`
 }
 
 var pidMu sync.Mutex
@@ -80,10 +83,11 @@ func WritePidFile(homePath, host string, port int) (*PidFileData, error) {
 	}
 
 	data := &PidFileData{
-		PID:     os.Getpid(),
-		Version: config.GetVersion(),
-		Port:    port,
-		Host:    host,
+		PID:      os.Getpid(),
+		Version:  config.GetVersion(),
+		Protocol: config.GatewayProtocol,
+		Port:     port,
+		Host:     host,
 	}
 
 	token := generateToken()

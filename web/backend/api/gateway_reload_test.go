@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/v3/pkg/approval"
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/pairing"
-	ppid "github.com/xibodev/compa/v3/pkg/pid"
+	"github.com/xibodev/compa/v4/pkg/approval"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/pairing"
+	ppid "github.com/xibodev/compa/v4/pkg/pid"
 )
 
 // fakeGatewayReload is a gateway that answers POST /reload with status and
@@ -251,7 +251,7 @@ func TestApplyLiveChangesOnlyAppliesSavedChangesToARunningGateway(t *testing.T) 
 // runs nor after it.
 func TestPairingApprovalReloadsTheRunningGateway(t *testing.T) {
 	resetGatewayTestState(t)
-	h, mux, home := pairingTestHandler(t, "telegram:1")
+	h, mux, home := pairingTestHandler(t)
 	recordPairingRequest(t, home, pairing.Request{Channel: "telegram", SenderID: "telegram:123"})
 	reloads := trackedFakeGateway(t, loadSavedConfig(t, h.configPath), http.StatusOK, nil)
 

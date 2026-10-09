@@ -11,8 +11,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/modelservice"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/modelservice"
 )
 
 // defaultModelResponse is the body of GET and PUT /api/default-model.

@@ -92,7 +92,9 @@ function MessageTargetsSetting() {
   const id = useId()
   const { value, loaded, saving, save } = useToolSetting<MessageTargets>(
     (config) =>
-      toolConfig(config, "message").targets === "any" ? "any" : "current_chat",
+      toolConfig(config, "message").targets === "current_chat"
+        ? "current_chat"
+        : "any",
     (targets) => ({ message: { targets } }),
   )
   const label = t("pages.agent.tools.message_targets")

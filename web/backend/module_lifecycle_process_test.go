@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/config"
 )
 
 func TestSpawnedBackendPersistsDisabledModuleAcrossRestart(t *testing.T) {
@@ -34,6 +34,16 @@ func TestSpawnedBackendPersistsDisabledModuleAcrossRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	binDir := t.TempDir()
+	// Windows keeps a killed child's executable locked for a moment after the
+	// backend exits; this cleanup runs before TempDir's and waits it out.
+	t.Cleanup(func() {
+		for range 50 {
+			if os.RemoveAll(binDir) == nil {
+				return
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	})
 	backend := filepath.Join(binDir, processBinaryName("compa-test"))
 	kernel := filepath.Join(binDir, processBinaryName("compa-kernel-test"))
 	fake := filepath.Join(binDir, processBinaryName("fake-module"))

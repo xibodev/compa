@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xibodev/compa/v3/internal/moduletools"
+	"github.com/xibodev/compa/v4/internal/moduletools"
 )
 
 func TestModuleEnableDisableCommandsRoundTrip(t *testing.T) {

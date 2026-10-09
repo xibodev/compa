@@ -11,11 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/v3/pkg/bus"
-	"github.com/xibodev/compa/v3/pkg/config"
-	runtimeevents "github.com/xibodev/compa/v3/pkg/events"
-	"github.com/xibodev/compa/v3/pkg/providers"
-	"github.com/xibodev/compa/v3/pkg/tools"
+	"github.com/xibodev/compa/v4/pkg/bus"
+	"github.com/xibodev/compa/v4/pkg/config"
+	runtimeevents "github.com/xibodev/compa/v4/pkg/events"
+	"github.com/xibodev/compa/v4/pkg/providers"
+	"github.com/xibodev/compa/v4/pkg/tools"
 )
 
 // Test constants (use defaults from subturn.go)
@@ -737,10 +737,12 @@ func TestSpawnSubTurn_PanicRecovery(t *testing.T) {
 	}
 	al := NewAgentLoop(cfg, bus.NewMessageBus(), panicProvider)
 
+	// The parent is itself a sub-turn: it hears from its async sub-agents only
+	// through its pending results.
 	parent := &turnState{
 		ctx:            context.Background(),
 		turnID:         "parent-panic",
-		depth:          0,
+		depth:          1,
 		pendingResults: make(chan *tools.ToolResult, 1),
 		session:        &ephemeralSessionStore{},
 	}
@@ -757,9 +759,9 @@ func TestSpawnSubTurn_PanicRecovery(t *testing.T) {
 		t.Error("expected error from panic recovery")
 	}
 
-	// Result should be nil because panic occurred before runTurn could return
-	if result != nil {
-		t.Error("expected nil result after panic")
+	// The result is the failure, as for any failed sub-turn.
+	if result == nil || result.Err != err || !strings.Contains(result.ForLLM, "SubTurn failed: subturn panicked") {
+		t.Errorf("result = %+v, want the panic as a failure", result)
 	}
 
 	time.Sleep(10 * time.Millisecond) // let event goroutine flush
@@ -767,18 +769,15 @@ func TestSpawnSubTurn_PanicRecovery(t *testing.T) {
 	if !collector.hasEventOfKind(runtimeevents.KindAgentSubTurnEnd) {
 		t.Error("SubTurnEndEvent not emitted after panic")
 	}
-	// The nil result is delivered and reported as delivered.
+	// The failure is delivered and reported as delivered.
 	if !collector.hasEventOfKind(runtimeevents.KindAgentSubTurnResultDelivered) {
 		t.Error("SubTurnResultDeliveredEvent not emitted after panic")
 	}
 
-	// For async call, result should still be delivered to channel (even if nil)
-	select {
-	case res := <-parent.pendingResults:
-		// Result was delivered (nil due to panic)
-		_ = res
-	default:
-		t.Error("async result should be delivered to channel even after panic")
+	// The parent reads the failure from its pending results.
+	msg, ok := NewPipeline(al).takeSubTurnResult(parent)
+	if !ok || !strings.Contains(msg.Content, "SubTurn failed: subturn panicked: intentional panic for testing") {
+		t.Errorf("parent got %q (%v), want the sub-turn's failure", msg.Content, ok)
 	}
 }
 

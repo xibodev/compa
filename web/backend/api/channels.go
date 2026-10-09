@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"reflect"
 
-	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/config"
 )
 
 type channelCatalogItem struct {
@@ -14,24 +14,12 @@ type channelCatalogItem struct {
 	Variant   string `json:"variant,omitempty"`
 }
 
+// channelCatalog lists the channels the channel pages offer: the supported
+// ones. The paused channels are left out (see pkg/gateway/channels_paused.go).
 var channelCatalog = []channelCatalogItem{
-	{Name: "weixin", ConfigKey: "weixin"},
-	{Name: "telegram", ConfigKey: "telegram"},
-	{Name: "discord", ConfigKey: "discord"},
 	{Name: "slack", ConfigKey: "slack"},
-	{Name: "feishu", ConfigKey: "feishu"},
-	{Name: "dingtalk", ConfigKey: "dingtalk"},
-	{Name: "line", ConfigKey: "line"},
-	{Name: "qq", ConfigKey: "qq"},
-	{Name: "onebot", ConfigKey: "onebot"},
-	{Name: "wecom", ConfigKey: "wecom"},
-	{Name: "whatsapp", ConfigKey: "whatsapp", Variant: "bridge"},
-	{Name: "whatsapp_native", ConfigKey: "whatsapp", Variant: "native"},
+	{Name: "whatsapp", ConfigKey: "whatsapp"},
 	{Name: "web", ConfigKey: "web"},
-	{Name: "maixcam", ConfigKey: "maixcam"},
-	{Name: "matrix", ConfigKey: "matrix"},
-	{Name: "irc", ConfigKey: "irc"},
-	{Name: "mqtt", ConfigKey: "mqtt"},
 }
 
 type channelConfigResponse struct {
@@ -88,23 +76,22 @@ func findChannelCatalogItem(name string) (channelCatalogItem, bool) {
 }
 
 var channelSecretFieldMap = map[string][]string{
-	"weixin":          {"token"},
-	"telegram":        {"token"},
-	"discord":         {"token"},
-	"slack":           {"bot_token", "app_token"},
-	"feishu":          {"app_secret", "encrypt_key", "verification_token"},
-	"dingtalk":        {"client_secret"},
-	"line":            {"channel_secret", "channel_access_token"},
-	"qq":              {"app_secret"},
-	"onebot":          {"access_token"},
-	"wecom":           {"secret"},
-	"web":             {"token"},
-	"matrix":          {"access_token"},
-	"irc":             {"password", "nickserv_password", "sasl_password"},
-	"whatsapp":        {},
-	"whatsapp_native": {},
-	"maixcam":         {"token"},
-	"mqtt":            {"username", "password"},
+	"weixin":   {"token"},
+	"telegram": {"token"},
+	"discord":  {"token"},
+	"slack":    {"bot_token", "app_token"},
+	"feishu":   {"app_secret", "encrypt_key", "verification_token"},
+	"dingtalk": {"client_secret"},
+	"line":     {"channel_secret", "channel_access_token"},
+	"qq":       {"app_secret"},
+	"onebot":   {"access_token"},
+	"wecom":    {"secret"},
+	"web":      {"token"},
+	"matrix":   {"access_token"},
+	"irc":      {"password", "nickserv_password", "sasl_password"},
+	"whatsapp": {},
+	"maixcam":  {"token"},
+	"mqtt":     {"username", "password"},
 }
 
 func buildChannelConfigResponse(cfg *config.Config, item channelCatalogItem) channelConfigResponse {
@@ -141,15 +128,6 @@ func buildChannelConfigResponse(cfg *config.Config, item channelCatalogItem) cha
 		delete(settings, key)
 	}
 	addChannelCommonConfig(settings, bc)
-	if item.Name == "whatsapp_native" {
-		// The chats the native client takes as input; unset means the
-		// default, which the page shows like any other value.
-		if decoded, err := bc.GetDecoded(); err == nil {
-			if wa, ok := decoded.(*config.WhatsAppSettings); ok {
-				settings["chats"] = wa.EffectiveChats()
-			}
-		}
-	}
 	resp.Config = settings
 
 	return resp
@@ -160,20 +138,15 @@ func defaultChannelConfig(configKey string) *config.Channel {
 }
 
 // addChannelCommonConfig adds the channel_list fields every channel shares
-// to its settings. dm_policy and group_policy are the policies in effect, so
-// a channel that never set one shows the one its allow_from implies, and
-// group_trigger is always present, so mention_only reads as saved.
+// to its settings.
 func addChannelCommonConfig(settings map[string]any, bc *config.Channel) {
 	settings["enabled"] = bc.Enabled
 	if len(bc.AllowFrom) > 0 {
 		settings["allow_from"] = []string(bc.AllowFrom)
 	}
-	settings["dm_policy"] = bc.EffectiveDMPolicy()
-	settings["group_policy"] = bc.EffectiveGroupPolicy()
 	if bc.ReasoningChannelID != "" {
 		settings["reasoning_channel_id"] = bc.ReasoningChannelID
 	}
-	settings["group_trigger"] = bc.GroupTrigger
 	if bc.Typing.Enabled {
 		settings["typing"] = bc.Typing
 	}

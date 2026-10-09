@@ -103,15 +103,16 @@ func TestRecordKeepsTheMostRecentSendersPerChannel(t *testing.T) {
 	if len(got) != MaxPendingPerChannel {
 		t.Fatalf("kept %d telegram requests, want %d", len(got), MaxPendingPerChannel)
 	}
-	if got[0].SenderID != "telegram:24" || got[len(got)-1].SenderID != "telegram:5" {
-		t.Fatalf("kept %s .. %s, want the 20 most recent (telegram:24 .. telegram:5)", got[0].SenderID, got[len(got)-1].SenderID)
+	newest := "telegram:" + strconv.Itoa(MaxPendingPerChannel+4)
+	if got[0].SenderID != newest || got[len(got)-1].SenderID != "telegram:5" {
+		t.Fatalf("kept %s .. %s, want the most recent (%s .. telegram:5)", got[0].SenderID, got[len(got)-1].SenderID, newest)
 	}
 	if slack, _ := List(home, "slack"); len(slack) != 1 {
 		t.Fatalf("the cap of one channel touched another: slack = %+v", slack)
 	}
 }
 
-func TestRequestsExpireAfterAWeekOfSilence(t *testing.T) {
+func TestRequestsExpireAfterSilence(t *testing.T) {
 	home := t.TempDir()
 	clock := setClock(t, time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC))
 	start := *clock
@@ -176,6 +177,32 @@ func TestRemove(t *testing.T) {
 	}
 }
 
+// Binding a channel's owner drops all its requests, and only its own.
+func TestRemoveChannel(t *testing.T) {
+	home := t.TempDir()
+	for _, r := range []Request{
+		{Channel: "telegram", SenderID: "telegram:1"},
+		{Channel: "telegram", SenderID: "telegram:2"},
+		{Channel: "discord", SenderID: "discord:1"},
+	} {
+		if err := Record(home, r); err != nil {
+			t.Fatalf("Record(%+v) error = %v", r, err)
+		}
+	}
+
+	if err := RemoveChannel(home, " telegram "); err != nil {
+		t.Fatalf("RemoveChannel() error = %v", err)
+	}
+	if telegram, _ := List(home, "telegram"); len(telegram) != 0 {
+		t.Fatalf("telegram after RemoveChannel = %+v, want none", telegram)
+	}
+	if discord, _ := List(home, "discord"); len(discord) != 1 {
+		t.Fatalf("RemoveChannel on telegram touched discord: %+v", discord)
+	}
+	if err := RemoveChannel(home, "telegram"); err != nil {
+		t.Fatalf("RemoveChannel() of an empty channel error = %v", err)
+	}
+}
 func TestStoreFileIsPrivate(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("no POSIX permission bits on Windows")
@@ -209,7 +236,7 @@ func TestConcurrentRecordsLoseNothing(t *testing.T) {
 					errs <- err
 				}
 			}
-			if err := Record(home, Request{Channel: "discord", SenderID: fmt.Sprintf("discord:%d", w)}); err != nil {
+			if err := Record(home, Request{Channel: fmt.Sprintf("discord-%d", w), SenderID: fmt.Sprintf("discord:%d", w)}); err != nil {
 				errs <- err
 			}
 		}()
@@ -227,8 +254,8 @@ func TestConcurrentRecordsLoseNothing(t *testing.T) {
 	if len(shared) != 1 || shared[0].Count != writers*perWriter {
 		t.Fatalf("shared request = %+v, want count %d", shared, writers*perWriter)
 	}
-	if discord, _ := List(home, "discord"); len(discord) != writers {
-		t.Fatalf("discord requests = %d, want %d", len(discord), writers)
+	if all, _ := List(home, ""); len(all) != writers+1 {
+		t.Fatalf("requests = %d, want %d", len(all), writers+1)
 	}
 }
 

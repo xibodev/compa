@@ -1,3 +1,5 @@
+//go:build paused_channels
+
 package feishu
 
 import (
@@ -7,7 +9,7 @@ import (
 
 	larkim "github.com/larksuite/oapi-sdk-go/v3/service/im/v1"
 
-	"github.com/xibodev/compa/v3/pkg/channels"
+	"github.com/xibodev/compa/v4/pkg/channels"
 )
 
 // mentionPlaceholderRegex matches @_user_N placeholders inserted by Feishu for mentions.

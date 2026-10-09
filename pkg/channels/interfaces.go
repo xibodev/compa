@@ -3,8 +3,8 @@ package channels
 import (
 	"context"
 
-	"github.com/xibodev/compa/v3/pkg/bus"
-	"github.com/xibodev/compa/v3/pkg/commands"
+	"github.com/xibodev/compa/v4/pkg/bus"
+	"github.com/xibodev/compa/v4/pkg/commands"
 )
 
 // TypingCapable — channels that can show a typing/thinking indicator.
@@ -78,4 +78,13 @@ type PlaceholderRecorder interface {
 // Channels that do not support platform-level command menus can ignore it.
 type CommandRegistrarCapable interface {
 	RegisterCommands(ctx context.Context, defs []commands.Definition) error
+}
+
+// TurnObserver is implemented by channels that tell their clients when a
+// turn answering one of their chats starts and ends, such as the web chat.
+// The manager calls it in order with the chat's other outbound messages:
+// TurnEnded comes after every message of the turn's reply.
+type TurnObserver interface {
+	TurnStarted(ctx context.Context, chatID string, turn bus.TurnNotice) error
+	TurnEnded(ctx context.Context, chatID string, turn bus.TurnNotice) error
 }

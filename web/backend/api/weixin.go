@@ -1,21 +1,21 @@
+//go:build paused_channels
+
 package api
 
 import (
 	"context"
 	"crypto/rand"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
-	"rsc.io/qr"
-
-	"github.com/xibodev/compa/v3/pkg/channels/weixin"
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/logger"
+	"github.com/xibodev/compa/v4/pkg/channels/weixin"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/logger"
 )
 
 const (
@@ -52,6 +52,14 @@ type weixinFlowResponse struct {
 	AccountID string `json:"account_id,omitempty"`
 	Error     string `json:"error,omitempty"`
 }
+
+// The weixin QR login flows, by ID.
+var (
+	weixinMu    sync.Mutex
+	weixinFlows = map[string]*weixinFlow{}
+)
+
+func init() { pausedChannelRoutes = append(pausedChannelRoutes, (*Handler).registerWeixinRoutes) }
 
 // registerWeixinRoutes binds WeChat QR login endpoints to the ServeMux.
 func (h *Handler) registerWeixinRoutes(mux *http.ServeMux) {
@@ -243,17 +251,6 @@ func (h *Handler) saveWeixinBinding(token, accountID string) error {
 	return nil
 }
 
-// generateQRDataURI encodes content as a QR code PNG and returns a data URI.
-func generateQRDataURI(content string) (string, error) {
-	code, err := qr.Encode(content, qr.L)
-	if err != nil {
-		return "", fmt.Errorf("qr encode: %w", err)
-	}
-	pngBytes := code.PNG()
-	encoded := base64.StdEncoding.EncodeToString(pngBytes)
-	return "data:image/png;base64," + encoded, nil
-}
-
 func newWeixinFlowID() string {
 	buf := make([]byte, 12)
 	if _, err := rand.Read(buf); err != nil {
@@ -263,17 +260,17 @@ func newWeixinFlowID() string {
 }
 
 func (h *Handler) storeWeixinFlow(flow *weixinFlow) {
-	h.weixinMu.Lock()
-	defer h.weixinMu.Unlock()
+	weixinMu.Lock()
+	defer weixinMu.Unlock()
 	h.gcWeixinFlowsLocked(time.Now())
-	h.weixinFlows[flow.ID] = flow
+	weixinFlows[flow.ID] = flow
 }
 
 func (h *Handler) getWeixinFlow(flowID string) (*weixinFlow, bool) {
-	h.weixinMu.Lock()
-	defer h.weixinMu.Unlock()
+	weixinMu.Lock()
+	defer weixinMu.Unlock()
 	h.gcWeixinFlowsLocked(time.Now())
-	flow, ok := h.weixinFlows[flowID]
+	flow, ok := weixinFlows[flowID]
 	if !ok {
 		return nil, false
 	}
@@ -282,18 +279,18 @@ func (h *Handler) getWeixinFlow(flowID string) (*weixinFlow, bool) {
 }
 
 func (h *Handler) updateWeixinFlowStatus(flowID, status string) {
-	h.weixinMu.Lock()
-	defer h.weixinMu.Unlock()
-	if flow, ok := h.weixinFlows[flowID]; ok {
+	weixinMu.Lock()
+	defer weixinMu.Unlock()
+	if flow, ok := weixinFlows[flowID]; ok {
 		flow.Status = status
 		flow.UpdatedAt = time.Now()
 	}
 }
 
 func (h *Handler) setWeixinFlowConfirmed(flowID, accountID string) {
-	h.weixinMu.Lock()
-	defer h.weixinMu.Unlock()
-	if flow, ok := h.weixinFlows[flowID]; ok {
+	weixinMu.Lock()
+	defer weixinMu.Unlock()
+	if flow, ok := weixinFlows[flowID]; ok {
 		flow.Status = weixinStatusConfirmed
 		flow.AccountID = accountID
 		flow.UpdatedAt = time.Now()
@@ -301,9 +298,9 @@ func (h *Handler) setWeixinFlowConfirmed(flowID, accountID string) {
 }
 
 func (h *Handler) setWeixinFlowError(flowID, errMsg string) {
-	h.weixinMu.Lock()
-	defer h.weixinMu.Unlock()
-	if flow, ok := h.weixinFlows[flowID]; ok {
+	weixinMu.Lock()
+	defer weixinMu.Unlock()
+	if flow, ok := weixinFlows[flowID]; ok {
 		flow.Status = weixinStatusError
 		flow.Error = errMsg
 		flow.UpdatedAt = time.Now()
@@ -311,7 +308,7 @@ func (h *Handler) setWeixinFlowError(flowID, errMsg string) {
 }
 
 func (h *Handler) gcWeixinFlowsLocked(now time.Time) {
-	for id, flow := range h.weixinFlows {
+	for id, flow := range weixinFlows {
 		if flow.Status == weixinStatusWait || flow.Status == weixinStatusScanned {
 			if !flow.ExpiresAt.IsZero() && now.After(flow.ExpiresAt) {
 				flow.Status = weixinStatusExpired
@@ -321,7 +318,7 @@ func (h *Handler) gcWeixinFlowsLocked(now time.Time) {
 		if flow.Status != weixinStatusWait &&
 			flow.Status != weixinStatusScanned &&
 			now.Sub(flow.UpdatedAt) > weixinFlowGCAge {
-			delete(h.weixinFlows, id)
+			delete(weixinFlows, id)
 		}
 	}
 }

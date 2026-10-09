@@ -1,7 +1,6 @@
 import { useTranslation } from "react-i18next"
 
 import type { ChannelConfig } from "@/api/channels"
-import { ChannelAccessFields } from "@/components/channels/channel-access-fields"
 import {
   type ArrayFieldFlusher,
   ChannelArrayListField,
@@ -11,7 +10,7 @@ import {
   parseAllowFromInput,
 } from "@/components/channels/channel-array-utils"
 import { getSecretInputPlaceholder } from "@/components/channels/channel-config-fields"
-import { Field, KeyInput, SwitchCardField } from "@/components/shared-form"
+import { Field, KeyInput } from "@/components/shared-form"
 import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 
@@ -31,17 +30,6 @@ function asString(value: unknown): string {
   return typeof value === "string" ? value : ""
 }
 
-function asBool(value: unknown): boolean {
-  return value === true
-}
-
-function asRecord(value: unknown): Record<string, unknown> {
-  if (value && typeof value === "object" && !Array.isArray(value)) {
-    return value as Record<string, unknown>
-  }
-  return {}
-}
-
 export function DiscordForm({
   config,
   onChange,
@@ -51,7 +39,6 @@ export function DiscordForm({
   arrayFieldResetVersion,
 }: DiscordFormProps) {
   const { t } = useTranslation()
-  const groupTriggerConfig = asRecord(config.group_trigger)
 
   return (
     <div className="space-y-6">
@@ -100,22 +87,6 @@ export function DiscordForm({
             registerFlusher={registerArrayFieldFlusher}
             resetVersion={arrayFieldResetVersion}
           />
-          <ChannelAccessFields config={config} onChange={onChange} />
-
-          <div>
-            <SwitchCardField
-              label={t("channels.field.mentionOnly")}
-              hint={t("channels.form.desc.mentionOnly")}
-              checked={asBool(groupTriggerConfig.mention_only)}
-              onCheckedChange={(checked) => {
-                onChange("group_trigger", {
-                  ...groupTriggerConfig,
-                  mention_only: checked,
-                })
-              }}
-              ariaLabel={t("channels.field.mentionOnly")}
-            />
-          </div>
         </CardContent>
       </Card>
     </div>

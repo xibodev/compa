@@ -11,12 +11,14 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/xibodev/compa/v3/pkg/approval"
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/logger"
-	"github.com/xibodev/compa/v3/pkg/providers"
-	"github.com/xibodev/compa/v3/pkg/session"
-	"github.com/xibodev/compa/v3/pkg/tools"
+	"github.com/xibodev/compa/v4/pkg/approval"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/constants"
+	runtimeevents "github.com/xibodev/compa/v4/pkg/events"
+	"github.com/xibodev/compa/v4/pkg/logger"
+	"github.com/xibodev/compa/v4/pkg/providers"
+	"github.com/xibodev/compa/v4/pkg/session"
+	"github.com/xibodev/compa/v4/pkg/tools"
 )
 
 // =============================================================================
@@ -345,6 +347,12 @@ type turnState struct {
 	restorePointHistory []providers.Message
 	restorePointSummary string
 	persistedMessages   []providers.Message
+	// sessionWriteReported is set once the turn has reported a message it
+	// couldn't append to its session.
+	sessionWriteReported atomic.Bool
+	// notices tell the chat's channel when this turn starts and ends, when
+	// the channel observes turns.
+	notices *turnNotices
 
 	// SubTurn support
 	depth                int                    // SubTurn depth (0 for root turn)
@@ -728,6 +736,36 @@ func (ts *turnState) persistedMessagesSnapshot() []providers.Message {
 	ts.mu.RLock()
 	defer ts.mu.RUnlock()
 	return append([]providers.Message(nil), ts.persistedMessages...)
+}
+
+// noteSessionWrite reports err, from appending one of the turn's messages to
+// its session. The turn goes on and its reply still reaches the chat, but
+// later turns, and the chat when it is reopened, read the session without
+// what wasn't written. Each failure is logged; the turn's first is also
+// emitted as agent.error with stage session_save and told to the chat.
+func (ts *turnState) noteSessionWrite(ctx context.Context, al *AgentLoop, err error) {
+	if err == nil {
+		return
+	}
+	logger.ErrorCF("agent", "Session write failed", map[string]any{
+		"agent_id":    ts.agent.ID,
+		"session_key": ts.sessionKey,
+		"error":       err.Error(),
+	})
+	if al == nil || !ts.sessionWriteReported.CompareAndSwap(false, true) {
+		return
+	}
+	al.emitEvent(
+		runtimeevents.KindAgentError,
+		ts.eventMeta("runTurn", "turn.error"),
+		ErrorPayload{Stage: "session_save", Message: err.Error()},
+	)
+	if !constants.IsInternalChannel(ts.channel) {
+		al.bus.PublishOutbound(ctx, outboundMessageForTurn(ts, fmt.Sprintf(
+			"Couldn't save this conversation: %v. Later turns won't see what wasn't saved, "+
+				"and the chat won't show it when reopened.", err,
+		)))
+	}
 }
 
 func (ts *turnState) refreshRestorePointFromSession(agent *AgentInstance) {

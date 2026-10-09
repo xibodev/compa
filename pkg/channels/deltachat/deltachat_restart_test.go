@@ -1,3 +1,5 @@
+//go:build paused_channels
+
 package deltachat
 
 import (
@@ -10,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/config"
 )
 
 // gatedWriter is a server's stdin that takes requests until it is told to

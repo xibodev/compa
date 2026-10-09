@@ -13,8 +13,8 @@ import (
 	core "github.com/xibodev/llmgw-core"
 	"github.com/xibodev/llmgw-core/extension"
 
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/providers"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/providers"
 )
 
 // A catalog row's inputs come from what core's ModelInfo declares: typed
@@ -257,10 +257,10 @@ func TestListRosterOffersEachProviderOnce(t *testing.T) {
 		if item.DefaultEndpoint == "" {
 			continue
 		}
-		host := strings.SplitN(strings.TrimPrefix(strings.TrimPrefix(item.DefaultEndpoint, "https://"), "http://"), "/", 2)[0]
-		if other, seen := endpoints[host]; seen {
-			t.Errorf("roster entries %s and %s share the upstream %s", other, item.ID, host)
+		endpoint := strings.TrimSuffix(item.DefaultEndpoint, "/")
+		if other, seen := endpoints[endpoint]; seen {
+			t.Errorf("roster entries %s and %s share the endpoint %s", other, item.ID, endpoint)
 		}
-		endpoints[host] = item.ID
+		endpoints[endpoint] = item.ID
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -158,10 +159,56 @@ func (r channelEnvRecorder) record(channel string, before, target reflect.Value)
 	}
 }
 
+// channelEnabledEnv names the variable that turns a channel_list entry on or
+// off: COMPA_CHANNELS_<NAME>_ENABLED, with the entry's name in capitals and
+// "_" for every character other than a letter or digit.
+func channelEnabledEnv(name string) string {
+	upper := []byte(strings.ToUpper(name))
+	for i, ch := range upper {
+		if (ch < 'A' || ch > 'Z') && (ch < '0' || ch > '9') {
+			upper[i] = '_'
+		}
+	}
+	return "COMPA_CHANNELS_" + string(upper) + "_ENABLED"
+}
+
+// applyEnabled sets ch.Enabled from the channel's COMPA_CHANNELS_<NAME>_ENABLED
+// when that is set, and records the change.
+func (r channelEnvRecorder) applyEnabled(name string, ch *Channel) error {
+	key := channelEnabledEnv(name)
+	raw, ok := os.LookupEnv(key)
+	if !ok || strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	enabled, err := strconv.ParseBool(strings.TrimSpace(raw))
+	if err != nil {
+		return fmt.Errorf("%s: %w", key, err)
+	}
+	if enabled != ch.Enabled && r.overrides != nil {
+		*r.overrides = append(*r.overrides, envOverride{
+			locate: locateChannelEnabled(name),
+			before: reflect.ValueOf(ch.Enabled),
+			after:  reflect.ValueOf(enabled),
+		})
+	}
+	ch.Enabled = enabled
+	return nil
+}
+
 func locateConfigField(path []int) func(*Config) (reflect.Value, bool) {
 	return func(c *Config) (reflect.Value, bool) {
 		field, err := reflect.ValueOf(c).Elem().FieldByIndexErr(path)
 		return field, err == nil
+	}
+}
+
+func locateChannelEnabled(channel string) func(*Config) (reflect.Value, bool) {
+	return func(c *Config) (reflect.Value, bool) {
+		ch := c.Channels[channel]
+		if ch == nil {
+			return reflect.Value{}, false
+		}
+		return reflect.ValueOf(ch).Elem().FieldByName("Enabled"), true
 	}
 }
 

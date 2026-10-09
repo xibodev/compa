@@ -1,4 +1,4 @@
-.PHONY: all build kernel shell product build-whatsapp-native build-linux-arm build-linux-arm64 \
+.PHONY: all build kernel shell product build-linux-arm build-linux-arm64 \
 	build-linux-mipsle build-android-arm64 build-shell-android-arm64 build-android-bundle build-pi-zero \
 	build-all install uninstall uninstall-all clean vet test fmt fmt-check lint lint-docs fix deps \
 	update-deps check run build-macos-app help
@@ -40,7 +40,7 @@ VERSION?=$(if $(VERSION_RAW),$(VERSION_RAW),dev)
 GIT_COMMIT=$(if $(GIT_COMMIT_RAW),$(GIT_COMMIT_RAW),dev)
 BUILD_TIME=$(if $(BUILD_TIME_RAW),$(BUILD_TIME_RAW),dev)
 GO_VERSION=$(if $(GO_VERSION_RAW),$(firstword $(GO_VERSION_RAW)),unknown)
-CONFIG_PKG=github.com/xibodev/compa/v3/pkg/config
+CONFIG_PKG=github.com/xibodev/compa/v4/pkg/config
 LDFLAGS=-X $(CONFIG_PKG).Version=$(VERSION) -X $(CONFIG_PKG).GitCommit=$(GIT_COMMIT) -X $(CONFIG_PKG).BuildTime=$(BUILD_TIME) -X $(CONFIG_PKG).GoVersion=$(GO_VERSION) -s -w
 
 # Go variables
@@ -267,22 +267,6 @@ else
 	@$(LNCMD) "$(KERNEL_NAME)-$(PLATFORM)-$(ARCH)$(EXT)" "$(BUILD_DIR)/$(KERNEL_NAME)$(EXT)"
 endif
 	@echo "Build complete: $(BUILD_DIR)/$(KERNEL_NAME)$(EXT)"
-
-## build-whatsapp-native: Build compa-kernel with WhatsApp native (whatsmeow) for several platforms; these binaries link GPL-3.0 code, see NOTICE
-build-whatsapp-native:
-	@echo "Building $(KERNEL_NAME) with WhatsApp native for several platforms..."
-	@echo "Note: these binaries link go.mau.fi/libsignal (GPL-3.0), so they can only be shared under the GPL-3.0; see NOTICE."
-	@mkdir -p "$(BUILD_DIR)"
-	GOOS=linux GOARCH=amd64 $(GO) build -tags $(GO_BUILD_TAGS),whatsapp_native -ldflags "$(LDFLAGS)" -o "$(BUILD_DIR)/$(KERNEL_NAME)-linux-amd64" ./$(CMD_DIR)
-	GOOS=linux GOARCH=arm GOARM=7 $(GO) build -tags $(GO_BUILD_TAGS),whatsapp_native -ldflags "$(LDFLAGS)" -o "$(BUILD_DIR)/$(KERNEL_NAME)-linux-arm" ./$(CMD_DIR)
-	GOOS=linux GOARCH=arm64 $(GO) build -tags $(GO_BUILD_TAGS),whatsapp_native -ldflags "$(LDFLAGS)" -o "$(BUILD_DIR)/$(KERNEL_NAME)-linux-arm64" ./$(CMD_DIR)
-	GOOS=linux GOARCH=loong64 $(GO) build -tags $(GO_BUILD_TAGS),whatsapp_native -ldflags "$(LDFLAGS)" -o "$(BUILD_DIR)/$(KERNEL_NAME)-linux-loong64" ./$(CMD_DIR)
-	GOOS=linux GOARCH=riscv64 $(GO) build -tags $(GO_BUILD_TAGS),whatsapp_native -ldflags "$(LDFLAGS)" -o "$(BUILD_DIR)/$(KERNEL_NAME)-linux-riscv64" ./$(CMD_DIR)
-	GOOS=linux GOARCH=mipsle GOMIPS=softfloat $(GO) build -tags $(GO_BUILD_TAGS_NO_GOOLM),whatsapp_native -ldflags "$(LDFLAGS)" -o "$(BUILD_DIR)/$(KERNEL_NAME)-linux-mipsle" ./$(CMD_DIR)
-	$(call PATCH_MIPS_FLAGS,$(BUILD_DIR)/$(KERNEL_NAME)-linux-mipsle)
-	GOOS=darwin GOARCH=arm64 $(GO) build -tags $(GO_BUILD_TAGS),whatsapp_native -ldflags "$(LDFLAGS)" -o "$(BUILD_DIR)/$(KERNEL_NAME)-darwin-arm64" ./$(CMD_DIR)
-	GOOS=windows GOARCH=amd64 $(GO) build -tags $(GO_BUILD_TAGS),whatsapp_native -ldflags "$(LDFLAGS)" -o "$(BUILD_DIR)/$(KERNEL_NAME)-windows-amd64.exe" ./$(CMD_DIR)
-	@echo "Build complete"
 
 ## build-linux-arm: Build compa-kernel for Linux ARMv7 (e.g. Raspberry Pi Zero 2 W 32-bit)
 build-linux-arm:

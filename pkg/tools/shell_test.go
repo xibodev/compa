@@ -12,7 +12,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
-	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/config"
 )
 
 // TestShellTool_Success verifies successful command execution
@@ -661,37 +661,36 @@ func TestShellTool_TimeoutWithPartialOutput(t *testing.T) {
 	t.Logf("Timeout result: %s", result.ForLLM)
 }
 
-// TestShellTool_CustomAllowPatterns verifies that custom allow patterns exempt
-// commands from deny pattern checks.
+// A command that matches a custom allow pattern skips the built-in deny
+// patterns but not the custom ones; the workspace limits still apply.
 func TestShellTool_CustomAllowPatterns(t *testing.T) {
 	cfg := &config.Config{
 		Tools: config.ToolsConfig{
 			Exec: config.ExecConfig{
 				EnableDenyPatterns:  true,
-				CustomAllowPatterns: []string{`\bgit\s+push\s+origin\b`},
+				CustomDenyPatterns:  []string{`\bgit\s+push\s+origin\s+release\b`},
+				CustomAllowPatterns: []string{`^git\s+push\s+origin\b`},
 			},
 		},
 	}
-
-	tool, err := NewExecToolWithConfig("", false, cfg)
+	workspace := t.TempDir()
+	tool, err := NewExecToolWithConfig(workspace, true, cfg)
 	if err != nil {
 		t.Fatalf("unable to configure exec tool: %s", err)
 	}
 
-	// "git push origin main" should be allowed by custom allow pattern.
-	result := tool.Execute(context.Background(), map[string]any{
-		"command": "git push origin main",
-	})
-	if result.IsError && strings.Contains(result.ForLLM, "blocked") {
-		t.Errorf("custom allow pattern should exempt 'git push origin main', got: %s", result.ForLLM)
-	}
-
-	// "git push upstream main" should still be blocked (does not match allow pattern).
-	result = tool.Execute(context.Background(), map[string]any{
-		"command": "git push upstream main",
-	})
-	if !result.IsError {
-		t.Errorf("'git push upstream main' should still be blocked by deny pattern")
+	for _, tc := range []struct {
+		command string
+		blocked bool
+	}{
+		{"git push origin main", false},        // allowed past the built-in \bgit\s+push\b
+		{"git push upstream main", true},       // not allowed, so the built-in pattern applies
+		{"git push origin release", true},      // allowed, but the custom deny pattern applies
+		{"git push origin ../elsewhere", true}, // allowed, but it leaves the workspace
+	} {
+		if got := tool.guardCommand(tc.command, workspace); (got != "") != tc.blocked {
+			t.Errorf("guardCommand(%q) = %q, want blocked %v", tc.command, got, tc.blocked)
+		}
 	}
 }
 

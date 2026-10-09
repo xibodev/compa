@@ -1,3 +1,5 @@
+//go:build paused_channels
+
 package deltachat
 
 import (
@@ -9,7 +11,7 @@ import (
 	"os/exec"
 	"sync"
 
-	"github.com/xibodev/compa/v3/pkg/logger"
+	"github.com/xibodev/compa/v4/pkg/logger"
 )
 
 // rpcRequest is a single JSON-RPC 2.0 request. Delta Chat uses positional

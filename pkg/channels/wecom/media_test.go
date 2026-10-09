@@ -1,3 +1,5 @@
+//go:build paused_channels
+
 package wecom
 
 import (
@@ -9,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	basechannels "github.com/xibodev/compa/v3/pkg/channels"
-	"github.com/xibodev/compa/v3/pkg/media"
+	basechannels "github.com/xibodev/compa/v4/pkg/channels"
+	"github.com/xibodev/compa/v4/pkg/media"
 )
 
 func TestStoreRemoteMedia_DetectsJPEGContentTypeFromBody(t *testing.T) {

@@ -11,9 +11,9 @@ import (
 
 	"golang.org/x/term"
 
-	"github.com/xibodev/compa/v3/web/backend/api"
-	"github.com/xibodev/compa/v3/web/backend/dashboardauth"
-	"github.com/xibodev/compa/v3/web/backend/launcherconfig"
+	"github.com/xibodev/compa/v4/web/backend/api"
+	"github.com/xibodev/compa/v4/web/backend/dashboardauth"
+	"github.com/xibodev/compa/v4/web/backend/launcherconfig"
 )
 
 // openPasswordStore opens the dashboard password store the server uses: the

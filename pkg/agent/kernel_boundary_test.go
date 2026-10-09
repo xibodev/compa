@@ -23,7 +23,7 @@ import (
 // import was added by someone wiring a feature, not by someone weakening a
 // boundary.
 func TestTheKernelDependsOnNoHostOrShellPackage(t *testing.T) {
-	out, err := exec.Command("go", "list", "-deps", "github.com/xibodev/compa/v3/pkg/agent").Output()
+	out, err := exec.Command("go", "list", "-deps", "github.com/xibodev/compa/v4/pkg/agent").Output()
 	if err != nil {
 		t.Skipf("go list unavailable: %v", err)
 	}
@@ -31,19 +31,19 @@ func TestTheKernelDependsOnNoHostOrShellPackage(t *testing.T) {
 	// Each forbidden prefix, with WHY it is forbidden -- so a future failure
 	// explains the architecture rather than just naming a string.
 	forbidden := []struct{ prefix, why string }{
-		{"github.com/xibodev/compa/v3/internal/",
+		{"github.com/xibodev/compa/v4/internal/",
 			"internal/ cannot be imported by an external module at all, so any" +
 				" such dependency makes the kernel unembeddable"},
-		{"github.com/xibodev/compa/v3/web/",
+		{"github.com/xibodev/compa/v4/web/",
 			"the browser shell is Layer 3; a kernel that needs it cannot be" +
 				" embedded in a product with its own UI"},
-		{"github.com/xibodev/compa/v3/cmd/",
+		{"github.com/xibodev/compa/v4/cmd/",
 			"a command is a composition root; depending on one inverts the" +
 				" direction the whole architecture rests on"},
-		{"github.com/xibodev/compa/v3/pkg/modproto",
+		{"github.com/xibodev/compa/v4/pkg/modproto",
 			"the module wire protocol is Layer 2; the kernel must not know" +
 				" that detached modules exist"},
-		{"github.com/xibodev/compa/v3/pkg/contractv2",
+		{"github.com/xibodev/compa/v4/pkg/contractv2",
 			"the contract gate is Layer 2 and only means something to a host" +
 				" that invokes external modules"},
 	}
@@ -74,7 +74,7 @@ func TestTheKernelDependsOnNoHostOrShellPackage(t *testing.T) {
 // graph, so "no violations" means "checked and clean" rather than "checked
 // nothing".
 func TestTheBoundaryScanActuallyInspectsDependencies(t *testing.T) {
-	out, err := exec.Command("go", "list", "-deps", "github.com/xibodev/compa/v3/pkg/agent").Output()
+	out, err := exec.Command("go", "list", "-deps", "github.com/xibodev/compa/v4/pkg/agent").Output()
 	if err != nil {
 		t.Skipf("go list unavailable: %v", err)
 	}
@@ -90,7 +90,7 @@ func TestTheBoundaryScanActuallyInspectsDependencies(t *testing.T) {
 	// scanning something other than the kernel.
 	var sawProviders bool
 	for _, d := range deps {
-		if strings.HasPrefix(d, "github.com/xibodev/compa/v3/pkg/providers") {
+		if strings.HasPrefix(d, "github.com/xibodev/compa/v4/pkg/providers") {
 			sawProviders = true
 		}
 	}

@@ -3,7 +3,7 @@ package agent
 import (
 	"strings"
 
-	"github.com/xibodev/compa/v3/pkg/bus"
+	"github.com/xibodev/compa/v4/pkg/bus"
 )
 
 // instanceSelectionOutboundMetadata reports, for a turn that ran on the

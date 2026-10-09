@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/media"
-	"github.com/xibodev/compa/v3/pkg/providers"
-	"github.com/xibodev/compa/v3/pkg/tools"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/media"
+	"github.com/xibodev/compa/v4/pkg/providers"
+	"github.com/xibodev/compa/v4/pkg/tools"
 )
 
 type countingStatefulProvider struct {
@@ -368,6 +368,51 @@ func TestNewAgentInstance_AllowsMediaTempDirForReadListAndExec(t *testing.T) {
 	}
 	if !strings.Contains(execResult.ForLLM, "attachment content") {
 		t.Fatalf("exec output missing media content: %s", execResult.ForLLM)
+	}
+}
+
+// The model can read every skill the catalog lists, including those in the
+// global and built-in skill folders outside the workspace.
+func TestNewAgentInstance_ReadsTheSkillsTheCatalogLists(t *testing.T) {
+	home, builtin := t.TempDir(), t.TempDir()
+	t.Setenv(config.EnvHome, home)
+	t.Setenv(config.EnvBuiltinSkills, builtin)
+	for dir, name := range map[string]string{filepath.Join(home, "skills"): "global-notes", builtin: "builtin-notes"} {
+		if err := os.MkdirAll(filepath.Join(dir, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		body := "---\ndescription: " + name + "\n---\n# " + name + "\n\nFollow " + name + "."
+		if err := os.WriteFile(filepath.Join(dir, name, "SKILL.md"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:           t.TempDir(),
+				ModelName:           "test-model",
+				RestrictToWorkspace: true,
+			},
+		},
+		Tools: config.ToolsConfig{ReadFile: config.ReadFileToolConfig{Enabled: true}},
+	}
+
+	agent := NewAgentInstance(nil, &cfg.Agents.Defaults, cfg, &mockProvider{}, nil)
+	readTool, ok := agent.Tools.Get("read_file")
+	if !ok {
+		t.Fatal("read_file tool not registered")
+	}
+	read := map[string]bool{}
+	for _, skill := range agent.ContextBuilder.skillsLoader.ListSkills() {
+		result := readTool.Execute(context.Background(), map[string]any{"path": skill.Path})
+		if result.IsError || !strings.Contains(result.ForLLM, "Follow "+skill.Name+".") {
+			t.Errorf("read_file(%s) = %s", skill.Path, result.ForLLM)
+			continue
+		}
+		read[skill.Name] = true
+	}
+	if !read["global-notes"] || !read["builtin-notes"] {
+		t.Fatalf("skills read = %v, want global-notes and builtin-notes", read)
 	}
 }
 

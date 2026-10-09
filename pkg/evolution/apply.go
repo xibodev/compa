@@ -10,8 +10,8 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/xibodev/compa/v3/pkg/fileutil"
-	"github.com/xibodev/compa/v3/pkg/skills"
+	"github.com/xibodev/compa/v4/pkg/fileutil"
+	"github.com/xibodev/compa/v4/pkg/skills"
 )
 
 type Applier struct {

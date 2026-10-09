@@ -3,34 +3,32 @@ package web
 import (
 	"testing"
 
-	"github.com/xibodev/compa/v3/pkg/bus"
-	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/bus"
+	"github.com/xibodev/compa/v4/pkg/config"
 )
 
 // The built-in web chat is reached only through the password-protected
-// dashboard, so an empty allow_from does not make it open access; a web
-// chat client reaching out to another server is a chat channel, open only
-// when its access policies open it.
-func TestWebChatIsNotOpenAccess(t *testing.T) {
-	if ch := newTestWebChannel(t); ch.OpenToEveryone() {
-		t.Fatal("the built-in web chat reports open access")
+// dashboard, so every message it gets is from the owner; a web chat client
+// reaching out to another server is a chat channel, which admits only the
+// owner.
+func TestWebChatAdmitsTheOwnerAndTheClientIsOwnerOnly(t *testing.T) {
+	stranger := bus.SenderInfo{Platform: "web", PlatformID: "someone", CanonicalID: "web:someone"}
+	if ch := newTestWebChannel(t); !ch.Admits("direct", stranger, "chat") {
+		t.Fatal("the built-in web chat refuses a message")
 	}
-	for _, tt := range []struct {
-		dmPolicy string
-		want     bool
-	}{
-		{"", false},
-		{config.DMPolicyOpen, true},
-	} {
-		bc := &config.Channel{Type: config.ChannelWebClient, Enabled: true, DMPolicy: tt.dmPolicy}
-		client, err := NewWebClientChannel(bc, &config.WebChatClientSettings{URL: "ws://127.0.0.1:1/ws"},
-			bus.NewMessageBus())
-		if err != nil {
-			t.Fatalf("NewWebClientChannel() error = %v", err)
-		}
-		client.SetAccessPolicy(bc.EffectiveDMPolicy(), bc.EffectiveGroupPolicy())
-		if got := client.OpenToEveryone(); got != tt.want {
-			t.Fatalf("web chat client with dm_policy %q: OpenToEveryone() = %v, want %v", tt.dmPolicy, got, tt.want)
-		}
+
+	bc := &config.Channel{Type: config.ChannelWebClient, Enabled: true, AllowFrom: config.FlexibleStringSlice{"web:owner"}}
+	client, err := NewWebClientChannel(bc, &config.WebChatClientSettings{URL: "ws://127.0.0.1:1/ws"},
+		bus.NewMessageBus())
+	if err != nil {
+		t.Fatalf("NewWebClientChannel() error = %v", err)
+	}
+	client.RequireOwner()
+	if client.Admits("direct", stranger, "chat") {
+		t.Fatal("the web chat client admitted a stranger")
+	}
+	owner := bus.SenderInfo{Platform: "web", PlatformID: "owner", CanonicalID: "web:owner"}
+	if !client.Admits("direct", owner, "chat") {
+		t.Fatal("the web chat client refused its owner")
 	}
 }

@@ -13,8 +13,7 @@ const CATALOG = {
   channels: [
     { name: "telegram", config_key: "telegram" },
     { name: "discord", config_key: "discord" },
-    { name: "whatsapp", config_key: "whatsapp", variant: "bridge" },
-    { name: "whatsapp_native", config_key: "whatsapp", variant: "native" },
+    { name: "whatsapp", config_key: "whatsapp" },
     { name: "web", config_key: "web" },
   ],
 }
@@ -44,11 +43,7 @@ describe("useChannelList", () => {
       channel_list: {
         telegram: { enabled: true, type: "telegram", settings: {} },
         discord: { enabled: false, type: "discord" },
-        whatsapp: {
-          enabled: true,
-          type: "whatsapp",
-          settings: { use_native: true },
-        },
+        whatsapp: { enabled: true, type: "whatsapp" },
         web: { enabled: true, type: "web" },
       },
     })
@@ -60,12 +55,11 @@ describe("useChannelList", () => {
     expect(enabled).toEqual({
       telegram: true,
       discord: false,
-      whatsapp: false,
-      whatsapp_native: true,
+      whatsapp: true,
     })
     // Enabled channels come first.
     expect(result.current.channels.slice(0, 2).map((item) => item.key)).toEqual(
-      expect.arrayContaining(["telegram", "whatsapp_native"]),
+      expect.arrayContaining(["telegram", "whatsapp"]),
     )
   })
 
@@ -76,7 +70,7 @@ describe("useChannelList", () => {
     expect(result.current.channels.map((channel) => channel.key)).not.toContain(
       "web",
     )
-    expect(result.current.channels).toHaveLength(4)
+    expect(result.current.channels).toHaveLength(3)
   })
 
   it("lists every channel as off when the config cannot be read", async () => {

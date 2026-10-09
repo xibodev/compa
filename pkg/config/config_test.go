@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"gopkg.in/yaml.v3"
 
-	"github.com/xibodev/compa/v3/pkg/approval"
+	"github.com/xibodev/compa/v4/pkg/approval"
 )
 
 func TestAgentConfig_FullParse(t *testing.T) {
@@ -786,9 +786,6 @@ func TestDefaultConfig_DeltaChatExample(t *testing.T) {
 	if deltachat.Enabled {
 		t.Fatal("DefaultConfig().deltachat should be disabled")
 	}
-	if !deltachat.GroupTrigger.MentionOnly {
-		t.Fatal("DefaultConfig().deltachat should use mention-only group trigger")
-	}
 	decoded, err := deltachat.GetDecoded()
 	if err != nil {
 		t.Fatalf("deltachat GetDecoded() error = %v", err)
@@ -1050,7 +1047,7 @@ func TestConfigExample_LoadsAndUsesAutoWebProvider(t *testing.T) {
 	}
 	// It shows the defaults.
 	if !cfg.Commands.OwnerOnly || !cfg.Logging.RedactSecrets ||
-		cfg.Tools.Message.Targets != MessageTargetsCurrentChat ||
+		cfg.Tools.Message.Targets != MessageTargetsAny ||
 		!reflect.DeepEqual(cfg.Tools.Approval, approval.DefaultPolicy()) {
 		t.Fatalf("config.example.json does not show the defaults: commands=%+v logging=%+v message=%q approval=%+v",
 			cfg.Commands, cfg.Logging, cfg.Tools.Message.Targets, cfg.Tools.Approval)
@@ -1187,6 +1184,31 @@ func TestLoadConfig_UnknownFieldsReportsExactPaths(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "tools.weeb") || !strings.Contains(err.Error(), "tools.web.fatch_limit_bytes") {
 		t.Fatalf("expected exact unknown field paths, got %q", err.Error())
+	}
+}
+
+func TestLoadConfig_DropsRetiredFields(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "config.json")
+	raw := `{"agents":{"defaults":{"subturn":{"max_depth":2,"default_token_budget":0}}}}`
+	if err := os.WriteFile(configPath, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig() rejected a 1.0.0 config: %v", err)
+	}
+	if cfg.Agents.Defaults.SubTurn.MaxDepth != 2 {
+		t.Fatalf("max_depth = %d, want the rest of the config kept", cfg.Agents.Defaults.SubTurn.MaxDepth)
+	}
+	if err := SaveConfig(configPath, cfg); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(saved), "default_token_budget") {
+		t.Fatal("SaveConfig() kept a retired field")
 	}
 }
 

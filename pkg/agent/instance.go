@@ -9,15 +9,16 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/isolation"
-	"github.com/xibodev/compa/v3/pkg/logger"
-	"github.com/xibodev/compa/v3/pkg/media"
-	"github.com/xibodev/compa/v3/pkg/memory"
-	"github.com/xibodev/compa/v3/pkg/providers"
-	"github.com/xibodev/compa/v3/pkg/routing"
-	"github.com/xibodev/compa/v3/pkg/session"
-	"github.com/xibodev/compa/v3/pkg/tools"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/isolation"
+	"github.com/xibodev/compa/v4/pkg/logger"
+	"github.com/xibodev/compa/v4/pkg/media"
+	"github.com/xibodev/compa/v4/pkg/memory"
+	"github.com/xibodev/compa/v4/pkg/providers"
+	"github.com/xibodev/compa/v4/pkg/routing"
+	"github.com/xibodev/compa/v4/pkg/session"
+	"github.com/xibodev/compa/v4/pkg/skills"
+	"github.com/xibodev/compa/v4/pkg/tools"
 )
 
 // AgentInstance represents a fully configured agent with its own workspace,
@@ -661,6 +662,10 @@ func compilePatterns(patterns []string) []*regexp.Regexp {
 	return compiled
 }
 
+// buildAllowReadPatterns compiles tools.allow_read_paths and adds the folders
+// outside the workspace that the agent is pointed to: the media folder, and
+// the global and built-in skill folders, whose SKILL.md files the skill
+// catalog tells the model to read.
 func buildAllowReadPatterns(cfg *config.Config) []*regexp.Regexp {
 	var configured []string
 	if cfg != nil {
@@ -668,19 +673,26 @@ func buildAllowReadPatterns(cfg *config.Config) []*regexp.Regexp {
 	}
 
 	compiled := compilePatterns(configured)
-	mediaDirPattern := regexp.MustCompile(mediaTempDirPattern())
-	for _, pattern := range compiled {
-		if pattern.String() == mediaDirPattern.String() {
-			return compiled
-		}
+	for _, dir := range []string{media.TempDir(), globalSkillsDir(), skills.BuiltinDir()} {
+		compiled = appendFolderPattern(compiled, dir)
 	}
-
-	return append(compiled, mediaDirPattern)
+	return compiled
 }
 
-func mediaTempDirPattern() string {
+// appendFolderPattern adds the pattern of dir and everything in it, unless
+// there is no dir or the pattern is there already.
+func appendFolderPattern(patterns []*regexp.Regexp, dir string) []*regexp.Regexp {
+	if dir == "" {
+		return patterns
+	}
 	sep := regexp.QuoteMeta(string(os.PathSeparator))
-	return "^" + regexp.QuoteMeta(filepath.Clean(media.TempDir())) + "(?:" + sep + "|$)"
+	pattern := "^" + regexp.QuoteMeta(filepath.Clean(dir)) + "(?:" + sep + "|$)"
+	for _, existing := range patterns {
+		if existing.String() == pattern {
+			return patterns
+		}
+	}
+	return append(patterns, regexp.MustCompile(pattern))
 }
 
 // Close releases resources held by the agent's providers and session store.

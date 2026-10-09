@@ -5,10 +5,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xibodev/compa/v3/internal/module"
-	"github.com/xibodev/compa/v3/internal/moduletools"
-	"github.com/xibodev/compa/v3/pkg/approval"
-	"github.com/xibodev/compa/v3/pkg/modproto"
+	"github.com/xibodev/compa/v4/internal/module"
+	"github.com/xibodev/compa/v4/internal/moduletools"
+	"github.com/xibodev/compa/v4/pkg/approval"
+	"github.com/xibodev/compa/v4/pkg/modproto"
 )
 
 func TestModuleViewOptionalListsAreArrays(t *testing.T) {

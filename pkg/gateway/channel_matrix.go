@@ -1,4 +1,4 @@
-//go:build !mipsle && !netbsd && !(freebsd && arm) && !android
+//go:build paused_channels && !mipsle && !netbsd && !(freebsd && arm) && !android
 
 package gateway
 
@@ -20,5 +20,5 @@ import (
 	// long-term fix is to split Matrix basic support from its E2EE/sqlite-backed
 	// crypto path, or to upgrade/replace the upstream sqlite dependency once the
 	// affected targets are supported.
-	_ "github.com/xibodev/compa/v3/pkg/channels/matrix"
+	_ "github.com/xibodev/compa/v4/pkg/channels/matrix"
 )

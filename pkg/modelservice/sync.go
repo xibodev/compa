@@ -10,8 +10,8 @@ import (
 	core "github.com/xibodev/llmgw-core"
 	"github.com/xibodev/llmgw-core/translation"
 
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/providers"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/providers"
 )
 
 // CatalogSyncSupported reports whether Compa can list instance's models: it

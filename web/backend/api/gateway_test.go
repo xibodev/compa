@@ -16,9 +16,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/v3/pkg/config"
-	ppid "github.com/xibodev/compa/v3/pkg/pid"
-	"github.com/xibodev/compa/v3/web/backend/utils"
+	"github.com/xibodev/compa/v4/pkg/config"
+	ppid "github.com/xibodev/compa/v4/pkg/pid"
+	"github.com/xibodev/compa/v4/web/backend/utils"
 )
 
 func startLongRunningProcess(t *testing.T) *exec.Cmd {
@@ -1118,8 +1118,8 @@ func TestConfigSignatureTracksToolSettingsAndGuards(t *testing.T) {
 	}
 }
 
-// A channel's secrets are in its signature; its access lists and policies
-// are its live part, and nothing else.
+// A channel's secrets are in its signature; its access list is its live
+// part, and nothing else.
 func TestConfigSignatureTracksChannelSecretsAndAccess(t *testing.T) {
 	withToken := func(token string) *config.Config {
 		cfg := config.DefaultConfig()
@@ -1137,9 +1137,7 @@ func TestConfigSignatureTracksChannelSecretsAndAccess(t *testing.T) {
 	}
 
 	for name, change := range map[string]func(channel *config.Channel){
-		"allow_from":   func(channel *config.Channel) { channel.AllowFrom = config.FlexibleStringSlice{"web:1"} },
-		"dm_policy":    func(channel *config.Channel) { channel.DMPolicy = config.DMPolicyPairing },
-		"group_policy": func(channel *config.Channel) { channel.GroupPolicy = config.GroupPolicyAllowlist },
+		"allow_from": func(channel *config.Channel) { channel.AllowFrom = config.FlexibleStringSlice{"web:1"} },
 	} {
 		access := withToken("old-token")
 		change(access.Channels["web"])

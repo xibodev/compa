@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xibodev/compa/v3/pkg/modprotov2"
+	"github.com/xibodev/compa/v4/pkg/modprotov2"
 )
 
 // A weakening projection is REFUSED BY THE HOST, end to end, from raw describe

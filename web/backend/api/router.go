@@ -7,9 +7,13 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/xibodev/compa/v3/pkg/modelservice"
-	"github.com/xibodev/compa/v3/web/backend/launcherconfig"
+	"github.com/xibodev/compa/v4/pkg/modelservice"
+	"github.com/xibodev/compa/v4/web/backend/launcherconfig"
 )
+
+// pausedChannelRoutes register the routes of paused channels (the WeChat and
+// WeCom QR logins); the files built with the paused_channels tag add them.
+var pausedChannelRoutes []func(*Handler, *http.ServeMux)
 
 // Handler serves HTTP API requests.
 type Handler struct {
@@ -32,11 +36,9 @@ type Handler struct {
 	modelResolver *modelservice.Resolver
 	// Serializes model-related config writes. Other config endpoints still
 	// coordinate their own load-modify-save cycles.
-	configMu    sync.Mutex
-	weixinMu    sync.Mutex
-	weixinFlows map[string]*weixinFlow
-	wecomMu     sync.Mutex
-	wecomFlows  map[string]*wecomFlow
+	configMu sync.Mutex
+	// whatsappLink is the WhatsApp page's QR linking.
+	whatsappLink whatsappLinkState
 	// liveApplies tracks the background applies of saved changes that
 	// ApplyLiveChanges and a pairing approval schedule, so tests can wait
 	// for them.
@@ -54,8 +56,6 @@ func NewHandler(configPath string) *Handler {
 		configPath:                 configPath,
 		serverPort:                 launcherconfig.DefaultPort,
 		serverAllowLocalhostBypass: launcherconfig.Default().AllowLocalhostBypass,
-		weixinFlows:                make(map[string]*weixinFlow),
-		wecomFlows:                 make(map[string]*wecomFlow),
 		extensionFlowsState:        extensionFlowsState{extensionFlows: make(map[string]*extensionFlow)},
 	}
 	h.providerCredentialResolver = modelservice.ResolveCredentialReference
@@ -141,11 +141,13 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// Runtime build/version metadata
 	h.registerVersionRoutes(mux)
 
-	// WeChat QR login flow
-	h.registerWeixinRoutes(mux)
+	// WhatsApp QR linking
+	h.registerWhatsAppRoutes(mux)
 
-	// WeCom QR login flow
-	h.registerWecomRoutes(mux)
+	// The QR logins of paused channels, in builds that include them
+	for _, register := range pausedChannelRoutes {
+		register(h, mux)
+	}
 }
 
 // Shutdown gracefully shuts down the handler, stopping the gateway if it was started by this handler.

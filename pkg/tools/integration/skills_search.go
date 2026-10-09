@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/xibodev/compa/v3/pkg/skills"
+	"github.com/xibodev/compa/v4/pkg/skills"
 )
 
 // FindSkillsTool allows the LLM agent to search for installable skills from registries.

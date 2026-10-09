@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/v3/pkg/bus"
-	"github.com/xibodev/compa/v3/pkg/state"
-	"github.com/xibodev/compa/v3/pkg/tools"
+	"github.com/xibodev/compa/v4/pkg/bus"
+	"github.com/xibodev/compa/v4/pkg/state"
+	"github.com/xibodev/compa/v4/pkg/tools"
 )
 
 // newTestService returns an enabled service whose owner last wrote from a

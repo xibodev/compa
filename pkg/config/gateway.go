@@ -5,8 +5,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/xibodev/compa/v3/pkg/logger"
-	"github.com/xibodev/compa/v3/pkg/netbind"
+	"github.com/xibodev/compa/v4/pkg/logger"
+	"github.com/xibodev/compa/v4/pkg/netbind"
 )
 
 const DefaultGatewayLogLevel = "warn"

@@ -9,8 +9,8 @@ import (
 	"encoding/json"
 	"path/filepath"
 
-	"github.com/xibodev/compa/v3/pkg"
-	"github.com/xibodev/compa/v3/pkg/approval"
+	"github.com/xibodev/compa/v4/pkg"
+	"github.com/xibodev/compa/v4/pkg/approval"
 )
 
 // DefaultConfig returns the default configuration for Compa. It
@@ -224,7 +224,7 @@ func DefaultConfig() *Config {
 					Enabled: true,
 				},
 				MediaEnabled: false,
-				Targets:      MessageTargetsCurrentChat,
+				Targets:      MessageTargetsAny,
 			},
 			ReadFile: ReadFileToolConfig{
 				Enabled:         true,
@@ -285,11 +285,7 @@ func DefaultConfig() *Config {
 
 func defaultChannels() ChannelsConfig {
 	defs := map[string]any{
-		"whatsapp": map[string]any{
-			"settings": map[string]any{
-				"bridge_url": "ws://localhost:3001",
-			},
-		},
+		"whatsapp": map[string]any{},
 		"telegram": map[string]any{
 			"typing":      map[string]any{"enabled": true},
 			"placeholder": map[string]any{"enabled": true, "text": []string{"Thinking... 💭"}},
@@ -376,18 +372,6 @@ func defaultChannels() ChannelsConfig {
 		bc.SetName(name)
 		if bc.Type == "" {
 			bc.Type = name
-		}
-		if bc.Type == ChannelWeb {
-			// The browser chat is the owner's own dashboard, behind its own
-			// sign-in; who may use it is not a channel policy.
-			bc.DMPolicy = DMPolicyOpen
-			bc.GroupPolicy = GroupPolicyOpen
-		} else {
-			// A chat app answers its owner, once paired, and in groups only
-			// when mentioned.
-			bc.DMPolicy = DMPolicyPairing
-			bc.GroupPolicy = GroupPolicyAllowlist
-			bc.GroupTrigger.MentionOnly = true
 		}
 		channels[name] = bc
 	}

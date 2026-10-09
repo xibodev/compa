@@ -3,9 +3,9 @@ package moduleagent
 import (
 	"context"
 
-	"github.com/xibodev/compa/v3/internal/moduletools"
-	"github.com/xibodev/compa/v3/pkg/agent"
-	toolshared "github.com/xibodev/compa/v3/pkg/tools/shared"
+	"github.com/xibodev/compa/v4/internal/moduletools"
+	"github.com/xibodev/compa/v4/pkg/agent"
+	toolshared "github.com/xibodev/compa/v4/pkg/tools/shared"
 )
 
 // Package moduleagent binds the detached-module host to the agent kernel.

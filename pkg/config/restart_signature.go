@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/xibodev/compa/v3/pkg/approval"
+	"github.com/xibodev/compa/v4/pkg/approval"
 )
 
 // RestartSignature is the part of a config the gateway applies only when it
@@ -35,7 +35,7 @@ const (
 	// isolation, and who may run commands or approve tool calls (commands,
 	// hooks).
 	signatureGuards = "guards"
-	// signatureAccess: a channel's allow_from, dm_policy and group_policy.
+	// signatureAccess: a channel's allow_from.
 	signatureAccess = "access:"
 	// signatureChannel: the rest of a channel's config, secrets included.
 	signatureChannel = "channel:"
@@ -205,27 +205,21 @@ func addChannelSignature(signature RestartSignature, name string, channel *Chann
 		return
 	}
 	signature[signatureAccess+name] = marshalSignature(struct {
-		AllowFrom   FlexibleStringSlice `json:"allow_from,omitempty"`
-		DMPolicy    string              `json:"dm_policy,omitempty"`
-		GroupPolicy string              `json:"group_policy,omitempty"`
+		AllowFrom FlexibleStringSlice `json:"allow_from,omitempty"`
 	}{
-		AllowFrom:   channel.AllowFrom,
-		DMPolicy:    channel.DMPolicy,
-		GroupPolicy: channel.GroupPolicy,
+		AllowFrom: channel.AllowFrom,
 	})
 	signature[signatureChannel+name] = marshalSignature(struct {
-		Enabled            bool               `json:"enabled"`
-		Type               string             `json:"type"`
-		ReasoningChannelID string             `json:"reasoning_channel_id,omitempty"`
-		GroupTrigger       GroupTriggerConfig `json:"group_trigger,omitempty"`
-		Typing             TypingConfig       `json:"typing,omitempty"`
-		Placeholder        PlaceholderConfig  `json:"placeholder,omitempty"`
-		Settings           json.RawMessage    `json:"settings,omitempty"`
+		Enabled            bool              `json:"enabled"`
+		Type               string            `json:"type"`
+		ReasoningChannelID string            `json:"reasoning_channel_id,omitempty"`
+		Typing             TypingConfig      `json:"typing,omitempty"`
+		Placeholder        PlaceholderConfig `json:"placeholder,omitempty"`
+		Settings           json.RawMessage   `json:"settings,omitempty"`
 	}{
 		Enabled:            channel.Enabled,
 		Type:               channel.Type,
 		ReasoningChannelID: channel.ReasoningChannelID,
-		GroupTrigger:       channel.GroupTrigger,
 		Typing:             channel.Typing,
 		Placeholder:        channel.Placeholder,
 		Settings:           normalizeChannelSettings(channel),

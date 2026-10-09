@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/xibodev/compa/v3/pkg/routing"
+	"github.com/xibodev/compa/v4/pkg/routing"
 )
 
 const sessionKeyV1Prefix = "sk_v1_"

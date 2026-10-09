@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/xibodev/compa/v4/pkg/config"
 )
 
 type Server struct {
@@ -42,6 +44,9 @@ type StatusResponse struct {
 	// ConfigDigest, on /ready, identifies the config the gateway applied
 	// last: the launcher compares it with the saved config's.
 	ConfigDigest string `json:"config_digest,omitempty"`
+	// Protocol, on /health, is the version of the gateway's interface:
+	// config.GatewayProtocol.
+	Protocol int `json:"protocol,omitempty"`
 }
 
 func NewServer(host string, port int, token string) *Server {
@@ -238,9 +243,10 @@ func (s *Server) healthHandler(w http.ResponseWriter, r *http.Request) {
 
 	uptime := time.Since(s.startTime)
 	resp := StatusResponse{
-		Status: "ok",
-		Uptime: uptime.String(),
-		PID:    os.Getpid(),
+		Status:   "ok",
+		Uptime:   uptime.String(),
+		PID:      os.Getpid(),
+		Protocol: config.GatewayProtocol,
 	}
 
 	_ = json.NewEncoder(w).Encode(resp)

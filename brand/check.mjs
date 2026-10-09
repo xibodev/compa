@@ -155,7 +155,7 @@ assert.deepEqual(
   provenance.compatibilityIdentifiers,
   {
     repository: "compa",
-    goModule: "github.com/xibodev/compa/v3",
+    goModule: "github.com/xibodev/compa/v4",
     binaries: ["compa", "compa-kernel"],
     stateDirectory: "~/.compa",
   },

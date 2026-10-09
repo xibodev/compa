@@ -3,8 +3,9 @@
 </p>
 
 Compa is a personal AI assistant that runs on your computer. You chat with it
-in your browser, pick the models it uses, and it can work with files, run
-commands and search the web for you. "Compa" is Mexican Spanish slang for pal.
+in your browser, on WhatsApp or on Slack, pick the models it uses, and it works
+with files, runs commands and searches the web for you. "Compa" is Mexican
+Spanish slang for pal.
 
 ## Install
 
@@ -20,55 +21,52 @@ macOS and Linux:
 curl -fsSL https://github.com/xibodev/compa/releases/latest/download/install.sh | sh
 ```
 
-Compa runs on Windows 10 or later, macOS 12 or later and Linux. Where it
-installs, options, updating and uninstalling: [docs/install.md](docs/install.md).
+Compa runs on Windows 10 or later, macOS 12 or later and Linux. More in
+[docs/install.md](docs/install.md).
 
 ## Your first chat
 
-1. On your desktop the installer starts Compa, which opens its setup page in
-   your browser: set a password. If you closed the page, choose **Open
-   Console** in Compa's tray menu.
-2. Go to **Models**. Press **Try free providers**, or connect a provider with
-   an API key or a model server on your computer.
+1. The installer starts Compa, which opens its setup page in your browser. Set
+   a password. If you closed the page, choose **Open Console** in Compa's tray
+   menu.
+2. Go to **Models**. Press **Try free providers**, or connect a provider with an
+   API key or a model server on your computer.
 3. Go to **Chat** and ask something.
 
 ## What it does
 
-- Chat with tools: files in its workspace folder, shell commands, web search
-  and web pages, scheduled jobs.
-- Models from many providers: API-key providers such as OpenAI, Anthropic,
-  Google Gemini, OpenRouter, Groq and Mistral AI; local servers (Ollama,
-  LocalAI); your own OpenAI- or Anthropic-compatible endpoints; free keyless
-  providers; and more through an optional extension app. A route tries a list
-  of models in order until one answers.
-- Voice: dictation and spoken replies, push-to-talk or hands-free.
-- Chat apps: talk to Compa from Telegram, Discord, Slack, WhatsApp, Matrix and
-  more.
-- Skills (instructions for particular tasks, with a skill hub to find more) and
-  installable modules that add capabilities.
-- Compa keeps its settings, chats and keys in `~/.compa` on your computer;
-  messages go to the model providers you choose. A password protects the web
-  UI, which listens only on this computer unless you turn on LAN access.
+- **Tools:** files in its workspace folder, shell commands, web search and web
+  pages, scheduled jobs, MCP servers.
+- **Models:** API-key providers such as OpenAI, Anthropic, Google Gemini,
+  OpenRouter, Groq and Mistral AI; local servers such as Ollama, LM Studio and
+  LocalAI; any OpenAI- or Anthropic-compatible endpoint; free keyless
+  providers; and more through an extension app. A route tries a list of models
+  in order until one answers.
+- **Voice:** dictation and spoken replies, push-to-talk or hands-free.
+- **Chat apps:** WhatsApp, as a linked device of your account, and a Slack bot.
+  Compa answers only you. Slack and Teams webhooks receive its notifications.
+- **Skills and modules:** instructions for particular tasks, and programs that
+  add capabilities.
+- **Private by default:** settings, chats and keys stay in `~/.compa`; messages
+  go only to the model providers you choose. The web UI is password-protected
+  and listens only on this computer unless you turn on LAN access.
 - The web UI is in English, Czech, Brazilian Portuguese, Simplified Chinese and
   Bengali.
 
 ## Documentation
 
-- [Install](docs/install.md): installers, updates, uninstalling, ports, LAN access.
-- [Use Compa](docs/use.md): models, chat, voice, channels, skills, modules, logs.
+- [Install](docs/install.md): installers, updates, uninstalling, ports, LAN
+  access, building from source.
+- [Use Compa](docs/use.md): models, chat, tools, approvals, voice, chat apps,
+  skills, modules.
 - [Troubleshooting, privacy and security](docs/troubleshooting.md)
-- [Command line](docs/cli.md): `compa` flags and `compa-kernel` commands.
+- [Command line](docs/cli.md)
+- [Gateway interface](docs/gateway.md), for programs that run the gateway.
 - [Embed the Go runtime](docs/embedding.md)
 
-## For developers
-
-To build Compa from source, see
-[Run from source](docs/install.md#run-from-source). Tests, checks and how to
-contribute are in [CONTRIBUTING.md](CONTRIBUTING.md), how to report a security
-problem in [SECURITY.md](SECURITY.md), and the changes in
-[CHANGELOG.md](CHANGELOG.md).
+Contributing: [CONTRIBUTING.md](CONTRIBUTING.md). Security reports:
+[SECURITY.md](SECURITY.md). Changes: [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
-MIT. See [LICENSE](LICENSE), and [NOTICE](NOTICE) for upstream attribution and
-for the Compa name and artwork, which the MIT License doesn't cover.
+MIT, with exceptions; see [LICENSE](LICENSE) and [NOTICE](NOTICE).

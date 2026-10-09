@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/xibodev/compa/v3/pkg/logger"
+	"github.com/xibodev/compa/v4/pkg/logger"
 )
 
 // escapeXML escapes special characters for safe inclusion in XML content.

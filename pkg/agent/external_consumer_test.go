@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/xibodev/compa/v3/pkg/agent"
-	toolshared "github.com/xibodev/compa/v3/pkg/tools/shared"
+	"github.com/xibodev/compa/v4/pkg/agent"
+	toolshared "github.com/xibodev/compa/v4/pkg/tools/shared"
 )
 
 // echoTool is a minimal tool implementation for testing the public API.

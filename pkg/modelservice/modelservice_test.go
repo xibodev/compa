@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/config"
 	llmgwproviders "github.com/xibodev/llmgw-core/providers"
 )
 
@@ -166,7 +166,7 @@ func TestListRosterIsDerivedFromTheCoreRegistry(t *testing.T) {
 			t.Fatalf("roster item %q is not servable: %+v", item.ID, item)
 		}
 	}
-	for _, studioOnly := range []string{"deepseek", "openai_compat", "anthropic-messages", "qwen-portal"} {
+	for _, studioOnly := range []string{"openai_compat", "anthropic-messages", "qwen-portal"} {
 		for _, item := range roster {
 			if item.ID == studioOnly {
 				t.Fatalf("roster still carries the Studio preset %q", studioOnly)

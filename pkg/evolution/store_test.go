@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/v3/pkg/evolution"
+	"github.com/xibodev/compa/v4/pkg/evolution"
 )
 
 func TestStore_AppendLearningRecordsPersistsCaseAndRule(t *testing.T) {

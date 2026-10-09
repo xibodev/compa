@@ -21,14 +21,15 @@ import (
 
 	"golang.org/x/time/rate"
 
-	"github.com/xibodev/compa/v3/pkg/bus"
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/constants"
-	runtimeevents "github.com/xibodev/compa/v3/pkg/events"
-	"github.com/xibodev/compa/v3/pkg/health"
-	"github.com/xibodev/compa/v3/pkg/logger"
-	"github.com/xibodev/compa/v3/pkg/media"
-	"github.com/xibodev/compa/v3/pkg/utils"
+	"github.com/xibodev/compa/v4/pkg/bus"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/constants"
+	runtimeevents "github.com/xibodev/compa/v4/pkg/events"
+	"github.com/xibodev/compa/v4/pkg/health"
+	"github.com/xibodev/compa/v4/pkg/logger"
+	"github.com/xibodev/compa/v4/pkg/media"
+	"github.com/xibodev/compa/v4/pkg/session/history"
+	"github.com/xibodev/compa/v4/pkg/utils"
 )
 
 const (
@@ -110,12 +111,15 @@ func (w *channelWorker) halt() {
 }
 
 type Manager struct {
-	channels                  map[string]Channel
-	workers                   map[string]*channelWorker
-	bus                       *bus.MessageBus
-	runtimeEvents             runtimeevents.Bus
-	config                    *config.Config
-	mediaStore                media.MediaStore
+	channels      map[string]Channel
+	workers       map[string]*channelWorker
+	bus           *bus.MessageBus
+	runtimeEvents runtimeevents.Bus
+	config        *config.Config
+	mediaStore    media.MediaStore
+	// sessionHistory tells a channel that serves session history where to
+	// read it; see SetSessionHistory.
+	sessionHistory            func() history.Reader
 	dispatchTask              *asyncTask
 	mux                       *dynamicServeMux
 	httpServer                *http.Server
@@ -131,6 +135,12 @@ type Manager struct {
 
 type mediaStoreSetter interface {
 	SetMediaStore(s media.MediaStore)
+}
+
+// sessionHistorySetter is implemented by channels that serve the session
+// history of their chats, as the web chat does.
+type sessionHistorySetter interface {
+	SetSessionHistory(source func() history.Reader)
 }
 
 // ManagerOption configures a channel Manager.
@@ -670,6 +680,21 @@ func (m *Manager) SetMediaStore(store media.MediaStore) {
 	}
 }
 
+// SetSessionHistory gives the channels that serve session history, such as
+// the web chat, the reader of the sessions to serve: source is called for
+// each request, so it can follow the configuration as it reloads.
+func (m *Manager) SetSessionHistory(source func() history.Reader) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.sessionHistory = source
+	for _, ch := range m.channels {
+		if setter, ok := ch.(sessionHistorySetter); ok {
+			setter.SetSessionHistory(source)
+		}
+	}
+}
+
 // GetStreamer implements bus.StreamDelegate.
 // It checks if the named channel supports streaming and returns a Streamer.
 func (m *Manager) GetStreamer(ctx context.Context, channelName, chatID, sessionKey string) (bus.Streamer, bool) {
@@ -1073,6 +1098,11 @@ func (m *Manager) initChannel(typeName, channelName string) {
 				setter.SetMediaStore(m.mediaStore)
 			}
 		}
+		if m.sessionHistory != nil {
+			if setter, ok := ch.(sessionHistorySetter); ok {
+				setter.SetSessionHistory(m.sessionHistory)
+			}
+		}
 		// Inject PlaceholderRecorder if channel supports it
 		if setter, ok := ch.(interface{ SetPlaceholderRecorder(r PlaceholderRecorder) }); ok {
 			setter.SetPlaceholderRecorder(m)
@@ -1098,23 +1128,17 @@ func (m *Manager) initChannel(typeName, channelName string) {
 
 // applyChannelConfig gives a newly constructed channel the parts of its
 // channel_list entry that every channel shares: its configured name, which
-// inbound messages, replies and pairing requests use, and its access
-// policies. The dashboard's web chat, which only authenticated users reach,
-// has none; the web client, which talks to a remote web-chat server, is a
-// chat channel like the others.
+// inbound messages, replies and pairing requests use, and its owner-only
+// access check (see RequireOwner). The dashboard's web chat, which only
+// authenticated users reach, needs no check; the web client, which talks to
+// a remote web-chat server, is a chat channel like the others.
 func (m *Manager) applyChannelConfig(channelName, typeName string, ch Channel) {
 	if setter, ok := ch.(interface{ SetName(name string) }); ok {
 		setter.SetName(channelName)
 	}
-	var bc *config.Channel
-	if m.config != nil {
-		bc = m.config.Channels[channelName]
+	if setter, ok := ch.(interface{ RequireOwner() }); ok && typeName != config.ChannelWeb {
+		setter.RequireOwner()
 	}
-	if setter, ok := ch.(interface{ SetAccessPolicy(dm, group string) }); ok && bc != nil &&
-		typeName != config.ChannelWeb {
-		setter.SetAccessPolicy(bc.EffectiveDMPolicy(), bc.EffectiveGroupPolicy())
-	}
-	warnIfOpenToEveryone(channelName, ch)
 }
 
 func (m *Manager) getChannelConfigAndEnabled(channelName string) (*config.Channel, bool) {
@@ -1126,13 +1150,6 @@ func (m *Manager) getChannelConfigAndEnabled(channelName string) (*config.Channe
 		return bc, false
 	}
 
-	// Use Type to determine the config struct for validation.
-	// The map key (channelName) is the config key, which may differ from the type.
-	channelType := bc.Type
-	if channelType == "" {
-		channelType = channelName
-	}
-
 	// Settings have already been decoded by InitChannelList, so we just need to
 	// type-assert and check the relevant fields.
 	decoded, err := bc.GetDecoded()
@@ -1142,10 +1159,8 @@ func (m *Manager) getChannelConfigAndEnabled(channelName string) (*config.Channe
 	//nolint:revive
 	switch settings := decoded.(type) {
 	case *config.WhatsAppSettings:
-		if channelType == config.ChannelWhatsApp {
-			return bc, settings.BridgeURL != ""
-		}
-		return bc, channelType == config.ChannelWhatsAppNative && settings.UseNative
+		// Ready when enabled; Start reports a WhatsApp not linked yet.
+		return bc, true
 	case *config.MatrixSettings:
 		return bc, settings.Homeserver != "" && settings.UserID != "" && settings.AccessToken.String() != ""
 	case *config.WeComSettings:
@@ -1155,7 +1170,8 @@ func (m *Manager) getChannelConfigAndEnabled(channelName string) (*config.Channe
 	case *config.DingTalkSettings:
 		return bc, settings.ClientID != ""
 	case *config.SlackSettings:
-		return bc, settings.BotToken.String() != ""
+		// Socket Mode needs the app-level token as well as the bot token.
+		return bc, settings.BotToken.String() != "" && settings.AppToken.String() != ""
 	case *config.WeixinSettings:
 		return bc, settings.Token.String() != ""
 	case *config.WebChatSettings:
@@ -1562,6 +1578,10 @@ func (m *Manager) runWorker(ctx context.Context, name string, w *channelWorker) 
 			if !ok {
 				return
 			}
+			if msg.Turn != nil {
+				m.deliverTurnNotice(ctx, name, w.ch, msg)
+				continue
+			}
 			maxLen := 0
 			if mlp, ok := w.ch.(MessageLengthProvider); ok {
 				maxLen = mlp.MaxMessageLength()
@@ -1600,6 +1620,36 @@ func (m *Manager) runWorker(ctx context.Context, name string, w *channelWorker) 
 		case <-ctx.Done():
 			return
 		}
+	}
+}
+
+// deliverTurnNotice tells a channel that observes turns that a turn of the
+// message's chat started or ended; other channels never see the notice. It
+// runs on the channel's worker, so a notice keeps its place among the chat's
+// outbound messages. It never sends content.
+func (m *Manager) deliverTurnNotice(ctx context.Context, name string, ch Channel, msg bus.OutboundMessage) {
+	notice := msg.Turn
+	if notice.Delivered != nil {
+		defer close(notice.Delivered)
+	}
+	observer, ok := ch.(TurnObserver)
+	if !ok {
+		return
+	}
+	chatID := outboundMessageChatID(msg)
+	var err error
+	if notice.Ended {
+		err = observer.TurnEnded(ctx, chatID, *notice)
+	} else {
+		err = observer.TurnStarted(ctx, chatID, *notice)
+	}
+	if err != nil {
+		logger.WarnCF("channels", "Failed to tell the channel about a turn", map[string]any{
+			"channel": name,
+			"chat_id": chatID,
+			"ended":   notice.Ended,
+			"error":   err.Error(),
+		})
 	}
 }
 
@@ -1718,6 +1768,7 @@ func dispatchLoop[M any](
 	ch <-chan M,
 	getChannel func(M) string,
 	enqueue func(context.Context, *channelWorker, M) bool,
+	notifyOnly func(M) bool,
 	startMsg, stopMsg, unknownMsg, noWorkerMsg string,
 ) {
 	logger.InfoC("channels", startMsg)
@@ -1734,6 +1785,9 @@ func dispatchLoop[M any](
 				return
 			}
 
+			if notifyOnly != nil && notifyOnly(msg) {
+				continue
+			}
 			channel := getChannel(msg)
 
 			// Silently skip internal channels
@@ -1769,7 +1823,12 @@ func (m *Manager) dispatchOutbound(ctx context.Context) {
 		func(msg bus.OutboundMessage) string { return outboundMessageChannel(msg) },
 		func(ctx context.Context, w *channelWorker, msg bus.OutboundMessage) bool {
 			name := outboundMessageChannel(msg)
-			switch w.pending.push(msg, w.stop) {
+			result := w.pending.push(msg, w.stop)
+			if msg.Turn != nil {
+				// A turn notice isn't a message: it gets no outbound events.
+				return true
+			}
+			switch result {
 			case pushStopped:
 				logger.WarnCF("channels", "Channel worker stopped, dropping outbound message",
 					map[string]any{"channel": name})
@@ -1782,11 +1841,43 @@ func (m *Manager) dispatchOutbound(ctx context.Context) {
 			}
 			return true
 		},
+		m.notifyWebhooks,
 		"Outbound dispatcher started",
 		"Outbound dispatcher stopped",
 		"Unknown channel for outbound message",
 		"Channel has no active worker, skipping message",
 	)
+}
+
+// notifyWebhooks queues a copy of a notification for every running Slack or
+// Teams webhook, to its default target. It reports whether the message was
+// for the webhooks only.
+func (m *Manager) notifyWebhooks(msg bus.OutboundMessage) bool {
+	if !msg.Notify {
+		return false
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for name, w := range m.workers {
+		if m.config == nil {
+			break
+		}
+		bc := m.config.Channels[name]
+		if w == nil || bc == nil || name == outboundMessageChannel(msg) ||
+			(bc.Type != config.ChannelSlackWebHook && bc.Type != config.ChannelTeamsWebHook) {
+			continue
+		}
+		copied := bus.OutboundMessage{
+			Channel: name,
+			ChatID:  "default",
+			Context: bus.NewOutboundContext(name, "default", ""),
+			Content: msg.Content,
+		}
+		if w.pending.push(copied, w.stop) != pushQueued {
+			logger.WarnCF("channels", "Could not queue a notification for a webhook", map[string]any{"channel": name})
+		}
+	}
+	return outboundMessageChannel(msg) == ""
 }
 
 func (m *Manager) dispatchOutboundMedia(ctx context.Context) {
@@ -1809,6 +1900,7 @@ func (m *Manager) dispatchOutboundMedia(ctx context.Context) {
 			}
 			return true
 		},
+		nil,
 		"Outbound media dispatcher started",
 		"Outbound media dispatcher stopped",
 		"Unknown channel for outbound media message",

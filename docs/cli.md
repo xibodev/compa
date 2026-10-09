@@ -41,7 +41,8 @@ follows it.
 compa-kernel <command> [flags]
 ```
 
-Every command has `--help`; `--no-color` turns colors off.
+Every command has `--help`; `--no-color` turns colors off. `compa-kernel help
+<command>` does the same as `--help`.
 
 | Command | What it does |
 |---|---|
@@ -50,7 +51,7 @@ Every command has `--help`; `--no-color` turns colors off.
 | `completion` | Generate the autocompletion script for the specified shell. |
 | `config` | Manage configuration. |
 | `cron` | Manage scheduled tasks. |
-| `evolution` | Review the skill changes evolution proposes. |
+| `evolution` | Review the skill drafts evolution proposes. |
 | `gateway` | Start Compa gateway. |
 | `mcp` | Manage MCP server configuration. |
 | `model` | Show or change the default model. |
@@ -112,14 +113,44 @@ decides it.
 | `auth login -p <openai\|anthropic>` | Store an API key for a provider. |
 | `auth logout [-p <provider>]` | Remove stored credentials (OpenAI and Anthropic without `-p`). |
 | `auth status` | Show current auth status. |
-| `auth weixin` | Connect a WeChat personal account via QR code. |
-| `auth wecom` | Scan a WeCom QR code and set up the WeCom channel. |
+| `auth whatsapp` | Link a WhatsApp account by QR code and turn on the WhatsApp channel; then restart the gateway. See [WhatsApp](use.md#whatsapp). |
+
+`auth whatsapp` prints the QR code in the terminal. In WhatsApp on your phone,
+choose **Settings** → **Linked devices** → **Link a device** and scan it within
+5 minutes.
+
+### JSON output
+
+For a program that runs `compa-kernel`, `--json` makes `model` (showing,
+setting or clearing the default model), `model auto-free`, `model ping`,
+`model roster`, `auth login`, `auth logout` and `auth status` print one JSON
+document on stdout instead of text. Prompts, progress and logs go to stderr.
+A command that fails prints `{"error": "..."}` on stdout and exits with
+status 1.
+
+The fields are those of the launcher's API, where it has the same data:
+
+| Command | Document |
+|---|---|
+| `model` | `selection` (the default model, `""` for none), `active_models` (the chat shortlist) and `routes` (each with `name` and `targets`). |
+| `model <selection>`, `model --clear` | `selection` (the new default model, `""` when cleared) and `previous`. |
+| `model auto-free` | The answer of `POST /api/provider-instances/auto-connect-free`: `ok`, `total`, `catalog_discovered`, `verified`, `instances`, `default_model`, and `outcomes`, each provider's `status`, `models`, `probe_model`, `latency_ms`, `error_class` and `error`. `ok` false is not a failure. |
+| `model ping [instance-id]` | `results`, one `POST /api/provider-instances/{id}/ping` answer per instance (`ok`, `instance_id`, `latency_ms`, `model_count`, `status`, `error`), and `total`. |
+| `model roster` | `providers` and `total`, as `GET /api/provider-roster`. |
+| `auth login` | `status` (`ok`), `provider`, `instance_id`, `model_count` and `default_model`. The key is read from stdin when it isn't a terminal. |
+| `auth logout` | `status` (`ok`) and `providers`, the providers logged out of. |
+| `auth status` | `providers`, each stored credential's `provider`, `auth_method`, `status` (`active`, `expired` or `needs_refresh`), `account_id` and `expires_at`, and `total`. Tokens are never printed. |
+
+```sh
+echo "$OPENAI_API_KEY" | compa-kernel auth login --provider openai --json
+compa-kernel model openai/gpt-5.4 --json
+```
 
 ### gateway
 
 `compa-kernel gateway` runs chat, tools, channels and scheduled jobs in the
 foreground. Compa starts it for you, so run it yourself only when Compa isn't
-running.
+running. Programs talk to it as [Gateway interface](gateway.md) describes.
 
 | Flag | What it does |
 |---|---|
@@ -210,7 +241,10 @@ keeps its task and pattern records for 30 days.
 | `COMPA_LOG_FILE` | `compa-kernel agent` writes its log to this file instead of the terminal. |
 | `COMPA_SUBPROCESS_ALLOW` | Program names, separated by commas, that modules may run, out of those each module declares. Unset, every declared program is allowed. |
 | `COMPA_DNS_SERVER` | On Linux without `/etc/resolv.conf`, the DNS servers `compa-kernel` asks, separated by `;` (default `8.8.8.8:53;1.1.1.1:53`). |
+| `COMPA_CHANNELS_<NAME>_ENABLED` | Turns the `channel_list` entry `<NAME>` on (`true`) or off (`false`) instead of its `enabled`, such as `COMPA_CHANNELS_WEB_ENABLED=true` for the web chat. `<NAME>` is the entry's name in capitals, with `_` for each character other than a letter or digit. |
+| `COMPA_CHANNELS_WEB_STREAMING_ENABLED` | Turns streamed replies on or off in the web chat. The same prefix with `_STREAMING_THROTTLE_SECONDS` and `_STREAMING_MIN_GROWTH_CHARS` sets its `throttle_seconds` and `min_growth_chars`. |
 
 Many `config.json` settings can be set with a variable named after their place
 in the file, such as `COMPA_AGENTS_DEFAULTS_WORKSPACE` for
-`agents.defaults.workspace`; the variable wins over the file.
+`agents.defaults.workspace`. The variable wins over the file, and saving the
+config keeps the file's value unless you change the setting.

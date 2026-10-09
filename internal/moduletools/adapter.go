@@ -23,11 +23,11 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/xibodev/compa/v3/internal/module"
-	"github.com/xibodev/compa/v3/pkg/approval"
-	"github.com/xibodev/compa/v3/pkg/modproto"
-	toolshared "github.com/xibodev/compa/v3/pkg/tools/shared"
-	"github.com/xibodev/compa/v3/pkg/view"
+	"github.com/xibodev/compa/v4/internal/module"
+	"github.com/xibodev/compa/v4/pkg/approval"
+	"github.com/xibodev/compa/v4/pkg/modproto"
+	toolshared "github.com/xibodev/compa/v4/pkg/tools/shared"
+	"github.com/xibodev/compa/v4/pkg/view"
 )
 
 // CapabilityTool exposes one module capability as an agent tool.

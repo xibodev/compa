@@ -26,13 +26,13 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/logger"
-	"github.com/xibodev/compa/v3/pkg/netbind"
-	"github.com/xibodev/compa/v3/web/backend/api"
-	"github.com/xibodev/compa/v3/web/backend/launcherconfig"
-	"github.com/xibodev/compa/v3/web/backend/middleware"
-	"github.com/xibodev/compa/v3/web/backend/utils"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/logger"
+	"github.com/xibodev/compa/v4/pkg/netbind"
+	"github.com/xibodev/compa/v4/web/backend/api"
+	"github.com/xibodev/compa/v4/web/backend/launcherconfig"
+	"github.com/xibodev/compa/v4/web/backend/middleware"
+	"github.com/xibodev/compa/v4/web/backend/utils"
 )
 
 const (

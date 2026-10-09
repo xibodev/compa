@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/pairing"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/pairing"
 )
 
 // pairingTestHandler saves a config whose telegram and whatsapp channels
@@ -55,8 +55,8 @@ func pairingRequestJSON(t *testing.T, mux *http.ServeMux, method, path, body str
 
 func TestPairingListReturnsRequestsNewestFirst(t *testing.T) {
 	_, mux, home := pairingTestHandler(t)
-	older := time.Now().Add(-2 * time.Hour).UTC().Truncate(time.Second)
-	newer := time.Now().Add(-time.Hour).UTC().Truncate(time.Second)
+	older := time.Now().Add(-20 * time.Minute).UTC().Truncate(time.Second)
+	newer := time.Now().Add(-10 * time.Minute).UTC().Truncate(time.Second)
 	recordPairingRequest(t, home, pairing.Request{
 		Channel: "telegram", SenderID: "telegram:1", PlatformID: "1", DisplayName: "Bo",
 		FirstSeen: older, LastSeen: older,
@@ -103,16 +103,6 @@ func TestPairingListEmptyIsAnEmptyArray(t *testing.T) {
 	}
 }
 
-func TestPairingNativeWhatsAppListsTheWhatsAppChannel(t *testing.T) {
-	_, mux, home := pairingTestHandler(t)
-	recordPairingRequest(t, home, pairing.Request{Channel: "whatsapp", SenderID: "whatsapp:15550001"})
-
-	rec := pairingRequestJSON(t, mux, http.MethodGet, "/api/channels/whatsapp_native/pairing", "")
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"whatsapp:15550001"`) {
-		t.Fatalf("status = %d, body = %s; want the request of channel_list.whatsapp", rec.Code, rec.Body.String())
-	}
-}
-
 func TestPairingUnknownChannelIsNotFound(t *testing.T) {
 	_, mux, _ := pairingTestHandler(t)
 	for _, path := range []string{
@@ -131,10 +121,13 @@ func TestPairingUnknownChannelIsNotFound(t *testing.T) {
 	}
 }
 
-func TestPairingApproveAppendsToAllowFromAndRemovesTheRequest(t *testing.T) {
-	h, mux, home := pairingTestHandler(t, "telegram:1")
+// Approving binds the owner's account: it becomes the one account in
+// allow_from ("*" goes), and the channel's other requests are dropped.
+func TestPairingApproveBindsTheOwnerAndDropsTheOtherRequests(t *testing.T) {
+	h, mux, home := pairingTestHandler(t, "*")
 	recordPairingRequest(t, home, pairing.Request{Channel: "telegram", SenderID: "telegram:123", PlatformID: "123"})
 	recordPairingRequest(t, home, pairing.Request{Channel: "telegram", SenderID: "telegram:456"})
+	recordPairingRequest(t, home, pairing.Request{Channel: "slack", SenderID: "slack:U1"})
 
 	rec := pairingRequestJSON(t, mux, http.MethodPost, "/api/channels/telegram/pairing/approve", `{"sender_id":" telegram:123 "}`)
 	if rec.Code != http.StatusOK || strings.TrimSpace(rec.Body.String()) != `{"status":"ok"}` {
@@ -145,24 +138,34 @@ func TestPairingApproveAppendsToAllowFromAndRemovesTheRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	if got := []string(cfg.Channels.Get("telegram").AllowFrom); strings.Join(got, ",") != "telegram:1,telegram:123" {
-		t.Fatalf("allow_from = %v, want the approved sender appended", got)
+	if got := []string(cfg.Channels.Get("telegram").AllowFrom); strings.Join(got, ",") != "telegram:123" {
+		t.Fatalf("allow_from = %v, want only the approved sender", got)
 	}
-	requests, err := pairing.List(home, "telegram")
-	if err != nil {
-		t.Fatalf("pairing.List() error = %v", err)
+	if requests, _ := pairing.List(home, "telegram"); len(requests) != 0 {
+		t.Fatalf("pending = %+v, want none", requests)
 	}
-	if len(requests) != 1 || requests[0].SenderID != "telegram:456" {
-		t.Fatalf("pending = %+v, want only the other sender", requests)
-	}
-
-	// The request is gone, so approving it again finds nothing.
-	rec = pairingRequestJSON(t, mux, http.MethodPost, "/api/channels/telegram/pairing/approve", `{"sender_id":"telegram:123"}`)
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("second approval status = %d, want 404", rec.Code)
+	if requests, _ := pairing.List(home, "slack"); len(requests) != 1 {
+		t.Fatalf("another channel's requests were dropped: %+v", requests)
 	}
 }
 
+// Once allow_from lists an account, approving another is refused.
+func TestPairingApproveRefusesOnceTheOwnerIsBound(t *testing.T) {
+	h, mux, home := pairingTestHandler(t, "telegram:1")
+	recordPairingRequest(t, home, pairing.Request{Channel: "telegram", SenderID: "telegram:123"})
+
+	rec := pairingRequestJSON(t, mux, http.MethodPost, "/api/channels/telegram/pairing/approve", `{"sender_id":"telegram:123"}`)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status = %d, body = %s, want 409", rec.Code, rec.Body.String())
+	}
+	cfg, err := config.LoadConfig(h.configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if got := []string(cfg.Channels.Get("telegram").AllowFrom); strings.Join(got, ",") != "telegram:1" {
+		t.Fatalf("allow_from = %v, want it unchanged", got)
+	}
+}
 func TestPairingApproveDoesNotDuplicateAnAllowedSender(t *testing.T) {
 	h, mux, home := pairingTestHandler(t, "telegram:123")
 	recordPairingRequest(t, home, pairing.Request{Channel: "telegram", SenderID: "telegram:123"})

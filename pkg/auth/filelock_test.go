@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/config"
 )
 
 const (

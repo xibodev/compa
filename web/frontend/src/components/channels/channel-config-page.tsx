@@ -19,8 +19,6 @@ import {
 } from "@/api/channels"
 import { type ArrayFieldFlusher } from "@/components/channels/channel-array-list-field"
 import {
-  asStringArray,
-  mergeUniqueStringItems,
   normalizeAllowFromValues,
   serializeStringArrayForSubmit,
 } from "@/components/channels/channel-array-utils"
@@ -28,6 +26,7 @@ import {
   SECRET_FIELD_MAP,
   buildEditConfig,
   getFieldValueForValidation,
+  hasOwnerAccount,
   isSecretField,
 } from "@/components/channels/channel-config-fields"
 import { getChannelDisplayName } from "@/components/channels/channel-display-name"
@@ -39,6 +38,7 @@ import { SlackForm } from "@/components/channels/channel-forms/slack-form"
 import { TelegramForm } from "@/components/channels/channel-forms/telegram-form"
 import { WecomForm } from "@/components/channels/channel-forms/wecom-form"
 import { WeixinForm } from "@/components/channels/channel-forms/weixin-form"
+import { WhatsAppForm } from "@/components/channels/channel-forms/whatsapp-form"
 import { ChannelPairingRequests } from "@/components/channels/channel-pairing-requests"
 import { ConfigChangeNotice } from "@/components/config-change-notice"
 import { PageHeader } from "@/components/page-header"
@@ -94,22 +94,8 @@ function setConfigValueByPath(
   return setRecordValueByPath(source, fieldPath.split("."), value)
 }
 
-function serializeGroupTriggerForSubmit(value: unknown): unknown {
-  const groupTrigger = asRecord(value)
-  if (Object.keys(groupTrigger).length === 0) {
-    return value
-  }
-  return {
-    ...groupTrigger,
-    prefixes: serializeStringArrayForSubmit(groupTrigger.prefixes),
-  }
-}
-
 const CHANNEL_COMMON_CONFIG_KEYS = new Set([
   "allow_from",
-  "dm_policy",
-  "group_policy",
-  "group_trigger",
   "placeholder",
   "reasoning_channel_id",
   "typing",
@@ -120,12 +106,6 @@ function normalizeConfig(
   rawConfig: ChannelConfig,
 ): ChannelConfig {
   const config = { ...rawConfig }
-  if (channel.name === "whatsapp_native") {
-    config.use_native = true
-  }
-  if (channel.name === "whatsapp") {
-    config.use_native = false
-  }
   if (channel.name === "line") {
     // The gateway serves the LINE webhook; these never had an effect.
     delete config.webhook_host
@@ -150,8 +130,6 @@ function buildSavePayload(
         payload[key] = serializeStringArrayForSubmit(
           normalizeAllowFromValues(value),
         )
-      } else if (key === "group_trigger") {
-        payload[key] = serializeGroupTriggerForSubmit(value)
       } else {
         payload[key] = value
       }
@@ -172,13 +150,6 @@ function buildSavePayload(
     if (existing !== "") {
       settings[secretKey] = existing
     }
-  }
-
-  if (channel.name === "whatsapp_native") {
-    settings.use_native = true
-  }
-  if (channel.name === "whatsapp") {
-    settings.use_native = false
   }
 
   if (Object.keys(settings).length > 0) {
@@ -204,7 +175,7 @@ function isConfigured(
     case "discord":
       return hasValue("token")
     case "slack":
-      return hasValue("bot_token")
+      return hasValue("bot_token") && hasValue("app_token")
     case "feishu":
       return hasValue("app_id") && hasValue("app_secret")
     case "dingtalk":
@@ -220,9 +191,8 @@ function isConfigured(
     case "wecom":
       return hasValue("bot_id")
     case "whatsapp":
-      return hasValue("bridge_url")
-    case "whatsapp_native":
-      return asBool(config.use_native)
+      // Linking the account is separate from the config.
+      return true
     case "web":
       return hasValue("token")
     case "maixcam":
@@ -249,7 +219,7 @@ function getRequiredFieldKeys(channelName: string): string[] {
     case "discord":
       return ["token"]
     case "slack":
-      return ["bot_token"]
+      return ["bot_token", "app_token"]
     case "feishu":
       return ["app_id", "app_secret"]
     case "dingtalk":
@@ -262,8 +232,6 @@ function getRequiredFieldKeys(channelName: string): string[] {
       return ["ws_url"]
     case "wecom":
       return []
-    case "whatsapp":
-      return ["bridge_url"]
     case "web":
       return ["token"]
     case "maixcam":
@@ -412,17 +380,16 @@ export function ChannelConfigPage({ channelName }: ChannelConfigPageProps) {
   }, [channel, channelName, t])
 
   const hidesPageLevelEnableToggle = channel?.name === "wecom"
+  // Pairing binds the owner's account once: while the saved allow_from lists
+  // no account, the gateway records who sends the bot a direct message, and
+  // approving one adds that account. The web chat needs no pairing, and
+  // WhatsApp answers the linked account's own chat, so it makes no requests.
+  const showsPairingRequests =
+    channel !== null &&
+    channel.name !== "web" &&
+    channel.name !== "whatsapp" &&
+    !hasOwnerAccount(baseConfig)
 
-  const hiddenKeys = useMemo(() => {
-    if (!channel) return []
-    if (channel.name === "whatsapp") {
-      return ["use_native"]
-    }
-    if (channel.name === "whatsapp_native") {
-      return ["use_native", "bridge_url"]
-    }
-    return []
-  }, [channel])
   const requiredKeys = useMemo(
     () => getRequiredFieldKeys(channelName),
     [channelName],
@@ -528,19 +495,8 @@ export function ChannelConfigPage({ channelName }: ChannelConfigPageProps) {
     }
   }
 
-  const handleWeixinBindSuccess = useCallback(async () => {
-    try {
-      setEnabled(true)
-      await Promise.all([loadData(true), refreshGatewayState({ force: true })])
-    } catch (e) {
-      const message =
-        e instanceof Error ? e.message : t("channels.page.saveError")
-      setServerError(message)
-      await loadData(true)
-    }
-  }, [loadData, t])
-
-  const handleWecomBindSuccess = useCallback(async () => {
+  // A QR binding saved the account and enabled the channel server-side.
+  const handleBindSuccess = useCallback(async () => {
     try {
       setEnabled(true)
       await Promise.all([loadData(true), refreshGatewayState({ force: true })])
@@ -571,14 +527,14 @@ export function ChannelConfigPage({ channelName }: ChannelConfigPageProps) {
   )
 
   // An approved sender is in the saved allow_from now. Adding it to the
-  // loaded and the edited config keeps unsaved edits, and a later save
-  // keeps the sender.
+  // loaded and the edited config keeps unsaved edits, a later save keeps the
+  // sender, and the pairing requests hide: the owner's account is bound.
   const handlePairingApproved = useCallback((senderID: string) => {
+    // Approving binds the owner's account: it becomes the one account in
+    // Allow From, as the server saves it ("*" goes).
     const withSender = (config: ChannelConfig): ChannelConfig => ({
       ...config,
-      allow_from: mergeUniqueStringItems(asStringArray(config.allow_from), [
-        senderID,
-      ]),
+      allow_from: [senderID],
     })
     setBaseConfig(withSender)
     setEditConfig(withSender)
@@ -649,7 +605,17 @@ export function ChannelConfigPage({ channelName }: ChannelConfigPageProps) {
             config={editConfig}
             onChange={handleChange}
             isEdit={isEdit}
-            onBindSuccess={() => void handleWeixinBindSuccess()}
+            onBindSuccess={() => void handleBindSuccess()}
+            registerArrayFieldFlusher={registerArrayFieldFlusher}
+            arrayFieldResetVersion={arrayFieldResetVersion}
+          />
+        )
+      case "whatsapp":
+        return (
+          <WhatsAppForm
+            config={editConfig}
+            onChange={handleChange}
+            onLinked={() => void handleBindSuccess()}
             registerArrayFieldFlusher={registerArrayFieldFlusher}
             arrayFieldResetVersion={arrayFieldResetVersion}
           />
@@ -660,7 +626,7 @@ export function ChannelConfigPage({ channelName }: ChannelConfigPageProps) {
             <WecomForm
               config={editConfig}
               isEdit={isEdit}
-              onBindSuccess={() => void handleWecomBindSuccess()}
+              onBindSuccess={() => void handleBindSuccess()}
               onEnabledChange={(nextEnabled) =>
                 void handleWecomEnabledChange(nextEnabled)
               }
@@ -669,7 +635,7 @@ export function ChannelConfigPage({ channelName }: ChannelConfigPageProps) {
               config={editConfig}
               onChange={handleChange}
               configuredSecrets={configuredSecrets}
-              hiddenKeys={[...hiddenKeys, "bot_id"]}
+              hiddenKeys={["bot_id"]}
               requiredKeys={requiredKeys}
               supportsStreaming
               accessPolicy
@@ -685,11 +651,9 @@ export function ChannelConfigPage({ channelName }: ChannelConfigPageProps) {
             config={editConfig}
             onChange={handleChange}
             configuredSecrets={configuredSecrets}
-            hiddenKeys={hiddenKeys}
             requiredKeys={requiredKeys}
             supportsStreaming={channel?.name === "web"}
             accessPolicy={channel.name !== "web"}
-            whatsAppChats={channel.name === "whatsapp_native"}
             fieldErrors={fieldErrors}
             registerArrayFieldFlusher={registerArrayFieldFlusher}
             arrayFieldResetVersion={arrayFieldResetVersion}
@@ -742,7 +706,7 @@ export function ChannelConfigPage({ channelName }: ChannelConfigPageProps) {
               </div>
             )}
 
-            {channel && channel.name !== "web" && (
+            {channel && showsPairingRequests && (
               <ChannelPairingRequests
                 channelName={channel.name}
                 onApproved={handlePairingApproved}

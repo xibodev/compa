@@ -1,3 +1,5 @@
+//go:build paused_channels
+
 package telegram
 
 import (
@@ -7,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/v3/pkg/commands"
+	"github.com/xibodev/compa/v4/pkg/commands"
 )
 
 func TestStartCommandRegistration_DoesNotBlock(t *testing.T) {

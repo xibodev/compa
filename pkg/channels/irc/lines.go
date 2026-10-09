@@ -1,3 +1,5 @@
+//go:build paused_channels
+
 package irc
 
 import (
@@ -6,8 +8,8 @@ import (
 
 	"github.com/ergochat/irc-go/ircmsg"
 
-	"github.com/xibodev/compa/v3/pkg/bus"
-	"github.com/xibodev/compa/v3/pkg/identity"
+	"github.com/xibodev/compa/v4/pkg/bus"
+	"github.com/xibodev/compa/v4/pkg/identity"
 )
 
 const (

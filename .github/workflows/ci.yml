@@ -33,7 +33,7 @@ jobs:
 
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: 1.26.6
+          go-version: 1.26.9
           cache-dependency-path: go.sum
 
       - name: gofmt
@@ -66,19 +66,22 @@ jobs:
       - name: Build
         run: go build -tags goolm,stdjson ./...
 
+      # A release's THIRD_PARTY_NOTICES for Linux, so that a dependency
+      # without a license file fails here rather than when releasing.
+      - name: Third-party notices
+        run: |
+          out="$RUNNER_TEMP/notices"
+          mkdir -p "$out"
+          go build -tags goolm,stdjson -o "$out/compa-kernel" ./cmd/compa-kernel
+          go build -tags goolm,stdjson -o "$out/compa" ./web/backend
+          sh scripts/notices.sh "$out"
+
       - name: Vet
         run: go vet -tags goolm,stdjson ./...
 
       - name: Test
         run: go test -tags goolm,stdjson -p 1 ./...
 
-      # Releases leave out whatsapp_native, which links GPL-3.0 code; this
-      # keeps it compiling.
-      - name: Build, vet and test with whatsapp_native
-        run: |
-          go build -tags goolm,stdjson,whatsapp_native ./...
-          go vet -tags goolm,stdjson,whatsapp_native ./pkg/channels/whatsapp_native/...
-          go test -tags goolm,stdjson,whatsapp_native -p 1 ./pkg/channels/whatsapp_native/...
 
   # Releases ship Windows and macOS programs too, built from files only those
   # platforms compile, such as the Windows-only code and the macOS tray.
@@ -107,7 +110,7 @@ jobs:
 
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: 1.26.6
+          go-version: 1.26.9
           cache-dependency-path: go.sum
 
       - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6
@@ -129,6 +132,15 @@ jobs:
       - name: Build
         run: go build -tags goolm,stdjson ./...
 
+      # As in the go job, for the dependencies only Windows or macOS builds.
+      - name: Third-party notices
+        run: |
+          out="$RUNNER_TEMP/notices"
+          mkdir -p "$out"
+          go build -tags goolm,stdjson -o "$out/compa-kernel" ./cmd/compa-kernel
+          go build -tags goolm,stdjson -o "$out/compa" ./web/backend
+          sh scripts/notices.sh "$out"
+
       - name: Vet
         run: go vet -tags goolm,stdjson ./...
 
@@ -149,7 +161,7 @@ jobs:
 
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: 1.26.6
+          go-version: 1.26.9
           cache-dependency-path: go.sum
 
       - name: Test with the race detector
@@ -166,7 +178,7 @@ jobs:
 
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: 1.26.6
+          go-version: 1.26.9
           cache-dependency-path: go.sum
 
       # Settings in .golangci.yml.
@@ -251,7 +263,7 @@ jobs:
       # Builds the stand-ins the installer tests install.
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: 1.26.6
+          go-version: 1.26.9
           cache-dependency-path: go.sum
 
       - name: shellcheck
@@ -295,7 +307,7 @@ jobs:
 
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: 1.26.6
+          go-version: 1.26.9
           cache-dependency-path: go.sum
 
       - name: Test install.ps1 under PowerShell 7

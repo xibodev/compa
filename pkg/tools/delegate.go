@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/xibodev/compa/v3/pkg/routing"
+	"github.com/xibodev/compa/v4/pkg/routing"
 )
 
 // DelegateTool delegates a task to a specific named agent and waits for

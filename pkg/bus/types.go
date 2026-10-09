@@ -88,6 +88,33 @@ type OutboundMessage struct {
 	Content          string         `json:"content"`
 	ReplyToMessageID string         `json:"reply_to_message_id,omitempty"`
 	ContextUsage     *ContextUsage  `json:"context_usage,omitempty"`
+	// Turn, when set, makes the message a notice with no content: it tells
+	// a channel that observes turns that one of its chat's turns started or
+	// ended. Other channels never get it.
+	Turn *TurnNotice `json:"turn,omitempty"`
+	// Notify marks a notification (a cron job's result, a heartbeat message,
+	// an approval request): every enabled Slack or Teams webhook gets a copy.
+	// Without a channel, only the webhooks get it.
+	Notify bool `json:"notify,omitempty"`
+}
+
+// TurnNotice tells a channel that a turn of one of its chats started or
+// ended. The channel manager delivers it in order with the chat's other
+// outbound messages, so an end notice follows every message of the turn's
+// reply that was published before it.
+type TurnNotice struct {
+	// Ended is false for the start of a turn.
+	Ended bool `json:"ended,omitempty"`
+	// MessageIDs are the IDs of the inbound messages the turn answers: those
+	// it started with, then those that joined it while it ran.
+	MessageIDs []string `json:"message_ids,omitempty"`
+	// Status says how the turn ended: "completed", "error" or "aborted".
+	Status string `json:"status,omitempty"`
+	// Error says why a turn that ended with status "error" failed.
+	Error string `json:"error,omitempty"`
+	// Delivered, when set, is closed once the channel manager has handled
+	// the notice, so the agent can wait for it.
+	Delivered chan struct{} `json:"-"`
 }
 
 // MediaPart describes a single media attachment to send.

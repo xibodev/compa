@@ -8,6 +8,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"runtime"
 	"strings"
@@ -16,22 +17,24 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
-	"github.com/xibodev/compa/v3/cmd/compa-kernel/internal"
-	"github.com/xibodev/compa/v3/cmd/compa-kernel/internal/agent"
-	"github.com/xibodev/compa/v3/cmd/compa-kernel/internal/auth"
-	"github.com/xibodev/compa/v3/cmd/compa-kernel/internal/cliui"
-	configcmd "github.com/xibodev/compa/v3/cmd/compa-kernel/internal/config"
-	"github.com/xibodev/compa/v3/cmd/compa-kernel/internal/cron"
-	evolutioncmd "github.com/xibodev/compa/v3/cmd/compa-kernel/internal/evolution"
-	"github.com/xibodev/compa/v3/cmd/compa-kernel/internal/gateway"
-	"github.com/xibodev/compa/v3/cmd/compa-kernel/internal/mcp"
-	"github.com/xibodev/compa/v3/cmd/compa-kernel/internal/model"
-	"github.com/xibodev/compa/v3/cmd/compa-kernel/internal/onboard"
-	"github.com/xibodev/compa/v3/cmd/compa-kernel/internal/skills"
-	"github.com/xibodev/compa/v3/cmd/compa-kernel/internal/status"
-	"github.com/xibodev/compa/v3/cmd/compa-kernel/internal/version"
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/updater"
+	"github.com/xibodev/compa/v4/cmd/compa-kernel/internal"
+	"github.com/xibodev/compa/v4/cmd/compa-kernel/internal/agent"
+	"github.com/xibodev/compa/v4/cmd/compa-kernel/internal/auth"
+	"github.com/xibodev/compa/v4/cmd/compa-kernel/internal/cliui"
+	configcmd "github.com/xibodev/compa/v4/cmd/compa-kernel/internal/config"
+	"github.com/xibodev/compa/v4/cmd/compa-kernel/internal/cron"
+	evolutioncmd "github.com/xibodev/compa/v4/cmd/compa-kernel/internal/evolution"
+	"github.com/xibodev/compa/v4/cmd/compa-kernel/internal/gateway"
+	"github.com/xibodev/compa/v4/cmd/compa-kernel/internal/jsonout"
+	"github.com/xibodev/compa/v4/cmd/compa-kernel/internal/mcp"
+	"github.com/xibodev/compa/v4/cmd/compa-kernel/internal/model"
+	"github.com/xibodev/compa/v4/cmd/compa-kernel/internal/onboard"
+	"github.com/xibodev/compa/v4/cmd/compa-kernel/internal/skills"
+	"github.com/xibodev/compa/v4/cmd/compa-kernel/internal/status"
+	"github.com/xibodev/compa/v4/cmd/compa-kernel/internal/version"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/logger"
+	"github.com/xibodev/compa/v4/pkg/updater"
 )
 
 var rootNoColor bool
@@ -188,7 +191,14 @@ func main() {
 
 	cliui.Init(earlyColorDisabled())
 
-	fmt.Print(startupBanner(term.IsTerminal(int(os.Stdout.Fd())), earlyColorDisabled()))
+	// With --json, stdout carries only the command's JSON document: no
+	// banner, and the logs go to stderr.
+	jsonMode := jsonout.InArgs(os.Args[1:])
+	if jsonMode {
+		logger.SetConsoleOutput(os.Stderr)
+	} else {
+		fmt.Print(startupBanner(term.IsTerminal(int(os.Stdout.Fd())), earlyColorDisabled()))
+	}
 
 	// TZ selects the local time zone. Nothing is printed on success, so
 	// commands whose stdout is parsed stay clean; a bad value is reported on
@@ -205,8 +215,20 @@ func main() {
 	cmd := NewRootCommand()
 	last, err := cmd.ExecuteC()
 	if err != nil {
-		syncCliUIColor(cmd)
-		fmt.Fprint(os.Stderr, cliui.FormatCLIError(err.Error(), last))
+		reportError(cmd, last, err, jsonMode, os.Stdout, os.Stderr)
 		os.Exit(1)
 	}
+}
+
+// reportError prints why a command failed: as the JSON document
+// {"error": message} on stdout when it runs with --json, otherwise as a
+// panel on stderr. jsonMode, --json found in the arguments, also counts
+// when the command's flags failed to parse, for a command that has the flag.
+func reportError(root, last *cobra.Command, err error, jsonMode bool, stdout, stderr io.Writer) {
+	if jsonout.Requested(last) || (jsonMode && jsonout.Accepted(last)) {
+		_ = jsonout.WriteError(stdout, err)
+		return
+	}
+	syncCliUIColor(root)
+	fmt.Fprint(stderr, cliui.FormatCLIError(err.Error(), last))
 }

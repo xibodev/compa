@@ -18,9 +18,9 @@ and the status menu at the top of the page shows **Gateway: Stopped** or
      it found no `compa-kernel` in Compa's folder. Install again, or keep both
      programs in one folder.
    - `config.json` doesn't load, for example after a hand edit. The Config page
-     then says **Failed to load configuration**. A key Compa doesn't know fails
-     the load too, and the error names it, such as `tools.future_tool`. Fix the
-     file, or use **Factory Reset** (see [Start over](#start-over)).
+     then says **Failed to load configuration**, and the error names the line
+     or the unknown key. Fix the file, or use **Factory Reset** (see
+     [Start over](#start-over)).
    - Port 18790 is taken; see the next section.
 
 ## Port already in use
@@ -62,9 +62,9 @@ The **Logs** page shows the gateway's recent output and has a level menu. For
 more detail everywhere, start Compa with `compa -d`.
 
 `launcher.log` and `gateway.log` start over in a new file at 10 MB, and Compa
-keeps up to 5 of each (`logging.max_size_mb` and `logging.max_files` in
-`config.json`). With `logging.redact_secrets`, on by default, Compa masks the
-keys and tokens it knows before it writes a log line.
+keeps up to 5 of each (**Config** → **Logging**). With **Redact Secrets**, on
+by default, Compa masks the keys and tokens it knows before it writes a log
+line.
 
 ## A model doesn't answer
 
@@ -88,26 +88,40 @@ When [`tools.approval`](use.md#approvals) asks about a call:
 
 - If a process hook has `intercept: ["approve_tool"]`, it decides instead of
   you, and no request is posted.
-- A request that comes from someone else's message or from a scheduled job
-  goes to the conversation you last wrote to Compa from, in the browser or a
-  chat app. Until you have written to Compa there, such requests are refused:
+- A request that comes from a scheduled job or the heartbeat goes to the
+  conversation you last wrote to Compa from, in the web chat, WhatsApp or
+  Slack. Until you have written to Compa there, such requests are refused:
   send Compa a message once.
 - `compa-kernel agent -m` can't ask, so it refuses such calls; interactive
   `compa-kernel agent` asks in the terminal.
 - **"No request … is waiting for an answer"**: the ID is wrong, the request was
   already answered, or 10 minutes passed, which refuses it. Ask again.
-- Only you can answer. In a chat app that means a sender listed by ID in the
-  channel's **Allow From**.
+- Answer in your chat. A Slack or Teams webhook gets a copy of the request,
+  but can't take the answer.
 - A call refused without any request was denied or hidden by the policy, or
   was too long (over 3000 characters) to show you. The Modules page and
   `module-invoke` don't post requests either: there, **Approve and run** or
   `--approve` is the approval.
 
+## A channel doesn't answer
+
+- Compa answers only direct messages from the accounts in the channel's
+  **Allow From**. It ignores group chats, rooms and threads, and `*` admits no
+  one. While **Allow From** is empty, your first message shows under
+  **Pairing Requests** on the channel's page; approve it. See
+  [Who Compa answers](use.md#who-compa-answers).
+- WhatsApp: the log says `WhatsApp is not linked` until you link an account
+  with `compa-kernel auth whatsapp` or **Link WhatsApp** on the WhatsApp page.
+  Compa answers your "message yourself" chat, and other numbers only when
+  **Allow From** lists them.
+- Slack: the channel needs both the **Bot Token** (`xoxb-`) and the **App
+  Token** (`xapp-`).
+
 ## A saved change doesn't take effect
 
 Saving the model selections, `tools.approval`, or a channel's **Allow From**,
-**DM Policy** or **Group Policy**, and approving a pairing request, applies to
-the running gateway at once, together with every other change saved before.
+and approving a pairing request, applies to the running gateway at once,
+together with every other change saved before.
 A change to a tool, an MCP server, a channel, the workspace, `isolation`,
 `commands` or `hooks` shows **Gateway restart required** until the gateway
 restarts or reloads: choose **Restart gateway** in the status menu at the top.
@@ -158,10 +172,11 @@ Everything is in `~/.compa`:
 | Path | What |
 |---|---|
 | `config.json` | Settings, provider connections, model routes. |
+| `launcher-config.json` | The web UI's settings: port, LAN access, allowed hosts and networks. |
 | `.security.yml` | Channel tokens and other secret settings. |
 | `auth.json` | Provider API keys and sign-ins, and the extension's shared secret. |
 | `launcher-auth.db` | The dashboard password, as a bcrypt hash. |
-| `workspace/` | The agent's files, chat history, memory and skills. |
+| `workspace/` | The agent's files, chat history, memory and skills, and the linked WhatsApp session in `whatsapp/`. |
 | `state/` | Scheduled jobs (`state/cron/jobs.json`) and the terminal chat's input history. |
 | `pairing.json` | Pairing requests from chat apps waiting for your answer. |
 | `modules/`, `logs/` | Installed modules and log files. |
@@ -200,11 +215,14 @@ before you turn it on.
   available on macOS.
 - Turn tools off on the **Tools** page; **Config** → **Run Commands** →
   **Allow Commands** turns commands off.
-- **Allow Remote Commands** is on by default, so the browser chat and every
-  chat app you connect can run commands. If a channel's **Allow From** has `*`,
-  or its `dm_policy` or `group_policy` is `open`, anyone who can message that
-  bot can run commands on your computer. List only your own IDs in **Allow
-  From** ([Channels](use.md#channels)), turn **Allow Remote Commands** off, or
-  add an `ask` rule for `exec` ([Approvals](use.md#approvals)).
+- **Allow Remote Commands** is on by default, so the browser chat and the chat
+  apps you connect can run commands. A channel answers only the accounts in
+  its **Allow From**, in direct messages ([Channels](use.md#channels)), so
+  whoever can write from one of those accounts can run commands on your
+  computer. Turn **Allow Remote Commands** off, or add an `ask` rule for
+  `exec` ([Approvals](use.md#approvals)).
+- The `message` tool can send to any chat on any connected channel, on
+  WhatsApp from your own account. Set `tools.message.targets` to
+  `current_chat` to keep it to the chat it is answering.
 - Skills and modules are third-party content; install only ones you trust.
   Modules run as separate programs under your account.

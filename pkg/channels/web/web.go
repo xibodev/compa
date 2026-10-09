@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -18,12 +19,13 @@ import (
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 
-	"github.com/xibodev/compa/v3/pkg/bus"
-	"github.com/xibodev/compa/v3/pkg/channels"
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/identity"
-	"github.com/xibodev/compa/v3/pkg/logger"
-	"github.com/xibodev/compa/v3/pkg/utils"
+	"github.com/xibodev/compa/v4/pkg/bus"
+	"github.com/xibodev/compa/v4/pkg/channels"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/identity"
+	"github.com/xibodev/compa/v4/pkg/logger"
+	"github.com/xibodev/compa/v4/pkg/session/history"
+	"github.com/xibodev/compa/v4/pkg/utils"
 )
 
 // webConn represents a single WebSocket connection.
@@ -107,6 +109,9 @@ type WebChannel struct {
 	deleteMessageFn    func(context.Context, string, string) error
 	// broadcastFn lets tests intercept outbound broadcasts. nil → broadcastToSession.
 	broadcastFn func(chatID string, msg WebMessage) error
+	// sessionHistory reads the sessions /web/sessions serves; nil until the
+	// channel manager sets it.
+	sessionHistory atomic.Pointer[func() history.Reader]
 }
 
 // NewWebChannel creates a new web chat channel.
@@ -289,9 +294,15 @@ func (c *WebChannel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch path {
 	case "/ws", "/ws/":
 		c.handleWebSocket(w, r)
+	case "/sessions", "/sessions/":
+		c.handleSessionHistory(w, r, "", false)
 	default:
 		if strings.HasPrefix(path, "/media/") {
 			c.handleMediaDownload(w, r)
+			return
+		}
+		if id, ok := strings.CutPrefix(path, "/sessions/"); ok {
+			c.handleSessionHistory(w, r, id, true)
 			return
 		}
 		http.NotFound(w, r)
@@ -484,6 +495,37 @@ func (c *WebChannel) StartTyping(ctx context.Context, chatID string) (func(), er
 		stopMsg := newMessage(TypeTypingStop, nil)
 		c.broadcastToSession(chatID, stopMsg)
 	}, nil
+}
+
+// TurnStarted implements channels.TurnObserver: the chat's sockets get a
+// turn.start frame naming the message.send frames the turn answers.
+func (c *WebChannel) TurnStarted(_ context.Context, chatID string, turn bus.TurnNotice) error {
+	c.sendTurnFrame(chatID, TypeTurnStart, turn)
+	return nil
+}
+
+// TurnEnded implements channels.TurnObserver: the chat's sockets get a
+// turn.end frame after every frame of the turn's reply.
+func (c *WebChannel) TurnEnded(_ context.Context, chatID string, turn bus.TurnNotice) error {
+	c.sendTurnFrame(chatID, TypeTurnEnd, turn)
+	return nil
+}
+
+// sendTurnFrame sends a turn.start or turn.end frame to the chat's sockets.
+// A session with no open socket has nobody to tell.
+func (c *WebChannel) sendTurnFrame(chatID, frameType string, turn bus.TurnNotice) {
+	payload := map[string]any{}
+	if len(turn.MessageIDs) > 0 {
+		payload[PayloadKeyRequestID] = turn.MessageIDs[0]
+		payload[PayloadKeyRequestIDs] = append([]string(nil), turn.MessageIDs...)
+	}
+	if frameType == TypeTurnEnd {
+		payload[PayloadKeyStatus] = turn.Status
+		if turn.Error != "" {
+			payload[PayloadKeyError] = turn.Error
+		}
+	}
+	_ = c.broadcastToSession(chatID, newMessage(frameType, payload))
 }
 
 // SendPlaceholder implements channels.PlaceholderCapable.
@@ -1107,7 +1149,7 @@ func (c *WebChannel) authenticate(r *http.Request) bool {
 	// Check Authorization header
 	auth := r.Header.Get("Authorization")
 	if after, ok := strings.CutPrefix(auth, "Bearer "); ok {
-		if after == token {
+		if tokensEqual(after, token) {
 			return true
 		}
 	}
@@ -1119,7 +1161,7 @@ func (c *WebChannel) authenticate(r *http.Request) bool {
 
 	// Check query parameter only when explicitly allowed
 	if c.config.AllowTokenQuery {
-		if r.URL.Query().Get("token") == token {
+		if tokensEqual(r.URL.Query().Get("token"), token) {
 			return true
 		}
 	}
@@ -1132,11 +1174,16 @@ func (c *WebChannel) authenticate(r *http.Request) bool {
 func (c *WebChannel) matchedSubprotocol(r *http.Request) string {
 	token := c.config.Token.String()
 	for _, proto := range websocket.Subprotocols(r) {
-		if after, ok := strings.CutPrefix(proto, "token."); ok && after == token {
+		if after, ok := strings.CutPrefix(proto, "token."); ok && tokensEqual(after, token) {
 			return proto
 		}
 	}
 	return ""
+}
+
+// tokensEqual compares a presented token with the channel's in constant time.
+func tokensEqual(presented, token string) bool {
+	return subtle.ConstantTimeCompare([]byte(presented), []byte(token)) == 1
 }
 
 // readLoop reads messages from a WebSocket connection.

@@ -1,7 +1,6 @@
 import { useTranslation } from "react-i18next"
 
 import type { ChannelConfig } from "@/api/channels"
-import { ChannelAccessFields } from "@/components/channels/channel-access-fields"
 import {
   type ArrayFieldFlusher,
   ChannelArrayListField,
@@ -115,7 +114,6 @@ export function TelegramForm({
             registerFlusher={registerArrayFieldFlusher}
             resetVersion={arrayFieldResetVersion}
           />
-          <ChannelAccessFields config={config} onChange={onChange} />
 
           <div>
             <SwitchCardField

@@ -9,8 +9,8 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/logger"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/logger"
 )
 
 // GetHome returns the Compa home directory.

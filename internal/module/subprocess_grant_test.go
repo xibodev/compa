@@ -3,8 +3,8 @@ package module_test
 import (
 	"testing"
 
-	"github.com/xibodev/compa/v3/internal/module"
-	"github.com/xibodev/compa/v3/pkg/modproto"
+	"github.com/xibodev/compa/v4/internal/module"
+	"github.com/xibodev/compa/v4/pkg/modproto"
 )
 
 // The bug this exists for: modproto.Grants has a Subprocess field, and NOTHING

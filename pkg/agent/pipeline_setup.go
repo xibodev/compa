@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/xibodev/compa/v3/pkg/logger"
-	"github.com/xibodev/compa/v3/pkg/providers"
+	"github.com/xibodev/compa/v4/pkg/logger"
+	"github.com/xibodev/compa/v4/pkg/providers"
 )
 
 // SetupTurn extracts the one-time initialization phase, returning a
@@ -135,9 +135,9 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 		rootMsg := userPromptMessage(ts.userMessage, ts.media)
 		rootMsg.RequestedSelection = ts.opts.RequestedSelection
 		if len(rootMsg.Media) > 0 || rootMsg.RequestedSelection != "" {
-			ts.agent.Sessions.AddFullMessage(ts.sessionKey, rootMsg)
+			ts.noteSessionWrite(ctx, p.al, ts.agent.Sessions.AddFullMessage(ts.sessionKey, rootMsg))
 		} else {
-			ts.agent.Sessions.AddMessage(ts.sessionKey, rootMsg.Role, rootMsg.Content)
+			ts.noteSessionWrite(ctx, p.al, ts.agent.Sessions.AddMessage(ts.sessionKey, rootMsg.Role, rootMsg.Content))
 		}
 		ts.recordPersistedMessage(rootMsg)
 		ts.ingestMessage(ctx, p.al, rootMsg)

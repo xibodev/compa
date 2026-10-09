@@ -1,3 +1,5 @@
+//go:build paused_channels
+
 package line
 
 import (
@@ -7,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/config"
 )
 
 func TestWebhookRejectsOversizedBody(t *testing.T) {

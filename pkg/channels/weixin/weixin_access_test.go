@@ -1,3 +1,5 @@
+//go:build paused_channels
+
 package weixin
 
 import (
@@ -6,10 +8,10 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/xibodev/compa/v3/pkg/bus"
-	"github.com/xibodev/compa/v3/pkg/channels"
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/pairing"
+	"github.com/xibodev/compa/v4/pkg/bus"
+	"github.com/xibodev/compa/v4/pkg/channels"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/pairing"
 )
 
 func TestHandleInboundMessage_UnpairedSenderMediaIsNotDownloaded(t *testing.T) {

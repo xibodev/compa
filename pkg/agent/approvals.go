@@ -14,11 +14,11 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/xibodev/compa/v3/pkg/bus"
-	"github.com/xibodev/compa/v3/pkg/commands"
-	"github.com/xibodev/compa/v3/pkg/constants"
-	"github.com/xibodev/compa/v3/pkg/cron"
-	"github.com/xibodev/compa/v3/pkg/logger"
+	"github.com/xibodev/compa/v4/pkg/bus"
+	"github.com/xibodev/compa/v4/pkg/commands"
+	"github.com/xibodev/compa/v4/pkg/constants"
+	"github.com/xibodev/compa/v4/pkg/cron"
+	"github.com/xibodev/compa/v4/pkg/logger"
 )
 
 // In-chat approvals: a call the approval policy says to ask about, when no
@@ -339,7 +339,7 @@ func (al *AgentLoop) postApprovalRequest(ctx context.Context, target approvalCha
 	}
 	pubCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	return al.bus.PublishOutbound(pubCtx, bus.OutboundMessage{Context: outCtx, Content: text})
+	return al.bus.PublishOutbound(pubCtx, bus.OutboundMessage{Context: outCtx, Content: text, Notify: true})
 }
 
 // parseApprovalReply parses "/approve <id>" and "/deny <id>"; ok is false

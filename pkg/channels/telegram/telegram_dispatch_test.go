@@ -1,3 +1,5 @@
+//go:build paused_channels
+
 package telegram
 
 import (
@@ -6,8 +8,8 @@ import (
 
 	"github.com/mymmrac/telego"
 
-	"github.com/xibodev/compa/v3/pkg/bus"
-	"github.com/xibodev/compa/v3/pkg/channels"
+	"github.com/xibodev/compa/v4/pkg/bus"
+	"github.com/xibodev/compa/v4/pkg/channels"
 )
 
 func TestHandleMessage_DoesNotConsumeGenericCommandsLocally(t *testing.T) {

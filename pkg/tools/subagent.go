@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xibodev/compa/v3/pkg/providers"
+	"github.com/xibodev/compa/v4/pkg/providers"
 )
 
 // SubTurnSpawner is an interface for spawning sub-turns.

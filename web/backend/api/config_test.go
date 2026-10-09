@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/logger"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/logger"
 )
 
 func TestHandlePatchConfig_PreservesTurnProfile(t *testing.T) {
@@ -391,14 +391,10 @@ func TestHandlePatchConfig_NormalizesStringChannelArrayFields(t *testing.T) {
 			webChatChannel.AllowFrom,
 		)
 	}
-	if len(webChatChannel.GroupTrigger.Prefixes) != 3 ||
-		webChatChannel.GroupTrigger.Prefixes[0] != "/" ||
-		webChatChannel.GroupTrigger.Prefixes[1] != "!;" ||
-		webChatChannel.GroupTrigger.Prefixes[2] != "?" {
-		t.Fatalf(
-			"web group_trigger.prefixes = %#v, want [\"/\", \"!;\", \"?\"]",
-			webChatChannel.GroupTrigger.Prefixes,
-		)
+	// group_trigger is no longer a setting: an older client's string
+	// prefixes still save, and are dropped.
+	if len(webChatChannel.GroupTrigger.Prefixes) != 0 {
+		t.Fatalf("web group_trigger.prefixes = %#v, want them dropped", webChatChannel.GroupTrigger.Prefixes)
 	}
 
 	decoded, err := webChatChannel.GetDecoded()
@@ -1107,6 +1103,33 @@ func TestHandleTestCommandPatterns_MatchesBlacklistNotWhitelist(t *testing.T) {
 			"expected allowed=false when blacklist matches but not whitelist, body=%s",
 			rec.Body.String(),
 		)
+	}
+}
+
+// The blacklist outranks the whitelist, as in the exec tool, where a
+// whitelist match skips only the built-in deny patterns.
+func TestHandleTestCommandPatterns_BlacklistOutranksWhitelist(t *testing.T) {
+	configPath, cleanup := setupCredentialTestEnv(t)
+	defer cleanup()
+
+	rec := testCommandPatterns(t, configPath, `{
+		"allow_patterns": ["^git\\s+push\\b"],
+		"deny_patterns": ["\\s--force\\b"],
+		"command": "git push origin main --force"
+	}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var body struct {
+		Allowed          bool    `json:"allowed"`
+		Blocked          bool    `json:"blocked"`
+		MatchedBlacklist *string `json:"matched_blacklist"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode %s: %v", rec.Body.String(), err)
+	}
+	if body.Allowed || !body.Blocked || body.MatchedBlacklist == nil || *body.MatchedBlacklist != `\s--force\b` {
+		t.Fatalf("answer = %s, want blocked by the blacklist pattern", rec.Body.String())
 	}
 }
 

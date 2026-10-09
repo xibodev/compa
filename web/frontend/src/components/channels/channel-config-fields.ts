@@ -103,19 +103,6 @@ export function getSecretInputPlaceholder(
     : fallback
 }
 
-export const DM_POLICIES = ["pairing", "allowlist", "open", "disabled"] as const
-export const GROUP_POLICIES = ["allowlist", "open", "disabled"] as const
-export const WHATSAPP_CHATS = ["self", "allowed", "all"] as const
-
-export type DMPolicy = (typeof DM_POLICIES)[number]
-export type GroupPolicy = (typeof GROUP_POLICIES)[number]
-export type WhatsAppChats = (typeof WHATSAPP_CHATS)[number]
-
-function pickOption<T extends string>(options: readonly T[], value: unknown) {
-  const trimmed = typeof value === "string" ? value.trim() : ""
-  return options.find((option) => option === trimmed)
-}
-
 function allowEntries(config: ChannelConfig): string[] {
   const entries = Array.isArray(config.allow_from) ? config.allow_from : []
   return entries
@@ -125,26 +112,10 @@ function allowEntries(config: ChannelConfig): string[] {
 }
 
 /**
- * The channel's dm_policy, or the one the gateway derives when it is unset:
- * "*" in allow_from opens the channel, other entries make an allowlist, and
- * none pairs.
+ * Whether allow_from lists the owner's account: an entry other than "*",
+ * which admits no one. Until it does, the gateway records the sender of a
+ * direct message as a pairing request, for the owner to approve.
  */
-export function effectiveDMPolicy(config: ChannelConfig): DMPolicy {
-  const set = pickOption(DM_POLICIES, config.dm_policy)
-  if (set) return set
-  const entries = allowEntries(config)
-  if (entries.includes("*")) return "open"
-  return entries.length > 0 ? "allowlist" : "pairing"
-}
-
-/** The channel's group_policy, or the one derived from allow_from. */
-export function effectiveGroupPolicy(config: ChannelConfig): GroupPolicy {
-  const set = pickOption(GROUP_POLICIES, config.group_policy)
-  if (set) return set
-  return allowEntries(config).includes("*") ? "open" : "allowlist"
-}
-
-/** Native WhatsApp's settings.chats; only the self chat when unset. */
-export function effectiveWhatsAppChats(config: ChannelConfig): WhatsAppChats {
-  return pickOption(WHATSAPP_CHATS, config.chats) ?? "self"
+export function hasOwnerAccount(config: ChannelConfig): boolean {
+  return allowEntries(config).some((entry) => entry !== "*")
 }

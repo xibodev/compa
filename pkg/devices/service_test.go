@@ -4,9 +4,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/v3/pkg/bus"
-	"github.com/xibodev/compa/v3/pkg/devices/events"
-	"github.com/xibodev/compa/v3/pkg/state"
+	"github.com/xibodev/compa/v4/pkg/bus"
+	"github.com/xibodev/compa/v4/pkg/devices/events"
+	"github.com/xibodev/compa/v4/pkg/state"
 )
 
 func newTestService(t *testing.T) (*Service, *state.Manager, *bus.MessageBus) {

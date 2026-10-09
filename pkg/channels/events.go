@@ -1,8 +1,8 @@
 package channels
 
 import (
-	"github.com/xibodev/compa/v3/pkg/bus"
-	runtimeevents "github.com/xibodev/compa/v3/pkg/events"
+	"github.com/xibodev/compa/v4/pkg/bus"
+	runtimeevents "github.com/xibodev/compa/v4/pkg/events"
 )
 
 func channelTypeForEvent(m *Manager, channelName string) string {

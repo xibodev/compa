@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/netbind"
-	"github.com/xibodev/compa/v3/web/backend/launcherconfig"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/netbind"
+	"github.com/xibodev/compa/v4/web/backend/launcherconfig"
 )
 
 // LAN mode no longer widens the kernel's bind host: the dashboard proxies what

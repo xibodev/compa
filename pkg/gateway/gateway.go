@@ -18,46 +18,32 @@ import (
 
 	"golang.org/x/term"
 
-	"github.com/xibodev/compa/v3/internal/moduleagent"
-	"github.com/xibodev/compa/v3/pkg/agent"
-	"github.com/xibodev/compa/v3/pkg/audio/asr"
-	"github.com/xibodev/compa/v3/pkg/audio/tts"
-	"github.com/xibodev/compa/v3/pkg/bus"
-	"github.com/xibodev/compa/v3/pkg/channels"
-	_ "github.com/xibodev/compa/v3/pkg/channels/deltachat"
-	_ "github.com/xibodev/compa/v3/pkg/channels/dingtalk"
-	_ "github.com/xibodev/compa/v3/pkg/channels/discord"
-	_ "github.com/xibodev/compa/v3/pkg/channels/feishu"
-	_ "github.com/xibodev/compa/v3/pkg/channels/irc"
-	_ "github.com/xibodev/compa/v3/pkg/channels/line"
-	_ "github.com/xibodev/compa/v3/pkg/channels/maixcam"
-	_ "github.com/xibodev/compa/v3/pkg/channels/mqtt"
-	_ "github.com/xibodev/compa/v3/pkg/channels/onebot"
-	_ "github.com/xibodev/compa/v3/pkg/channels/qq"
-	_ "github.com/xibodev/compa/v3/pkg/channels/slack"
-	_ "github.com/xibodev/compa/v3/pkg/channels/slack_webhook"
-	_ "github.com/xibodev/compa/v3/pkg/channels/teams_webhook"
-	_ "github.com/xibodev/compa/v3/pkg/channels/telegram"
-	_ "github.com/xibodev/compa/v3/pkg/channels/vk"
-	_ "github.com/xibodev/compa/v3/pkg/channels/web"
-	_ "github.com/xibodev/compa/v3/pkg/channels/wecom"
-	_ "github.com/xibodev/compa/v3/pkg/channels/weixin"
-	_ "github.com/xibodev/compa/v3/pkg/channels/whatsapp"
-	_ "github.com/xibodev/compa/v3/pkg/channels/whatsapp_native"
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/cron"
-	"github.com/xibodev/compa/v3/pkg/devices"
-	runtimeevents "github.com/xibodev/compa/v3/pkg/events"
-	"github.com/xibodev/compa/v3/pkg/health"
-	"github.com/xibodev/compa/v3/pkg/heartbeat"
-	"github.com/xibodev/compa/v3/pkg/logger"
-	"github.com/xibodev/compa/v3/pkg/media"
-	"github.com/xibodev/compa/v3/pkg/modelservice"
-	"github.com/xibodev/compa/v3/pkg/netbind"
-	"github.com/xibodev/compa/v3/pkg/pid"
-	"github.com/xibodev/compa/v3/pkg/providers"
-	"github.com/xibodev/compa/v3/pkg/state"
-	"github.com/xibodev/compa/v3/pkg/tools"
+	"github.com/xibodev/compa/v4/internal/moduleagent"
+	"github.com/xibodev/compa/v4/pkg/agent"
+	"github.com/xibodev/compa/v4/pkg/audio/asr"
+	"github.com/xibodev/compa/v4/pkg/audio/tts"
+	"github.com/xibodev/compa/v4/pkg/bus"
+	"github.com/xibodev/compa/v4/pkg/channels"
+	_ "github.com/xibodev/compa/v4/pkg/channels/slack"
+	_ "github.com/xibodev/compa/v4/pkg/channels/slack_webhook"
+	_ "github.com/xibodev/compa/v4/pkg/channels/teams_webhook"
+	_ "github.com/xibodev/compa/v4/pkg/channels/web"
+	_ "github.com/xibodev/compa/v4/pkg/channels/whatsapp"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/cron"
+	"github.com/xibodev/compa/v4/pkg/devices"
+	runtimeevents "github.com/xibodev/compa/v4/pkg/events"
+	"github.com/xibodev/compa/v4/pkg/health"
+	"github.com/xibodev/compa/v4/pkg/heartbeat"
+	"github.com/xibodev/compa/v4/pkg/logger"
+	"github.com/xibodev/compa/v4/pkg/media"
+	"github.com/xibodev/compa/v4/pkg/modelservice"
+	"github.com/xibodev/compa/v4/pkg/netbind"
+	"github.com/xibodev/compa/v4/pkg/pid"
+	"github.com/xibodev/compa/v4/pkg/providers"
+	"github.com/xibodev/compa/v4/pkg/session/history"
+	"github.com/xibodev/compa/v4/pkg/state"
+	"github.com/xibodev/compa/v4/pkg/tools"
 )
 
 const (
@@ -607,6 +593,15 @@ func setupAndStartServices(
 
 	agentLoop.SetChannelManager(runningServices.ChannelManager)
 	agentLoop.SetMediaStore(runningServices.MediaStore)
+	// The web chat serves its session history from the workspace of the
+	// config in force, which a reload may change.
+	runningServices.ChannelManager.SetSessionHistory(func() history.Reader {
+		cfg := agentLoop.GetConfig()
+		return history.Reader{
+			Dir:           history.SessionsDir(cfg.Agents.Defaults.Workspace),
+			MaxArgsLength: cfg.Agents.Defaults.GetToolFeedbackMaxArgsLength(),
+		}
+	})
 
 	transcriber := asr.DetectTranscriber(cfg)
 	if transcriber != nil {

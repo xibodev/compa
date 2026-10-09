@@ -9,7 +9,7 @@ import (
 
 	core "github.com/xibodev/llmgw-core"
 
-	providercommon "github.com/xibodev/compa/v3/pkg/providers/common"
+	providercommon "github.com/xibodev/compa/v4/pkg/providers/common"
 )
 
 type ProviderInstanceState string

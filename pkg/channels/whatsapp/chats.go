@@ -3,13 +3,9 @@ package whatsapp
 import (
 	"sync"
 
-	"github.com/xibodev/compa/v3/pkg/bus"
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/identity"
+	"github.com/xibodev/compa/v4/pkg/bus"
+	"github.com/xibodev/compa/v4/pkg/identity"
 )
-
-// This file holds the chat-selection rules of the native client. It has no
-// build tag, so the rules are tested in every build.
 
 // WhatsApp servers of the two forms an account's own address takes.
 const (
@@ -21,28 +17,26 @@ const (
 type chatRole int
 
 const (
-	// chatIgnored is not input: another chat in "self" mode, or the owner's
-	// own message in a chat other than their "message yourself" chat.
+	// chatIgnored is not input: someone else in the owner's "message
+	// yourself" chat, or the owner's own message in any other chat.
 	chatIgnored chatRole = iota
-	// chatSelf is the owner writing in their own "message yourself" chat. It
-	// is input in every mode, and it comes from the owner.
+	// chatSelf is the owner writing in their own "message yourself" chat:
+	// input, from the owner.
 	chatSelf
-	// chatOther is a message someone else sent in another chat; the chats
-	// setting and the channel policies decide whether it is input.
+	// chatOther is a message someone else sent in another chat; it is input
+	// only from an account allow_from lists.
 	chatOther
 )
 
-// classifyChat decides what a message is to Compa from the chats setting,
-// whether it was written in the owner's "message yourself" chat and whether
-// the owner wrote it. The owner's messages to friends and groups are the owner
-// talking to them, never instructions, whatever the setting.
-func classifyChat(mode string, selfChat, fromMe bool) chatRole {
+// classifyChat decides what a message is to Compa from whether it was
+// written in the owner's "message yourself" chat and whether the owner wrote
+// it. The owner's messages to friends and groups are the owner talking to
+// them, never instructions.
+func classifyChat(selfChat, fromMe bool) chatRole {
 	switch {
 	case selfChat && fromMe:
 		return chatSelf
 	case selfChat, fromMe:
-		return chatIgnored
-	case mode == config.WhatsAppChatsSelf:
 		return chatIgnored
 	default:
 		return chatOther
@@ -62,12 +56,18 @@ func isOwnAddress(user, server, ownPhone, ownLID string) bool {
 	}
 }
 
-// whatsAppIdentity is the SenderInfo of a WhatsApp address.
-func whatsAppIdentity(jid, displayName string) bus.SenderInfo {
+// whatsAppIdentity is the SenderInfo of a WhatsApp address: by its phone
+// number when it is one, so that allow_from lists a number as 15550003333 or
+// whatsapp:15550003333; by the whole address otherwise.
+func whatsAppIdentity(user, server, displayName string) bus.SenderInfo {
+	id := user
+	if server != phoneServer {
+		id = user + "@" + server
+	}
 	return bus.SenderInfo{
 		Platform:    "whatsapp",
-		PlatformID:  jid,
-		CanonicalID: identity.BuildCanonicalID("whatsapp", jid),
+		PlatformID:  id,
+		CanonicalID: identity.BuildCanonicalID("whatsapp", id),
 		DisplayName: displayName,
 	}
 }

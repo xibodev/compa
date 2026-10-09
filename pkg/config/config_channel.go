@@ -13,7 +13,7 @@ import (
 	"github.com/caarlos0/env/v11"
 	"gopkg.in/yaml.v3"
 
-	"github.com/xibodev/compa/v3/pkg/logger"
+	"github.com/xibodev/compa/v4/pkg/logger"
 )
 
 // Channel type constants — single source of truth for all channel type names.
@@ -226,14 +226,14 @@ type Channel struct {
 	Enabled   bool                `json:"enabled"                 yaml:"-"`
 	Type      string              `json:"type"                    yaml:"-"`
 	AllowFrom FlexibleStringSlice `json:"allow_from,omitempty"    yaml:"-"`
-	// DMPolicy decides which direct messages are processed: "pairing",
-	// "allowlist", "open" or "disabled". See EffectiveDMPolicy.
-	DMPolicy string `json:"dm_policy,omitempty" yaml:"-"`
-	// GroupPolicy decides which group messages are processed: "allowlist",
-	// "open" or "disabled". See EffectiveGroupPolicy.
+	// DMPolicy, GroupPolicy and GroupTrigger are no longer settings: a
+	// channel answers only its owner, in direct messages. A config.json an
+	// earlier version wrote still loads; decoding clears them, and they are
+	// not written.
+	DMPolicy           string             `json:"dm_policy,omitempty"     yaml:"-"`
 	GroupPolicy        string             `json:"group_policy,omitempty"  yaml:"-"`
 	ReasoningChannelID string             `json:"reasoning_channel_id"    yaml:"-"`
-	GroupTrigger       GroupTriggerConfig `json:"group_trigger,omitempty" yaml:"-"`
+	GroupTrigger       GroupTriggerConfig `json:"group_trigger,omitzero"  yaml:"-"`
 	Typing             TypingConfig       `json:"typing,omitempty"        yaml:"-"`
 	Placeholder        PlaceholderConfig  `json:"placeholder,omitempty"   yaml:"-"`
 	Settings           RawNode            `json:"settings,omitzero"       yaml:"settings,omitempty"`
@@ -521,12 +521,11 @@ func (c *ChannelsConfig) UnmarshalJSON(data []byte) error {
 			(*c)[name] = nil
 			continue
 		}
-		// A channel answers in groups only when mentioned unless its entry
-		// says otherwise, as the default channels do.
-		bc := &Channel{GroupTrigger: GroupTriggerConfig{MentionOnly: true}}
+		bc := &Channel{}
 		if err := json.Unmarshal(entry, bc); err != nil {
 			return err
 		}
+		bc.DMPolicy, bc.GroupPolicy, bc.GroupTrigger = "", "", GroupTriggerConfig{}
 		bc.SetName(name)
 		(*c)[name] = bc
 	}
@@ -793,11 +792,15 @@ func initChannelList(channels ChannelsConfig, rec channelEnvRecorder) error {
 		if bc.Type == "" {
 			bc.Type = name
 		}
+		// Native WhatsApp is the WhatsApp channel now.
+		if bc.Type == ChannelWhatsAppNative {
+			bc.Type = ChannelWhatsApp
+		}
 		if !isValidChannelType(bc.Type) {
 			return fmt.Errorf("channel %q has unknown type %q", name, bc.Type)
 		}
-		if err := validateChannelPolicies(name, bc); err != nil {
-			return err
+		if err := rec.applyEnabled(name, bc); err != nil {
+			return fmt.Errorf("channel %q: environment override: %w", name, err)
 		}
 		// Decode into the correct typed settings
 		if target := newChannelSettings(bc.Type); target != nil {
@@ -810,14 +813,12 @@ func initChannelList(channels ChannelsConfig, rec channelEnvRecorder) error {
 			if err := env.Parse(target); err != nil {
 				return fmt.Errorf("channel %q: environment override: %w", name, err)
 			}
-			applyTelegramStreamingEnvOverrides(target)
+			applyStreamingEnvOverrides(target)
 			rec.record(name, fromFiles, settings)
 			if err := validateChannelStreamingConfig(name, target); err != nil {
 				return err
 			}
-			if err := validateChannelSettingsValues(name, target); err != nil {
-				return err
-			}
+
 		}
 	}
 
@@ -829,28 +830,40 @@ func initChannelList(channels ChannelsConfig, rec channelEnvRecorder) error {
 	return nil
 }
 
-// applyTelegramStreamingEnvOverrides applies the
-// COMPA_CHANNELS_TELEGRAM_STREAMING_* environment variables.
-// StreamingConfig is shared by several channels, so it carries no env tags.
-func applyTelegramStreamingEnvOverrides(target any) {
-	settings, ok := target.(*TelegramSettings)
-	if !ok || settings == nil {
+// applyStreamingEnvOverrides applies the COMPA_CHANNELS_WEB_STREAMING_* and
+// COMPA_CHANNELS_TELEGRAM_STREAMING_* environment variables to the web chat's
+// and Telegram's settings. StreamingConfig is shared by several channels, so
+// it carries no env tags.
+func applyStreamingEnvOverrides(target any) {
+	var streaming *StreamingConfig
+	var prefix string
+	switch settings := target.(type) {
+	case *WebChatSettings:
+		if settings != nil {
+			streaming, prefix = &settings.Streaming, "COMPA_CHANNELS_WEB_STREAMING_"
+		}
+	case *TelegramSettings:
+		if settings != nil {
+			streaming, prefix = &settings.Streaming, "COMPA_CHANNELS_TELEGRAM_STREAMING_"
+		}
+	}
+	if streaming == nil {
 		return
 	}
 
-	if raw, ok := os.LookupEnv("COMPA_CHANNELS_TELEGRAM_STREAMING_ENABLED"); ok {
+	if raw, ok := os.LookupEnv(prefix + "ENABLED"); ok {
 		if value, err := strconv.ParseBool(raw); err == nil {
-			settings.Streaming.Enabled = value
+			streaming.Enabled = value
 		}
 	}
-	if raw, ok := os.LookupEnv("COMPA_CHANNELS_TELEGRAM_STREAMING_THROTTLE_SECONDS"); ok {
+	if raw, ok := os.LookupEnv(prefix + "THROTTLE_SECONDS"); ok {
 		if value, err := strconv.Atoi(raw); err == nil {
-			settings.Streaming.ThrottleSeconds = value
+			streaming.ThrottleSeconds = value
 		}
 	}
-	if raw, ok := os.LookupEnv("COMPA_CHANNELS_TELEGRAM_STREAMING_MIN_GROWTH_CHARS"); ok {
+	if raw, ok := os.LookupEnv(prefix + "MIN_GROWTH_CHARS"); ok {
 		if value, err := strconv.Atoi(raw); err == nil {
-			settings.Streaming.MinGrowthChars = value
+			streaming.MinGrowthChars = value
 		}
 	}
 }

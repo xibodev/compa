@@ -1,3 +1,5 @@
+//go:build paused_channels
+
 package auth
 
 import (
@@ -16,8 +18,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/xibodev/compa/v3/cmd/compa-kernel/internal"
-	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v4/cmd/compa-kernel/internal"
+	"github.com/xibodev/compa/v4/pkg/config"
 )
 
 func newIPv4TestServer(t *testing.T, handler http.Handler) *httptest.Server {

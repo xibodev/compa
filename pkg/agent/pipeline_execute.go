@@ -11,14 +11,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/xibodev/compa/v3/pkg/approval"
-	"github.com/xibodev/compa/v3/pkg/bus"
-	"github.com/xibodev/compa/v3/pkg/constants"
-	runtimeevents "github.com/xibodev/compa/v3/pkg/events"
-	"github.com/xibodev/compa/v3/pkg/logger"
-	"github.com/xibodev/compa/v3/pkg/providers"
-	"github.com/xibodev/compa/v3/pkg/tools"
-	"github.com/xibodev/compa/v3/pkg/utils"
+	"github.com/xibodev/compa/v4/pkg/approval"
+	"github.com/xibodev/compa/v4/pkg/bus"
+	"github.com/xibodev/compa/v4/pkg/constants"
+	runtimeevents "github.com/xibodev/compa/v4/pkg/events"
+	"github.com/xibodev/compa/v4/pkg/logger"
+	"github.com/xibodev/compa/v4/pkg/providers"
+	"github.com/xibodev/compa/v4/pkg/tools"
+	"github.com/xibodev/compa/v4/pkg/utils"
 )
 
 // Remaining tool calls in a batch are skipped once a steering message is queued
@@ -162,7 +162,7 @@ toolLoop:
 			}
 			messages = append(messages, deniedMsg)
 			if !ts.opts.NoHistory {
-				ts.agent.Sessions.AddFullMessage(ts.sessionKey, deniedMsg)
+				ts.noteSessionWrite(turnCtx, al, ts.agent.Sessions.AddFullMessage(ts.sessionKey, deniedMsg))
 				ts.recordPersistedMessage(deniedMsg)
 			}
 			return true
@@ -330,7 +330,7 @@ toolLoop:
 
 					messages = append(messages, toolResultMsg)
 					if !ts.opts.NoHistory {
-						ts.agent.Sessions.AddFullMessage(ts.sessionKey, toolResultMsg)
+						ts.noteSessionWrite(turnCtx, al, ts.agent.Sessions.AddFullMessage(ts.sessionKey, toolResultMsg))
 						ts.recordPersistedMessage(toolResultMsg)
 						ts.ingestMessage(turnCtx, al, toolResultMsg)
 					}
@@ -366,7 +366,7 @@ toolLoop:
 								}
 								messages = append(messages, skippedMsg)
 								if !ts.opts.NoHistory {
-									ts.agent.Sessions.AddFullMessage(ts.sessionKey, skippedMsg)
+									ts.noteSessionWrite(turnCtx, al, ts.agent.Sessions.AddFullMessage(ts.sessionKey, skippedMsg))
 									ts.recordPersistedMessage(skippedMsg)
 								}
 							}
@@ -404,7 +404,7 @@ toolLoop:
 				}
 				messages = append(messages, deniedMsg)
 				if !ts.opts.NoHistory {
-					ts.agent.Sessions.AddFullMessage(ts.sessionKey, deniedMsg)
+					ts.noteSessionWrite(turnCtx, al, ts.agent.Sessions.AddFullMessage(ts.sessionKey, deniedMsg))
 					ts.recordPersistedMessage(deniedMsg)
 				}
 				continue
@@ -436,7 +436,7 @@ toolLoop:
 			}
 			messages = append(messages, deniedMsg)
 			if !ts.opts.NoHistory {
-				ts.agent.Sessions.AddFullMessage(ts.sessionKey, deniedMsg)
+				ts.noteSessionWrite(turnCtx, al, ts.agent.Sessions.AddFullMessage(ts.sessionKey, deniedMsg))
 				ts.recordPersistedMessage(deniedMsg)
 			}
 			continue
@@ -658,7 +658,7 @@ toolLoop:
 		)
 		messages = append(messages, toolResultMsg)
 		if !ts.opts.NoHistory {
-			ts.agent.Sessions.AddFullMessage(ts.sessionKey, toolResultMsg)
+			ts.noteSessionWrite(turnCtx, al, ts.agent.Sessions.AddFullMessage(ts.sessionKey, toolResultMsg))
 			ts.recordPersistedMessage(toolResultMsg)
 			ts.ingestMessage(turnCtx, al, toolResultMsg)
 		}
@@ -694,7 +694,7 @@ toolLoop:
 					}
 					messages = append(messages, skippedMsg)
 					if !ts.opts.NoHistory {
-						ts.agent.Sessions.AddFullMessage(ts.sessionKey, skippedMsg)
+						ts.noteSessionWrite(turnCtx, al, ts.agent.Sessions.AddFullMessage(ts.sessionKey, skippedMsg))
 						ts.recordPersistedMessage(skippedMsg)
 					}
 				}
@@ -713,7 +713,7 @@ toolLoop:
 	for _, msg := range subTurnResults {
 		messages = append(messages, msg)
 		if !ts.opts.NoHistory {
-			ts.agent.Sessions.AddFullMessage(ts.sessionKey, msg)
+			ts.noteSessionWrite(turnCtx, al, ts.agent.Sessions.AddFullMessage(ts.sessionKey, msg))
 			ts.recordPersistedMessage(msg)
 		}
 	}
@@ -754,7 +754,7 @@ toolLoop:
 			Attachments: append([]providers.Attachment(nil), handledAttachments...),
 		}
 		if !ts.opts.NoHistory {
-			ts.agent.Sessions.AddFullMessage(ts.sessionKey, summaryMsg)
+			ts.noteSessionWrite(turnCtx, al, ts.agent.Sessions.AddFullMessage(ts.sessionKey, summaryMsg))
 			ts.recordPersistedMessage(summaryMsg)
 			ts.ingestMessage(turnCtx, al, summaryMsg)
 			if err := ts.agent.Sessions.Save(ts.sessionKey); err != nil {

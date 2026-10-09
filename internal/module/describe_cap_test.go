@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/v3/internal/module"
+	"github.com/xibodev/compa/v4/internal/module"
 )
 
 // A truncated descriptor must be REFUSED, not parsed. A partial JSON document

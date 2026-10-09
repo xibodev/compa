@@ -7,12 +7,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xibodev/compa/v3/pkg/config"
-	runtimeevents "github.com/xibodev/compa/v3/pkg/events"
-	"github.com/xibodev/compa/v3/pkg/logger"
-	"github.com/xibodev/compa/v3/pkg/providers"
-	"github.com/xibodev/compa/v3/pkg/providers/messageutil"
-	"github.com/xibodev/compa/v3/pkg/tools"
+	"github.com/xibodev/compa/v4/pkg/config"
+	runtimeevents "github.com/xibodev/compa/v4/pkg/events"
+	"github.com/xibodev/compa/v4/pkg/logger"
+	"github.com/xibodev/compa/v4/pkg/providers"
+	"github.com/xibodev/compa/v4/pkg/providers/messageutil"
+	"github.com/xibodev/compa/v4/pkg/tools"
 )
 
 // ====================== Config & Constants ======================
@@ -465,7 +465,13 @@ func spawnSubTurn(
 		if r := recover(); r != nil {
 			logger.RecoverPanicNoExit(r)
 			err = fmt.Errorf("subturn panicked: %v", r)
-			result = nil
+			// The parent hears of a panic as of any other failure. A nested
+			// async sub-agent reaches its parent only through the parent's
+			// pending results, which drop a nil result.
+			result = &tools.ToolResult{
+				Err:    err,
+				ForLLM: fmt.Sprintf("SubTurn failed: %v", err),
+			}
 			logger.ErrorCF("subturn", "SubTurn panicked", map[string]any{
 				"child_id":  childID,
 				"parent_id": parentTS.turnID,
@@ -637,8 +643,8 @@ func newEphemeralSession(initial []providers.Message) ephemeralSessionStoreIface
 // ephemeralSessionStoreIface is satisfied by *ephemeralSessionStore.
 // Declared so newEphemeralSession can return a typed interface.
 type ephemeralSessionStoreIface interface {
-	AddMessage(sessionKey, role, content string)
-	AddFullMessage(sessionKey string, msg providers.Message)
+	AddMessage(sessionKey, role, content string) error
+	AddFullMessage(sessionKey string, msg providers.Message) error
 	GetHistory(key string) []providers.Message
 	GetSummary(key string) string
 	SetSummary(key, summary string)
@@ -649,22 +655,24 @@ type ephemeralSessionStoreIface interface {
 	Close() error
 }
 
-func (e *ephemeralSessionStore) AddMessage(_, role, content string) {
+func (e *ephemeralSessionStore) AddMessage(_, role, content string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.history = append(e.history, providers.Message{Role: role, Content: content})
 	e.truncateLocked()
+	return nil
 }
 
-func (e *ephemeralSessionStore) AddFullMessage(_ string, msg providers.Message) {
+func (e *ephemeralSessionStore) AddFullMessage(_ string, msg providers.Message) error {
 	if messageutil.IsTransientAssistantThoughtMessage(msg) {
-		return
+		return nil
 	}
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.history = append(e.history, msg)
 	e.truncateLocked()
+	return nil
 }
 
 func (e *ephemeralSessionStore) GetHistory(_ string) []providers.Message {

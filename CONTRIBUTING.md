@@ -5,8 +5,8 @@ on it; report security problems as [SECURITY.md](SECURITY.md) describes.
 
 ## Tools
 
-- Go 1.26.6, the version in `go.mod`.
-- Node.js 22 and pnpm, the version `packageManager` pins in
+- Go 1.26.9, the version in `go.mod`.
+- Node.js 22.13 or later, and pnpm, the version `packageManager` pins in
   `web/frontend/package.json`.
 - For the checks: [golangci-lint](https://golangci-lint.run) v2.14.0,
   shellcheck and PSScriptAnalyzer; PowerShell 7 runs the Windows installer's
@@ -14,9 +14,7 @@ on it; report security problems as [SECURITY.md](SECURITY.md) describes.
 
 ## Build
 
-Every Go command takes the build tags `goolm,stdjson`. The `whatsapp_native`
-tag adds the WhatsApp channel that links your own account; it links GPL-3.0
-code (see [NOTICE](NOTICE)), so releases leave it out.
+Every Go command takes the build tags `goolm,stdjson`.
 
 Build the web UI first, as [Run from source](docs/install.md#run-from-source)
 shows: `compa` embeds `web/backend/dist` when it links, and a stale or missing
@@ -55,6 +53,11 @@ and `pnpm run format`, which checks the formatting with Prettier;
 `node brand/check.mjs` for the brand assets; and PSScriptAnalyzer on
 `install.ps1`. `make fmt` formats the Go code, and `pnpm run format:write` in
 `web/frontend` the web UI's.
+
+CI also writes the `THIRD_PARTY_NOTICES` a release ships, on Linux, Windows and
+macOS, with `scripts/notices.sh` (see `cmd/notices`). It fails when a Go module
+compiled into `compa` or `compa-kernel` has no license file, so check that a
+new dependency has one.
 
 ## Pull requests
 

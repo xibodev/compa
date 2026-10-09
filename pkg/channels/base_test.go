@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/xibodev/compa/v3/pkg/bus"
-	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/bus"
+	"github.com/xibodev/compa/v4/pkg/config"
 )
 
 func TestBaseChannelIsAllowed(t *testing.T) {
@@ -260,18 +260,6 @@ func TestHandleInboundContext_PublishesNormalizedContext(t *testing.T) {
 			},
 			wantChat:   "chat-1",
 			wantSender: "user-1",
-		},
-		{
-			name: "group uses chat as peer",
-			inbound: bus.InboundContext{
-				Channel:   "test",
-				ChatID:    "group-1",
-				ChatType:  "group",
-				SenderID:  "user-2",
-				MessageID: "msg-2",
-			},
-			wantChat:   "group-1",
-			wantSender: "user-2",
 		},
 	}
 

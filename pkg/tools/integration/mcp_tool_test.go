@@ -17,12 +17,12 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/xibodev/compa/v3/pkg/approval"
-	"github.com/xibodev/compa/v3/pkg/config"
-	runtimeevents "github.com/xibodev/compa/v3/pkg/events"
-	mcpclient "github.com/xibodev/compa/v3/pkg/mcp"
-	"github.com/xibodev/compa/v3/pkg/media"
-	toolshared "github.com/xibodev/compa/v3/pkg/tools/shared"
+	"github.com/xibodev/compa/v4/pkg/approval"
+	"github.com/xibodev/compa/v4/pkg/config"
+	runtimeevents "github.com/xibodev/compa/v4/pkg/events"
+	mcpclient "github.com/xibodev/compa/v4/pkg/mcp"
+	"github.com/xibodev/compa/v4/pkg/media"
+	toolshared "github.com/xibodev/compa/v4/pkg/tools/shared"
 )
 
 // MockMCPManager is a mock implementation of MCPManager interface for testing

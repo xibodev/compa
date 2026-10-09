@@ -10,7 +10,7 @@ import (
 	"encoding/json"
 	"unicode/utf8"
 
-	"github.com/xibodev/compa/v3/pkg/providers"
+	"github.com/xibodev/compa/v4/pkg/providers"
 )
 
 // CalculateDefaultMaxContextRunes computes a default context limit based on the model's context window.

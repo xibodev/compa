@@ -11,9 +11,9 @@ import (
 	"github.com/spf13/cobra"
 	"go.mau.fi/util/shlex"
 
-	"github.com/xibodev/compa/v3/cmd/compa-kernel/internal"
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/fileutil"
+	"github.com/xibodev/compa/v4/cmd/compa-kernel/internal"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/fileutil"
 )
 
 func newEditCommand() *cobra.Command {

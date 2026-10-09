@@ -1,6 +1,6 @@
 package evolution
 
-import "github.com/xibodev/compa/v3/pkg/providers"
+import "github.com/xibodev/compa/v4/pkg/providers"
 
 func NewDraftGeneratorForWorkspace(workspace string, provider providers.LLMProvider, modelID string) DraftGenerator {
 	fallback := NewDefaultDraftGenerator(workspace)

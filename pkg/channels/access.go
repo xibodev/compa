@@ -5,21 +5,22 @@ import (
 	"sync"
 	"time"
 
-	"github.com/xibodev/compa/v3/pkg/bus"
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/constants"
-	"github.com/xibodev/compa/v3/pkg/identity"
-	"github.com/xibodev/compa/v3/pkg/logger"
-	"github.com/xibodev/compa/v3/pkg/pairing"
+	"github.com/xibodev/compa/v4/pkg/bus"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/constants"
+	"github.com/xibodev/compa/v4/pkg/identity"
+	"github.com/xibodev/compa/v4/pkg/logger"
+	"github.com/xibodev/compa/v4/pkg/pairing"
 )
 
-// accessPolicy holds a channel's dm_policy and group_policy.
-type accessPolicy struct {
-	dm    string
-	group string
-}
+// Compa serves one person, its owner. A channel answers only the owner's
+// accounts, the senders allow_from lists, and only in direct messages: group
+// chats, rooms and the threads in them are ignored. While allow_from lists
+// no account, a direct message records its sender as a pairing request, so
+// the owner can bind their account from the dashboard; once it lists one,
+// everyone else is ignored. "*" and group IDs in allow_from admit no one.
 
-// admission is what the access policy does with one inbound message.
+// admission is what the access check does with one inbound message.
 type admission int
 
 const (
@@ -42,49 +43,31 @@ var recordPairing = func(r pairing.Request) error {
 	return pairing.Record(config.GetHome(), r)
 }
 
-// SetAccessPolicy sets the channel's dm_policy and group_policy, as
-// config.Channel.EffectiveDMPolicy and EffectiveGroupPolicy return them. The
-// manager calls it right after constructing a chat channel, so every channel
-// it configures has a policy.
-func (c *BaseChannel) SetAccessPolicy(dm, group string) {
-	c.policy.Store(&accessPolicy{
-		dm:    strings.TrimSpace(dm),
-		group: strings.TrimSpace(group),
-	})
+// RequireOwner makes the channel admit only its owner: the senders
+// allow_from lists, in direct messages. The manager calls it right after
+// constructing a chat channel, so every channel it configures checks access
+// this way; a channel nothing configured, as in tests, admits every direct
+// message while allow_from lists no account.
+func (c *BaseChannel) RequireOwner() {
+	c.ownerOnly.Store(true)
+	if c.allowsEveryone() {
+		logger.WarnCF("channels", "\"*\" in allow_from no longer admits anyone; the channel answers only the accounts it lists", map[string]any{
+			"channel": c.name,
+		})
+	}
 }
 
 // Admits reports whether a message of chatType ("group" and "channel" are
-// group chats, anything else a direct message) from sender in chatID would
-// be processed. It makes the same decision as HandleMessageWithContext,
-// without its side effects, so a platform can call it before downloading a
-// message's media. A direct message the pairing policy would record is not
-// admitted; pass it to HandleMessageWithContext without its media to have
-// the sender recorded.
-func (c *BaseChannel) Admits(chatType string, sender bus.SenderInfo, chatID string) bool {
-	decision, _ := c.admission(chatType, sender, "", chatID)
+// group chats, anything else a direct message) from sender would be
+// processed. It makes the same decision as HandleMessageWithContext, without
+// its side effects, so a platform can call it before downloading a
+// message's media. A direct message that would be recorded as a pairing
+// request is not admitted; pass it to HandleMessageWithContext without its
+// media to have the sender recorded. The chat the message is in decides
+// nothing.
+func (c *BaseChannel) Admits(chatType string, sender bus.SenderInfo, _ string) bool {
+	decision, _ := c.admission(chatType, sender, "")
 	return decision == admitAccept
-}
-
-// policies returns the channel's effective dm and group policies. A channel
-// built without a policy, as in tests, is decided by allow_from alone: an
-// empty allow_from or "*" admits everyone, other entries the senders listed.
-func (c *BaseChannel) policies() (dm, group string) {
-	if p := c.policy.Load(); p != nil {
-		dm, group = p.dm, p.group
-	}
-	if dm == "" {
-		dm = config.DMPolicyOpen
-		if len(c.allowList) > 0 && !c.allowsEveryone() {
-			dm = config.DMPolicyAllowlist
-		}
-	}
-	if group == "" {
-		group = config.GroupPolicyOpen
-		if len(c.allowList) > 0 && !c.allowsEveryone() {
-			group = config.GroupPolicyAllowlist
-		}
-	}
-	return dm, group
 }
 
 // bypassesAccessPolicy reports whether every message is admitted from the
@@ -94,58 +77,33 @@ func (c *BaseChannel) bypassesAccessPolicy() bool {
 	return c.authenticatedAccess || constants.IsInternalChannel(c.name)
 }
 
-// admission applies the access policy to a message of chatType from sender
-// (or, without sender details, the raw senderID) in chatID. owner reports
-// whether the sender matches an explicit allow_from entry.
-func (c *BaseChannel) admission(
-	chatType string,
-	sender bus.SenderInfo,
-	senderID, chatID string,
-) (decision admission, owner bool) {
+// admission decides a message of chatType from sender (or, without sender
+// details, the raw senderID). owner reports whether the sender is the owner.
+func (c *BaseChannel) admission(chatType string, sender bus.SenderInfo, senderID string) (decision admission, owner bool) {
 	if c.bypassesAccessPolicy() {
 		return admitAccept, true
 	}
-	owner = c.senderListed(sender, senderID)
-	listed := owner || c.allowsEveryone()
-	dm, group := c.policies()
-
 	if isGroupChat(chatType) {
-		switch group {
-		case config.GroupPolicyOpen:
-			return admitAccept, owner
-		case config.GroupPolicyDisabled:
-			return admitDrop, owner
-		}
-		if listed || c.chatListed(chatID, sender.Platform) {
-			return admitAccept, owner
-		}
-		return admitDrop, owner
+		return admitDrop, false
 	}
-
-	switch dm {
-	case config.DMPolicyOpen:
-		return admitAccept, owner
-	case config.DMPolicyDisabled:
-		return admitDrop, owner
+	if c.senderListed(sender, senderID) {
+		return admitAccept, true
 	}
-	if listed {
-		return admitAccept, owner
+	if c.hasOwnerAccount() {
+		return admitDrop, false
 	}
-	if dm == config.DMPolicyPairing {
-		return admitPair, owner
+	if c.ownerOnly.Load() {
+		return admitPair, false
 	}
-	return admitDrop, owner
+	// A channel nothing configured, as in tests.
+	return admitAccept, false
 }
 
-// mayAdmit reports whether a sender could be admitted in some chat. It is
-// what IsAllowed and IsAllowedSender answer, so that the platforms' early
-// checks let through the messages the policy may still accept, or record.
+// mayAdmit reports whether a sender could be admitted in a direct message,
+// or recorded for pairing. It is what IsAllowed and IsAllowedSender answer,
+// so that the platforms' early checks let those messages through.
 func (c *BaseChannel) mayAdmit(listed bool) bool {
-	if c.bypassesAccessPolicy() || listed || c.allowsEveryone() {
-		return true
-	}
-	dm, group := c.policies()
-	return dm == config.DMPolicyOpen || dm == config.DMPolicyPairing || group == config.GroupPolicyOpen
+	return c.bypassesAccessPolicy() || listed || !c.hasOwnerAccount()
 }
 
 // isGroupChat reports whether an InboundContext.ChatType is a group chat.
@@ -157,10 +115,22 @@ func isGroupChat(chatType string) bool {
 	return false
 }
 
-// allowsEveryone reports whether allow_from contains "*".
+// allowsEveryone reports whether allow_from contains "*", which admits no
+// one.
 func (c *BaseChannel) allowsEveryone() bool {
 	for _, allowed := range c.allowList {
 		if strings.TrimSpace(allowed) == "*" {
+			return true
+		}
+	}
+	return false
+}
+
+// hasOwnerAccount reports whether allow_from lists an account: an entry
+// other than "*".
+func (c *BaseChannel) hasOwnerAccount() bool {
+	for _, allowed := range c.allowList {
+		if allowed = strings.TrimSpace(allowed); allowed != "" && allowed != "*" {
 			return true
 		}
 	}
@@ -192,89 +162,6 @@ func (c *BaseChannel) senderListed(sender bus.SenderInfo, senderID string) bool 
 	return false
 }
 
-// chatListed reports whether a group chat is named in allow_from, by its ID
-// or its canonical "platform:id" form. A group may be listed by the
-// platform's own ID or by the channel's chat ID, which some channels form
-// with a kind prefix (OneBot's "group:<id>"). A thread's chat ID,
-// "<group>/<thread>" (a Telegram forum topic, a Slack thread), is listed by
-// its group's entry too. IRC channel names ignore case.
-func (c *BaseChannel) chatListed(chatID, platform string) bool {
-	chatID = strings.TrimSpace(chatID)
-	if chatID == "" {
-		return false
-	}
-	if platform == "" {
-		platform = c.name
-	}
-	foldCase := strings.EqualFold(platform, "irc")
-	if foldCase {
-		chatID = strings.ToLower(chatID)
-	}
-	ids := []string{chatID}
-	if i := strings.LastIndexByte(chatID, '/'); i > 0 {
-		ids = append(ids, chatID[:i])
-	}
-	var chats []string
-	for _, id := range ids {
-		chats = append(chats, id)
-		if bare, ok := withoutGroupKind(id); ok {
-			chats = append(chats, bare)
-		}
-	}
-	for _, allowed := range c.allowList {
-		allowed = strings.TrimSpace(allowed)
-		if allowed == "" || allowed == "*" || strings.HasPrefix(allowed, "@") {
-			continue
-		}
-		if foldCase {
-			allowed = strings.ToLower(allowed)
-		}
-		for _, entry := range groupEntryForms(allowed, platform) {
-			for _, id := range chats {
-				chat := bus.SenderInfo{
-					Platform:    platform,
-					PlatformID:  id,
-					CanonicalID: identity.BuildCanonicalID(platform, id),
-				}
-				if identity.MatchAllowed(chat, entry) {
-					return true
-				}
-			}
-		}
-	}
-	return false
-}
-
-// groupKindPrefixes are the prefixes a channel may put before a platform's
-// group ID to form its chat ID, as OneBot does with "group:<id>".
-var groupKindPrefixes = []string{"group:", "channel:", "room:"}
-
-// withoutGroupKind returns id without its group-kind prefix, and whether it
-// had one.
-func withoutGroupKind(id string) (string, bool) {
-	for _, prefix := range groupKindPrefixes {
-		if len(id) > len(prefix) && strings.EqualFold(id[:len(prefix)], prefix) {
-			return id[len(prefix):], true
-		}
-	}
-	return id, false
-}
-
-// groupEntryForms returns an allow_from entry and, when it names a group by
-// a kind-prefixed chat ID ("group:<id>" or "platform:group:<id>"), the same
-// entry with the platform's own group ID.
-func groupEntryForms(entry, platform string) []string {
-	forms := []string{entry}
-	if prefix, rest, ok := identity.ParseCanonicalID(entry); ok && strings.EqualFold(prefix, platform) {
-		if bare, ok := withoutGroupKind(rest); ok {
-			forms = append(forms, prefix+":"+bare)
-		}
-	} else if bare, ok := withoutGroupKind(entry); ok {
-		forms = append(forms, bare)
-	}
-	return forms
-}
-
 // pairingThrottle remembers when each sender's pairing request was last
 // written.
 type pairingThrottle struct {
@@ -304,8 +191,8 @@ func (t *pairingThrottle) due(key string, now time.Time) bool {
 	return true
 }
 
-// recordPairingRequest records the sender of a direct message the pairing
-// policy did not admit, for the owner to approve in the dashboard.
+// recordPairingRequest records the sender of a direct message to a channel
+// without an owner yet, for the owner to approve in the dashboard.
 func (c *BaseChannel) recordPairingRequest(sender bus.SenderInfo, senderID string) {
 	request := pairing.Request{
 		Channel:     c.name,

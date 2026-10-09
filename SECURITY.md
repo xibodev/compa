@@ -28,9 +28,10 @@ In scope:
 Compa is a single-user assistant that runs as your account, and whoever is
 signed in to it is trusted: running commands from the web UI or a chat you
 allowed is what it's for. A problem in scope lets someone else get further than
-the settings allow. Examples are a chat sender outside **Allow From**, a
-website open in your browser, a device on your network, another account on
-your computer, or the author of a skill, module or MCP server you added.
+the settings allow. Examples are a chat sender outside **Allow From**, someone
+in a group chat with your account, one of your WhatsApp contacts, a website
+open in your browser, a device on your network, another account on your
+computer, or the author of a skill, module or MCP server you added.
 
 Out of scope are flaws in the model providers, chat apps and other services
 Compa connects to, and in skills, modules and MCP servers that aren't part of
@@ -38,7 +39,7 @@ this repository; report those to their authors.
 
 ## Verify a release
 
-Each release lists the SHA-256 checksum of every file in `SHA256SUMS`, which
+Each release lists the SHA-256 checksum of every other file in `SHA256SUMS`, which
 the installers and the updater check. GitHub records which workflow run built
 each archive, installer and `SHA256SUMS`:
 

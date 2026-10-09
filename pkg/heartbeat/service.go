@@ -16,12 +16,12 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/xibodev/compa/v3/pkg/bus"
-	"github.com/xibodev/compa/v3/pkg/constants"
-	"github.com/xibodev/compa/v3/pkg/fileutil"
-	"github.com/xibodev/compa/v3/pkg/logger"
-	"github.com/xibodev/compa/v3/pkg/state"
-	"github.com/xibodev/compa/v3/pkg/tools"
+	"github.com/xibodev/compa/v4/pkg/bus"
+	"github.com/xibodev/compa/v4/pkg/constants"
+	"github.com/xibodev/compa/v4/pkg/fileutil"
+	"github.com/xibodev/compa/v4/pkg/logger"
+	"github.com/xibodev/compa/v4/pkg/state"
+	"github.com/xibodev/compa/v4/pkg/tools"
 )
 
 const (
@@ -419,6 +419,7 @@ func (hs *HeartbeatService) sendResponse(platform, chatID, response string) {
 	if err := msgBus.PublishOutbound(pubCtx, bus.OutboundMessage{
 		Context: bus.NewOutboundContext(platform, chatID, ""),
 		Content: response,
+		Notify:  true,
 	}); err != nil {
 		hs.logErrorf("Failed to send heartbeat result to %s: %v", platform, err)
 		return

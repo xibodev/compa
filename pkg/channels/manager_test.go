@@ -12,11 +12,12 @@ import (
 
 	"golang.org/x/time/rate"
 
-	"github.com/xibodev/compa/v3/pkg/bus"
-	"github.com/xibodev/compa/v3/pkg/config"
-	runtimeevents "github.com/xibodev/compa/v3/pkg/events"
-	"github.com/xibodev/compa/v3/pkg/media"
-	"github.com/xibodev/compa/v3/pkg/utils"
+	"github.com/xibodev/compa/v4/pkg/bus"
+	"github.com/xibodev/compa/v4/pkg/config"
+	runtimeevents "github.com/xibodev/compa/v4/pkg/events"
+	"github.com/xibodev/compa/v4/pkg/media"
+	"github.com/xibodev/compa/v4/pkg/session/history"
+	"github.com/xibodev/compa/v4/pkg/utils"
 )
 
 // mockChannel is a test double that delegates Send to a configurable function.
@@ -3446,5 +3447,115 @@ func TestSplitMarkerStreamerForwardsTurnUsage(t *testing.T) {
 	}
 	if inner.inputTokens != 1234 || inner.outputTokens != 567 {
 		t.Errorf("inner usage = (%d, %d), want (1234, 567)", inner.inputTokens, inner.outputTokens)
+	}
+}
+
+// turnObserverMock observes turns and records, in order, the notices and
+// messages that reach it.
+type turnObserverMock struct {
+	mockChannel
+	mu     sync.Mutex
+	events []string
+}
+
+func (c *turnObserverMock) record(event string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.events = append(c.events, event)
+}
+
+func (c *turnObserverMock) Send(_ context.Context, msg bus.OutboundMessage) ([]string, error) {
+	c.record("send " + msg.Content)
+	return nil, nil
+}
+
+func (c *turnObserverMock) TurnStarted(_ context.Context, chatID string, turn bus.TurnNotice) error {
+	c.record("start " + chatID + " " + strings.Join(turn.MessageIDs, ","))
+	return nil
+}
+
+func (c *turnObserverMock) TurnEnded(_ context.Context, chatID string, turn bus.TurnNotice) error {
+	c.record("end " + chatID + " " + turn.Status)
+	return nil
+}
+
+// A turn notice reaches a channel that observes turns in order with the
+// chat's messages; a channel that doesn't never sees it, not even as a
+// message. Either way the notice is marked delivered.
+func TestTurnNoticesKeepTheirPlaceAmongMessages(t *testing.T) {
+	m := newTestManager()
+	observer := &turnObserverMock{}
+	plain := &mockChannel{}
+	m.channels["observer"] = observer
+	m.channels["plain"] = plain
+	if err := m.StartAll(t.Context()); err != nil {
+		t.Fatalf("StartAll() error = %v", err)
+	}
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = m.StopAll(stopCtx)
+	}()
+
+	publish := func(msg bus.OutboundMessage) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		if err := m.bus.PublishOutbound(ctx, testOutboundMessage(msg)); err != nil {
+			t.Fatalf("PublishOutbound() error = %v", err)
+		}
+	}
+	waitFor := func(delivered chan struct{}) {
+		t.Helper()
+		select {
+		case <-delivered:
+		case <-time.After(5 * time.Second):
+			t.Fatal("the notice was not delivered")
+		}
+	}
+
+	ended := make(chan struct{})
+	publish(bus.OutboundMessage{Channel: "observer", ChatID: "c1",
+		Turn: &bus.TurnNotice{MessageIDs: []string{"msg-1"}}})
+	publish(bus.OutboundMessage{Channel: "observer", ChatID: "c1", Content: "hello"})
+	publish(bus.OutboundMessage{Channel: "observer", ChatID: "c1",
+		Turn: &bus.TurnNotice{Ended: true, Status: "completed", Delivered: ended}})
+	waitFor(ended)
+
+	observer.mu.Lock()
+	events := append([]string(nil), observer.events...)
+	observer.mu.Unlock()
+	if want := []string{"start c1 msg-1", "send hello", "end c1 completed"}; fmt.Sprint(events) != fmt.Sprint(want) {
+		t.Fatalf("events = %q, want %q", events, want)
+	}
+
+	delivered := make(chan struct{})
+	publish(bus.OutboundMessage{Channel: "plain", ChatID: "c1",
+		Turn: &bus.TurnNotice{Ended: true, Status: "completed", Delivered: delivered}})
+	waitFor(delivered)
+	if len(plain.sentMessages) != 0 {
+		t.Fatalf("a channel that doesn't observe turns got %d messages", len(plain.sentMessages))
+	}
+}
+
+// historyMockChannel serves session history: it keeps the reader source the
+// manager gives it.
+type historyMockChannel struct {
+	mockChannel
+	source func() history.Reader
+}
+
+func (c *historyMockChannel) SetSessionHistory(source func() history.Reader) { c.source = source }
+
+func TestSetSessionHistoryReachesTheChannelsThatServeIt(t *testing.T) {
+	ch := &historyMockChannel{}
+	m := newTestManager()
+	m.channels["web"] = ch
+	m.channels["telegram"] = &mockChannel{}
+
+	m.SetSessionHistory(func() history.Reader { return history.Reader{Dir: "sessions"} })
+
+	if ch.source == nil || ch.source().Dir != "sessions" {
+		t.Fatal("the channel that serves session history did not get the reader")
 	}
 }

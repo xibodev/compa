@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/xibodev/compa/v3/web/backend/middleware"
+	"github.com/xibodev/compa/v4/web/backend/middleware"
 )
 
 type fakePasswordStore struct {

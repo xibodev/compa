@@ -3,7 +3,7 @@ package skills
 import (
 	"github.com/spf13/cobra"
 
-	"github.com/xibodev/compa/v3/cmd/compa-kernel/internal"
+	"github.com/xibodev/compa/v4/cmd/compa-kernel/internal"
 )
 
 func newRemoveCommand() *cobra.Command {

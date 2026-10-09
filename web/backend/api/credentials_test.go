@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xibodev/compa/v3/pkg/auth"
-	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/auth"
+	"github.com/xibodev/compa/v4/pkg/config"
 )
 
 func credentialRequest(t *testing.T, mux http.Handler, method, path, body string) *httptest.ResponseRecorder {

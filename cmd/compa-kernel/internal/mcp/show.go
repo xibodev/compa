@@ -10,9 +10,9 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/xibodev/compa/v3/cmd/compa-kernel/internal/cliui"
-	"github.com/xibodev/compa/v3/pkg/config"
-	pkgmcp "github.com/xibodev/compa/v3/pkg/mcp"
+	"github.com/xibodev/compa/v4/cmd/compa-kernel/internal/cliui"
+	"github.com/xibodev/compa/v4/pkg/config"
+	pkgmcp "github.com/xibodev/compa/v4/pkg/mcp"
 )
 
 type toolDetail struct {

@@ -12,8 +12,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xibodev/compa/v3/pkg/config"
-	ppid "github.com/xibodev/compa/v3/pkg/pid"
+	"github.com/xibodev/compa/v4/pkg/config"
+	ppid "github.com/xibodev/compa/v4/pkg/pid"
 )
 
 func newWebChatProxyRequest(method, path string) *http.Request {

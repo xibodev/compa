@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/xibodev/compa/v4/pkg/config"
 )
 
 func newTestServer() *Server {
@@ -40,6 +42,9 @@ func TestHealthHandler_ReturnsOK(t *testing.T) {
 	}
 	if resp.Uptime == "" {
 		t.Error("uptime should not be empty")
+	}
+	if resp.Protocol != config.GatewayProtocol || resp.Protocol < 1 {
+		t.Errorf("protocol = %d, want %d", resp.Protocol, config.GatewayProtocol)
 	}
 }
 

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/xibodev/compa/v3/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/config"
 )
 
 func getChannelConfigMap(t *testing.T, configPath, name string) map[string]any {
@@ -30,7 +30,9 @@ func getChannelConfigMap(t *testing.T, configPath, name string) map[string]any {
 	return resp.Config
 }
 
-func TestHandleGetChannelConfig_ReturnsPoliciesAndMentionOnly(t *testing.T) {
+// A channel's page shows its Allow From, and none of the access settings
+// that are gone.
+func TestHandleGetChannelConfig_ShowsNoRetiredAccessSettings(t *testing.T) {
 	configPath, cleanup := setupCredentialTestEnv(t)
 	defer cleanup()
 
@@ -38,47 +40,21 @@ func TestHandleGetChannelConfig_ReturnsPoliciesAndMentionOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	tg := cfg.Channels.Get(config.ChannelTelegram)
-	tg.DMPolicy = config.DMPolicyAllowlist
-	tg.GroupPolicy = config.GroupPolicyDisabled
-	tg.GroupTrigger.MentionOnly = false
-	// No policy saved: the policies allow_from implies are shown.
-	dc := cfg.Channels.Get(config.ChannelDiscord)
-	dc.DMPolicy, dc.GroupPolicy = "", ""
-	dc.AllowFrom = config.FlexibleStringSlice{"*"}
+	cfg.Channels.Get(config.ChannelSlack).AllowFrom = config.FlexibleStringSlice{"slack:U111"}
 	if err := config.SaveConfig(configPath, cfg); err != nil {
 		t.Fatalf("SaveConfig() error = %v", err)
 	}
 
-	got := getChannelConfigMap(t, configPath, "telegram")
-	if got["dm_policy"] != "allowlist" || got["group_policy"] != "disabled" {
-		t.Fatalf("telegram policies = %#v/%#v, want allowlist/disabled", got["dm_policy"], got["group_policy"])
+	for _, name := range []string{"slack", "whatsapp", "web"} {
+		got := getChannelConfigMap(t, configPath, name)
+		for _, key := range []string{"dm_policy", "group_policy", "group_trigger"} {
+			if _, ok := got[key]; ok {
+				t.Errorf("%s config has %s = %#v", name, key, got[key])
+			}
+		}
 	}
-	trigger, ok := got["group_trigger"].(map[string]any)
-	if !ok || trigger["mention_only"] != false {
-		t.Fatalf("telegram group_trigger = %#v, want mention_only false present", got["group_trigger"])
-	}
-
-	got = getChannelConfigMap(t, configPath, "discord")
-	if got["dm_policy"] != "open" || got["group_policy"] != "open" {
-		t.Fatalf("discord policies = %#v/%#v, want open/open from allow_from *", got["dm_policy"], got["group_policy"])
-	}
-}
-
-func TestHandleGetChannelConfig_ReturnsNativeWhatsAppChats(t *testing.T) {
-	configPath, cleanup := setupCredentialTestEnv(t)
-	defer cleanup()
-
-	if got := getChannelConfigMap(t, configPath, "whatsapp_native")["chats"]; got != "self" {
-		t.Fatalf("chats = %#v, want the default self", got)
-	}
-	if _, ok := getChannelConfigMap(t, configPath, "whatsapp")["chats"]; ok {
-		t.Fatal("the bridge variant shows chats, which only the native client reads")
-	}
-
-	patchConfig(t, configPath, `{"channel_list":{"whatsapp":{"type":"whatsapp","settings":{"use_native":true,"chats":"all"}}}}`, http.StatusOK)
-	if got := getChannelConfigMap(t, configPath, "whatsapp_native")["chats"]; got != "all" {
-		t.Fatalf("chats = %#v, want the saved all", got)
+	if got := getChannelConfigMap(t, configPath, "slack")["allow_from"]; len(got.([]any)) != 1 {
+		t.Fatalf("slack allow_from = %#v", got)
 	}
 }
 
@@ -97,28 +73,36 @@ func patchConfig(t *testing.T, configPath, body string, wantStatus int) *httptes
 	return rec
 }
 
-func TestHandlePatchConfig_SavesChannelPolicies(t *testing.T) {
+// An older client may still send the retired access settings: the save
+// succeeds, and drops them.
+func TestHandlePatchConfig_DropsRetiredAccessSettings(t *testing.T) {
 	configPath, cleanup := setupCredentialTestEnv(t)
 	defer cleanup()
 
-	patchConfig(t, configPath, `{"channel_list":{"telegram":{"dm_policy":"open","group_policy":"disabled","group_trigger":{"mention_only":false}}}}`, http.StatusOK)
+	patchConfig(t, configPath, `{"channel_list":{"slack":{"allow_from":["slack:U111"],"dm_policy":"open",`+
+		`"group_policy":"disabled","group_trigger":{"mention_only":false,"prefixes":"!,?"}}}}`, http.StatusOK)
 
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	for _, key := range []string{`"dm_policy"`, `"group_policy"`, `"group_trigger"`} {
+		if strings.Contains(string(data), key) {
+			t.Errorf("the saved config has %s:\n%s", key, data)
+		}
+	}
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
 		t.Fatalf("LoadConfig() error = %v", err)
 	}
-	tg := cfg.Channels.Get(config.ChannelTelegram)
-	if tg.DMPolicy != config.DMPolicyOpen || tg.GroupPolicy != config.GroupPolicyDisabled || tg.GroupTrigger.MentionOnly {
-		t.Fatalf("telegram = %q/%q mention_only=%v, want open/disabled false", tg.DMPolicy, tg.GroupPolicy, tg.GroupTrigger.MentionOnly)
+	if tg := cfg.Channels.Get(config.ChannelSlack); len(tg.AllowFrom) != 1 {
+		t.Fatalf("slack allow_from = %v", tg.AllowFrom)
 	}
 }
 
 func TestHandlePatchConfig_RejectsUnknownPolicyValues(t *testing.T) {
 	for name, body := range map[string]string{
-		"dm_policy":    `{"channel_list":{"telegram":{"dm_policy":"everyone"}}}`,
-		"group_policy": `{"channel_list":{"telegram":{"group_policy":"pairing"}}}`,
-		"chats":        `{"channel_list":{"whatsapp":{"settings":{"use_native":true,"chats":"friends"}}}}`,
-		"approval":     `{"tools":{"approval":{"rules":[{"tool":"exec","action":"maybe"}]}}}`,
+		"approval": `{"tools":{"approval":{"rules":[{"tool":"exec","action":"maybe"}]}}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			configPath, cleanup := setupCredentialTestEnv(t)

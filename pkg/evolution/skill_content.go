@@ -5,7 +5,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/xibodev/compa/v3/pkg/skills"
+	"github.com/xibodev/compa/v4/pkg/skills"
 )
 
 const (

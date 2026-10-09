@@ -88,9 +88,10 @@ export interface ChatStoreState {
   connectionState: ConnectionState
   isTyping: boolean
   /**
-   * A reply is being produced: from sending (or typing.start) until
-   * typing.stop. isTyping ends at the first streamed chunk; this ends when
-   * the reply is complete.
+   * A reply is being produced: from sending (or typing.start, or turn.start)
+   * until turn.end, or, without turn frames as for a command, typing.stop.
+   * isTyping ends at the first streamed chunk; this ends when the reply is
+   * complete.
    */
   isTurnActive: boolean
   activeSessionId: string

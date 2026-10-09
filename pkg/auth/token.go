@@ -4,12 +4,22 @@ import (
 	"bufio"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 )
 
+// LoginPasteToken prompts on stdout for provider's API key and reads it, one
+// line, from r.
 func LoginPasteToken(provider string, r io.Reader) (*AuthCredential, error) {
-	fmt.Printf("Paste your API key from %s:\n", providerDisplayName(provider))
-	fmt.Print("> ")
+	return LoginPasteTokenWithPrompt(provider, r, os.Stdout)
+}
+
+// LoginPasteTokenWithPrompt is LoginPasteToken with the prompt written to
+// prompt, so a command whose stdout another program reads can prompt on
+// stderr.
+func LoginPasteTokenWithPrompt(provider string, r io.Reader, prompt io.Writer) (*AuthCredential, error) {
+	fmt.Fprintf(prompt, "Paste your API key from %s:\n", providerDisplayName(provider))
+	fmt.Fprint(prompt, "> ")
 
 	scanner := bufio.NewScanner(r)
 	if !scanner.Scan() {

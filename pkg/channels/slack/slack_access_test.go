@@ -14,10 +14,10 @@ import (
 	"github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
 
-	"github.com/xibodev/compa/v3/pkg/bus"
-	"github.com/xibodev/compa/v3/pkg/config"
-	"github.com/xibodev/compa/v3/pkg/media"
-	"github.com/xibodev/compa/v3/pkg/pairing"
+	"github.com/xibodev/compa/v4/pkg/bus"
+	"github.com/xibodev/compa/v4/pkg/config"
+	"github.com/xibodev/compa/v4/pkg/media"
+	"github.com/xibodev/compa/v4/pkg/pairing"
 )
 
 func newAccessTestChannel(t *testing.T, allowFrom ...string) (*SlackChannel, *bus.MessageBus, *int) {
@@ -32,7 +32,7 @@ func newAccessTestChannel(t *testing.T, allowFrom ...string) (*SlackChannel, *bu
 	}
 	ch.ctx = context.Background()
 	ch.botUserID = "UBOT"
-	ch.SetAccessPolicy(config.DMPolicyPairing, config.GroupPolicyAllowlist)
+	ch.RequireOwner()
 
 	downloads := 0
 	saved := fetchFile
@@ -67,7 +67,8 @@ func fileMessage(channelID, user, text string) *slackevents.MessageEvent {
 func TestHandleMessageEvent_UnpairedSenderFilesAreNotFetched(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv(config.EnvHome, home)
-	ch, messageBus, downloads := newAccessTestChannel(t, "UOWNER")
+	// No owner is bound yet, so the stranger is recorded as a pairing request.
+	ch, messageBus, downloads := newAccessTestChannel(t)
 
 	ch.handleMessageEvent(fileMessage("D999", "USTRANGER", "hello"))
 
@@ -86,25 +87,22 @@ func TestHandleMessageEvent_UnpairedSenderFilesAreNotFetched(t *testing.T) {
 	}
 }
 
-func TestHandleMessageEvent_AllowListedChannelMemberIsAdmitted(t *testing.T) {
+// Channels are ignored, even one allow_from lists.
+func TestHandleMessageEvent_ChannelMessageIsIgnored(t *testing.T) {
 	ch, messageBus, _ := newAccessTestChannel(t, "UOWNER", "C100")
 
 	ch.handleMessageEvent(&slackevents.MessageEvent{
 		Channel: "C100", User: "UMEMBER", Text: "status?", TimeStamp: "1700000000.000200",
 	})
 
-	msg, ok := receiveInbound(messageBus, time.Second)
-	if !ok {
-		t.Fatal("a member of an allow-listed channel was not admitted")
-	}
-	if msg.Content != "status?" || msg.Context.SenderIsOwner {
-		t.Fatalf("published %q, owner %v", msg.Content, msg.Context.SenderIsOwner)
+	if msg, ok := receiveInbound(messageBus, 100*time.Millisecond); ok {
+		t.Fatalf("a channel message was published: %#v", msg)
 	}
 }
 
-// A thread's chat ID is "<channel>/<thread ts>"; the channel's allow_from
-// entry admits its members there too.
-func TestHandleMessageEvent_AllowListedChannelThreadMemberIsAdmitted(t *testing.T) {
+// A thread's chat ID is "<channel>/<thread ts>"; threads in a channel are
+// ignored too, even in one allow_from lists.
+func TestHandleMessageEvent_ChannelThreadMessageIsIgnored(t *testing.T) {
 	ch, messageBus, _ := newAccessTestChannel(t, "UOWNER", "C100")
 
 	ch.handleMessageEvent(&slackevents.MessageEvent{
@@ -112,41 +110,14 @@ func TestHandleMessageEvent_AllowListedChannelThreadMemberIsAdmitted(t *testing.
 		TimeStamp: "1700000000.000400", ThreadTimeStamp: "1700000000.000200",
 	})
 
-	msg, ok := receiveInbound(messageBus, time.Second)
-	if !ok {
-		t.Fatal("a member of an allow-listed channel was not admitted in a thread")
-	}
-	if msg.Content != "in a thread" || msg.Context.TopicID != "1700000000.000200" || msg.Context.SenderIsOwner {
-		t.Fatalf("published %q in thread %q, owner %v", msg.Content, msg.Context.TopicID, msg.Context.SenderIsOwner)
+	if msg, ok := receiveInbound(messageBus, 100*time.Millisecond); ok {
+		t.Fatalf("a message in a channel's thread was published: %#v", msg)
 	}
 }
 
-func TestChannelMentionIsAnsweredOnce(t *testing.T) {
-	ch, messageBus, _ := newAccessTestChannel(t, "UOWNER")
-
-	// Slack delivers a channel mention as both a message and an app_mention.
-	ch.handleMessageEvent(&slackevents.MessageEvent{
-		Channel: "C100", User: "UOWNER", Text: "<@UBOT> status?", TimeStamp: "1700000000.000300",
-	})
-	ch.handleAppMention(&slackevents.AppMentionEvent{
-		Channel: "C100", User: "UOWNER", Text: "<@UBOT> status?", TimeStamp: "1700000000.000300",
-	})
-
-	msg, ok := receiveInbound(messageBus, time.Second)
-	if !ok {
-		t.Fatal("the mention was not answered")
-	}
-	if msg.Content != "status?" || !msg.Context.Mentioned {
-		t.Fatalf("published %q, mentioned %v", msg.Content, msg.Context.Mentioned)
-	}
-	if extra, ok := receiveInbound(messageBus, 50*time.Millisecond); ok {
-		t.Fatalf("the mention was answered twice: %#v", extra)
-	}
-}
-
-// The app_mention event answers a channel message that mentions the bot, so
-// it brings the message's files; a mention with only a file is answered too.
-func TestChannelMentionKeepsItsFiles(t *testing.T) {
+// A direct message brings its files; a message with only a file is answered
+// too.
+func TestDirectMessageKeepsItsFiles(t *testing.T) {
 	ch, messageBus, _ := newAccessTestChannel(t, "UOWNER")
 	ch.SetMediaStore(media.NewFileMediaStore())
 	path := filepath.Join(t.TempDir(), "screenshot.png")
@@ -155,19 +126,20 @@ func TestChannelMentionKeepsItsFiles(t *testing.T) {
 	}
 	fetchFile = func(*SlackChannel, slack.File) string { return path }
 
-	ch.handleAppMention(&slackevents.AppMentionEvent{
-		Channel: "C100", User: "UOWNER", Text: "<@UBOT>", TimeStamp: "1700000000.000400",
-		Files: []slack.File{{ID: "F1", Name: "screenshot.png"}},
+	ch.handleMessageEvent(&slackevents.MessageEvent{
+		Channel: "D100", User: "UOWNER", TimeStamp: "1700000000.000400", SubType: "file_share",
+		Message: &slack.Msg{Files: []slack.File{{ID: "F1", Name: "screenshot.png"}}},
 	})
 
 	msg, ok := receiveInbound(messageBus, time.Second)
 	if !ok {
-		t.Fatal("a mention with only a file was not answered")
+		t.Fatal("a message with only a file was not answered")
 	}
 	if len(msg.Media) != 1 || !strings.Contains(msg.Content, "[file: screenshot.png]") {
 		t.Fatalf("published %q with media %v, want the file", msg.Content, msg.Media)
 	}
 }
+
 func TestSend_EscapesModelText(t *testing.T) {
 	var (
 		mu   sync.Mutex

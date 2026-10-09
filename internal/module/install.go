@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/xibodev/compa/v3/pkg/modproto"
+	"github.com/xibodev/compa/v4/pkg/modproto"
 )
 
 // Install registers a module binary with this host.
