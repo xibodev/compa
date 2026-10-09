@@ -389,7 +389,7 @@ install_compa() {
 		say "Compa was not started: this looks like CI, a script or a remote shell."
 		say "  On this computer's desktop, run: $DIR/compa"
 		say "  Without a desktop, set the password, then run Compa in the terminal:"
-		say "    $DIR/compa -password 'your-password'"
+		say "    $DIR/compa -password -        # asks for the password"
 		say "    $DIR/compa -console -no-browser"
 	fi
 	say "Your settings and data live in $(data_dir)."
